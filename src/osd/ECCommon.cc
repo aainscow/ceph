@@ -361,7 +361,6 @@ void ECCommon::ReadPipeline::get_min_want_to_read_shards(
 {
   get_min_want_to_read_shards(
     offset, length, sinfo, ec_impl->get_chunk_mapping(), want_to_read);
-  dout(20) << dendl;
   dout(20) << __func__ << ": offset " << offset << " length " << length
 	   << " want_to_read " << *want_to_read << dendl;
 }
@@ -705,6 +704,53 @@ void ECCommon::ReadPipeline::kick_reads()
   }
 }
 
+bool ECCommon::ec_align_t::overlaps_or_adjacent_to(const ec_align_t &other) const {
+  if (offset > other.offset) {
+    return other.overlaps_or_adjacent_to(*this);
+  }
+  return offset <= other.offset && other.offset <= offset+size;
+}
+
+void ECCommon::ec_align_t::merge(const ec_align_t &other) {
+  auto start = std::min(other.offset, offset);
+  auto end = std::max(other.offset+other.size, offset+size);
+
+  offset = start;
+  size = end-start;
+}
+
+bool ECCommon::ec_align_t::operator<(const ec_align_t &other) const {
+  return offset < other.offset;
+}
+
+bool ECCommon::ec_align_t::operator==(const ec_align_t &other) const {
+  return offset == other.offset && size == other.size && flags == other.flags;
+}
+
+void ECCommon::ReadPipeline::merge_extent_lists(list<ec_align_t> &list_a, list<ec_align_t> &list_b) const {
+
+  list<ec_align_t> tmp_list;
+  tmp_list.splice(tmp_list.end(), list_a);
+  tmp_list.splice(tmp_list.end(), list_b);
+  tmp_list.sort();
+
+  auto keep = tmp_list.begin();
+  auto merge = next(keep);
+
+  while (keep != tmp_list.end() && merge != tmp_list.end()) {
+    if (keep->overlaps_or_adjacent_to(*merge)) {
+      keep->merge(*merge);
+      ++merge;
+    } else {
+      list_a.push_back(*keep);
+      keep=merge;
+      merge=next(keep);
+    }
+  }
+
+  if (keep != tmp_list.end())
+    list_a.push_back(*keep);
+}
 
 void ECCommon::RMWPipeline::start_rmw(OpRef op)
 {

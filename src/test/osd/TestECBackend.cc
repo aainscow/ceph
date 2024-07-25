@@ -541,3 +541,139 @@ TEST(ECCommon, get_min_want_to_read_shards)
     ASSERT_TRUE(want_to_read == (std::set<int>{0, 1, 2, 3}));
   }
 }
+
+TEST(ECCommon, overlaps_or_adjacent_to)
+{
+  ASSERT_TRUE (ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,0,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,2,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,1,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,0,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,0,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(1,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,0,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,2,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(2,1,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(3,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,2,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(2,1,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(3,1,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(4,1,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4097,4096,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4096,4095,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4096,4096,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4095,4096,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4095,4096,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4096,4096,0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4096,4096,0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4097,4096,0)));
+}
+
+TEST(ECCommon, merge)
+{
+  ECCommon::ec_align_t extent(100,1,0);
+  extent.merge(extent);
+  ASSERT_EQ(ECCommon::ec_align_t(100,1,0), extent);
+  extent.merge(ECCommon::ec_align_t(99, 1, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(99,2,0), extent);
+  extent.merge(ECCommon::ec_align_t(99, 1, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(99,2,0), extent);
+  extent.merge(ECCommon::ec_align_t(98, 3, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(98,3,0), extent);
+  extent.merge(ECCommon::ec_align_t(97, 1, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(97,4,0), extent);
+  extent.merge(ECCommon::ec_align_t(95, 1, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(95,6,0), extent);
+  extent.merge(ECCommon::ec_align_t(94, 8, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(94,8,0), extent);
+  extent.merge(ECCommon::ec_align_t(95, 2, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(94,8,0), extent);
+  extent.merge(ECCommon::ec_align_t(101, 4, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(94,11,0), extent);
+
+  /* Check we can cope with transitions to 64bit. */
+  extent.merge(ECCommon::ec_align_t(100, 0xffffffff, 0));
+  ASSERT_EQ(ECCommon::ec_align_t(94,0x100000005,0), extent);
+}
+
+TEST(ECCommon, merge_extent_lists)
+{
+  const uint64_t swidth = 4096;
+  const uint64_t ssize = 4;
+
+  ECUtil::stripe_info_t s(ssize, swidth);
+  ECListenerStub listenerStub;
+
+  const std::vector<int> chunk_mapping = {}; // no remapping
+  ErasureCodeInterfaceRef ec_impl(new ErasureCodeDummyImpl);
+  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
+  list<ECCommon::ec_align_t> empty;
+
+  {
+    list<ECCommon::ec_align_t> l1;
+    l1.push_back(ECCommon::ec_align_t(0, 0x400, 0));
+    list<ECCommon::ec_align_t> l2;
+    l2.push_back(ECCommon::ec_align_t(0,0x400, 0));
+    list<ECCommon::ec_align_t> ref;
+    ref.push_back(ECCommon::ec_align_t(0,0x400, 0));
+
+    pipeline.merge_extent_lists(l1, l2);
+    ASSERT_EQ(ref, l1);
+    ASSERT_EQ(empty, l2);
+
+    l2.push_back(ECCommon::ec_align_t(0x200,0x400, 0));
+    ref.begin()->size += 512;
+
+    pipeline.merge_extent_lists(l1, l2);
+    ASSERT_EQ(ref, l1);
+    ASSERT_EQ(empty, l2);
+
+    l2.push_back(ECCommon::ec_align_t(0x600,0x200, 0));
+    ref.begin()->size += 0x200;
+
+    pipeline.merge_extent_lists(l1, l2);
+    ASSERT_EQ(ref, l1);
+    ASSERT_EQ(empty, l2);
+
+    l2.push_back(ECCommon::ec_align_t(0xc00,0x200,0));
+    ref.push_back(ECCommon::ec_align_t(0xc00,0x200, 0));
+
+    pipeline.merge_extent_lists(l1, l2);
+    ASSERT_EQ(ref, l1);
+    ASSERT_EQ(empty, l2);
+  }
+
+  /* We should be able to cope with lists in reverse too */
+  {
+    list<ECCommon::ec_align_t> l1;
+    list<ECCommon::ec_align_t> l2;
+
+    /* The first 4 blocks should get merged */
+    l1.push_back(ECCommon::ec_align_t(0, 0x400, 0));
+    l1.push_back(ECCommon::ec_align_t(0x400, 0x400, 0));
+    l2.push_back(ECCommon::ec_align_t(0x400, 0x800, 0));
+    l1.push_back(ECCommon::ec_align_t(0xc00, 0x400, 0));
+
+    /* These should get left alone, but put in a list */
+    l1.push_back(ECCommon::ec_align_t(0x1000, 0x400, 0));
+    l2.push_back(ECCommon::ec_align_t(0x2000, 0x400, 0));
+    l1.push_back(ECCommon::ec_align_t(0x3000, 0x400, 0));
+
+    l1.reverse();
+    l2.reverse();
+
+    list<ECCommon::ec_align_t> ref;
+    ref.push_back(ECCommon::ec_align_t(0, 0x1000, 0));
+    ref.push_back(ECCommon::ec_align_t(0x1000, 0x400, 0));
+    ref.push_back(ECCommon::ec_align_t(0x2000, 0x400, 0));
+    ref.push_back(ECCommon::ec_align_t(0x3000, 0x400, 0));
+
+    pipeline.merge_extent_lists(l1, l2);
+    ASSERT_EQ(ref, l1);
+    ASSERT_EQ(empty, l2);
+  }
+}

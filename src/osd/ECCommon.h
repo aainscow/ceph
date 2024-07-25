@@ -217,6 +217,10 @@ struct ECCommon {
       : offset(p.first), size(p.second), flags(flags) {}
     ec_align_t(uint64_t offset, uint64_t size, uint32_t flags)
       : offset(offset), size(size), flags(flags) {}
+    bool overlaps_or_adjacent_to(const ec_align_t &other) const;
+    void merge(const ec_align_t &other);
+    bool operator<(const ec_align_t &other) const;
+    bool operator==(const ec_align_t &other) const;
   };
   friend std::ostream &operator<<(std::ostream &lhs, const ec_align_t &rhs);
 
@@ -510,6 +514,7 @@ struct ECCommon {
       ); ///< @return error code, 0 on success
 
     void schedule_recovery_work();
+    void merge_extent_lists(std::list<ec_align_t> &list_a, std::list<ec_align_t> &list_b) const;
   };
 
   /**
