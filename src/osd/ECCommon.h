@@ -451,6 +451,14 @@ struct ECCommon {
         parent(parent) {
     }
 
+    ReadPipeline(ceph::ErasureCodeInterfaceRef &ec_impl,
+		 const ECUtil::stripe_info_t& sinfo,
+	         ECListener* parent)
+      : ec_impl(ec_impl),
+	sinfo(sinfo),
+	parent(parent) {
+    }
+
     /**
      * While get_want_to_read_shards creates a want_to_read based on the EC
      * plugin's all get_data_chunk_count() (full stripe), this method

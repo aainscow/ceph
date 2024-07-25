@@ -361,6 +361,7 @@ void ECCommon::ReadPipeline::get_min_want_to_read_shards(
 {
   get_min_want_to_read_shards(
     offset, length, sinfo, ec_impl->get_chunk_mapping(), want_to_read);
+  dout(20) << dendl;
   dout(20) << __func__ << ": offset " << offset << " length " << length
 	   << " want_to_read " << *want_to_read << dendl;
 }
