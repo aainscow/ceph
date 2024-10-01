@@ -32,7 +32,7 @@ struct ECTransaction {
   struct WritePlan {
     bool invalidates_cache = false; // Yes, both are possible
     std::map<hobject_t,extent_set> to_read;
-    std::map<hobject_t,extent_set> will_write; // superset of to_read
+    std::map<hobject_t,extent_set> will_write;
 
     std::map<hobject_t,ECUtil::HashInfoRef> hash_infos;
   };
@@ -224,6 +224,7 @@ struct ECCommon {
   struct ec_extent_t {
     int err;
     extent_map emap;
+    ECUtil::shard_extent_map_t shard_extent_map;
   };
   friend std::ostream &operator<<(std::ostream &lhs, const ec_extent_t &rhs);
   using ec_extents_t = std::map<hobject_t, ec_extent_t>;
@@ -315,11 +316,13 @@ struct ECCommon {
     void complete_object(
       const hobject_t &hoid,
       int err,
-      extent_map &&buffers) {
+      extent_map &&buffers,
+      ECUtil::shard_extent_map_t &&shard_extent_map) {
       ceph_assert(objects_to_read);
       --objects_to_read;
       ceph_assert(!results.count(hoid));
-      results.emplace(hoid, ec_extent_t{err, std::move(buffers)});
+      results.emplace(hoid, ec_extent_t{err, std::move(buffers),
+        std::move(shard_extent_map)});
     }
     bool is_complete() const {
       return objects_to_read == 0;
@@ -544,9 +547,9 @@ struct ECCommon {
       /// In progress read state;
       std::map<hobject_t,extent_set> pending_read; // subset already being read
       std::map<hobject_t,extent_set> remote_read;  // subset we must read
-      std::map<hobject_t,extent_map> remote_read_result;
+      std::map<hobject_t,ECUtil::shard_extent_map_t> remote_shard_extent_map;
       bool read_in_progress() const {
-        return !remote_read.empty() && remote_read_result.empty();
+        return !remote_read.empty() && remote_shard_extent_map.empty();
       }
 
       /// In progress write state.

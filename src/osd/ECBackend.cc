@@ -1375,7 +1375,7 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
       ecimpl,
       pgid,
       sinfo,
-      remote_read_result,
+      remote_shard_extent_map,
       log_entries,
       written,
       transactions,
@@ -1543,7 +1543,7 @@ void ECBackend::objects_read_async(
       ldpp_dout(dpp, 20) << "objects_read_async_cb: cache: " << ec->rmw_pipeline.cache
 			 << dendl;
 
-      auto &got = results[hoid];
+      auto &got = results.at(hoid);
 
       int r = 0;
       for (auto &&read: to_read) {

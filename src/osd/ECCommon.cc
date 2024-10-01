@@ -166,7 +166,7 @@ ostream &operator<<(ostream &lhs, const ECCommon::RMWPipeline::Op &rhs)
       << " temp_cleared=" << rhs.temp_cleared
       << " pending_read=" << rhs.pending_read
       << " remote_read=" << rhs.remote_read
-      << " remote_read_result=" << rhs.remote_read_result
+      << " remote_read_result=" << rhs.remote_shard_extent_map
       << " pending_apply=" << rhs.pending_apply
       << " pending_commit=" << rhs.pending_commit
       << " plan.to_read=" << rhs.plan.to_read
@@ -645,7 +645,18 @@ struct ClientReadCompleter : ECCommon::ReadCompleter {
 out:
     dout(20) << __func__ << " calling complete_object with result="
              << result << dendl;
-    status->complete_object(hoid, res.r, std::move(result));
+    // FIXME: buffers_Read currently does not contain any buffer that was not
+    //        read.  The RMW path will cope with this for parity, but not
+    //        recovered buffers.  This is pretty inefficient and we should
+    //        not have this for the read path (we need a hint that this is an
+    //        RMW). Also, we should be able to decode the missing buffers
+    //        directly into buffers_read, although this is harder.
+    //        For now, we insert the result back into the buffer before passing
+    //        it to the completion function.
+    ECUtil::shard_extent_map_t shard_extent_map(&read_pipeline.sinfo, std::move(res.buffers_read));
+    shard_extent_map.insert_ro_extent_map(result);
+
+    status->complete_object(hoid, res.r, std::move(result), std::move(shard_extent_map));
     read_pipeline.kick_reads();
   }
 
@@ -792,9 +803,9 @@ bool ECCommon::RMWPipeline::try_state_to_reads()
     return false;
   }
 
-  if (!pipeline_state.caching_enabled()) {
+  if (!op->requires_rmw()) {
     op->using_cache = false;
-  } else if (op->invalidates_cache()) {
+  } else /*if (op->invalidates_cache())*/ {
     dout(20) << __func__ << ": invalidating cache after this op"
 	     << dendl;
     pipeline_state.invalidate();
@@ -807,27 +818,30 @@ bool ECCommon::RMWPipeline::try_state_to_reads()
     cache.open_write_pin(op->pin);
 
     extent_set empty;
-    for (auto &&hpair: op->plan.will_write) {
-      auto to_read_plan_iter = op->plan.to_read.find(hpair.first);
+    for (auto && [oid, to_write_plan] : op->plan.will_write) {
+      auto to_read_plan_iter = op->plan.to_read.find(oid);
       const extent_set &to_read_plan =
 	to_read_plan_iter == op->plan.to_read.end() ?
 	empty :
 	to_read_plan_iter->second;
 
+      extent_set to_rmw_plan;
+      to_rmw_plan.union_of(to_write_plan, to_read_plan);
+      dout(0) << __func__ << " BILL: wp: " << to_write_plan << " rp: "<< to_read_plan << " rmw_plan: " << to_rmw_plan << dendl;
       extent_set remote_read = cache.reserve_extents_for_rmw(
-	hpair.first,
+	oid,
 	op->pin,
-	hpair.second,
+	to_rmw_plan,
 	to_read_plan);
 
       extent_set pending_read = to_read_plan;
       pending_read.subtract(remote_read);
 
       if (!remote_read.empty()) {
-	op->remote_read[hpair.first] = std::move(remote_read);
+	op->remote_read[oid] = std::move(remote_read);
       }
       if (!pending_read.empty()) {
-	op->pending_read[hpair.first] = std::move(pending_read);
+	op->pending_read[oid] = std::move(pending_read);
       }
     }
   } else {
@@ -841,8 +855,8 @@ bool ECCommon::RMWPipeline::try_state_to_reads()
     objects_read_async_no_cache(
       op->remote_read,
       [op, this](ec_extents_t &&results) {
-	for (auto &&i: results) {
-	  op->remote_read_result.emplace(make_pair(i.first, i.second.emap));
+	for (auto &&[oid, result] : results) {
+	  op->remote_shard_extent_map.emplace(oid, result.shard_extent_map);
 	}
 	check_ops();
       });
@@ -869,12 +883,13 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
     op->delta_stats);
 
   if (op->using_cache) {
-    for (auto &&hpair: op->pending_read) {
-      op->remote_read_result[hpair.first].insert(
-	cache.get_remaining_extents_for_rmw(
-	  hpair.first,
-	  op->pin,
-	  hpair.second));
+    for (auto && [oid, to_read] : op->pending_read) {
+      extent_map cache_emap = cache.get_remaining_extents_for_rmw(
+          oid,
+          op->pin,
+          to_read);
+      op->remote_shard_extent_map.emplace(oid, &sinfo);
+      op->remote_shard_extent_map.at(oid).insert_ro_extent_map(cache_emap);
     }
     op->pending_read.clear();
   } else {
@@ -914,22 +929,14 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
       }
     }
   }
-
-  map<hobject_t,extent_set> written_set;
-  for (auto &&i: written) {
-    written_set[i.first] = i.second.get_interval_set();
-  }
-  dout(20) << __func__ << ": written_set: " << written_set << dendl;
-  ceph_assert(written_set == op->plan.will_write);
-
   if (op->using_cache) {
-    for (auto &&hpair: written) {
-      dout(20) << __func__ << ": " << hpair << dendl;
-      cache.present_rmw_update(hpair.first, op->pin, hpair.second);
+    for (auto && [oid, extents] : written) {
+      dout(20) << __func__ << ": " << oid << " " << extents << dendl;
+      cache.present_rmw_update(oid, op->pin, extents);
     }
   }
   op->remote_read.clear();
-  op->remote_read_result.clear();
+  op->remote_shard_extent_map.clear();
 
   ObjectStore::Transaction empty;
   bool should_write_local = false;
