@@ -498,19 +498,65 @@ namespace ECUtil {
           chunk_buffers);
       }
     }
-
     return 0;
   }
 
-  void shard_extent_map_t::get_buffer(int shard, int offset, int length,
-      buffer::list &append_to) {
+  void shard_extent_map_t::decode(ErasureCodeInterfaceRef& ecimpl,
+    map<int, extent_set> want)
+  {
+    for (auto &&[shard, eset]: want) {
+      /* We are assuming here that a shard that has been read does not need
+       * to be decoding. The ECBackend::handle_sub_read_reply code will erase
+       * buffers for any shards with missing reads, so this should be safe.
+       */
+      if (extent_maps.contains(shard))
+        continue;
+
+      for (auto [offset, length]: eset) {
+        /* Here we recover each missing shard independently. There may be
+         * multiple missing shards and we could collect together all the
+         * recoveries at one time. There may be some performance gains in
+         * * that scenario if found necessary.
+         */
+        std::set<int> want_to_read;
+        std::map<int, bufferlist> decoded;
+
+        want_to_read.insert(shard);
+        ecimpl->decode_chunks(want_to_read, slice(offset, length), &decoded);
+
+        insert_in_shard(shard, offset, decoded[shard]);
+      }
+    }
+  }
+
+  std::map<int, bufferlist> shard_extent_map_t::slice(int offset, int length)
+  {
+    std::map<int, bufferlist> slice;
+
+    for (auto &&[shard, emap]: extent_maps) {
+      auto &&[range, _] = extent_maps.at(shard).get_containing_range(offset, length);
+      if (range != emap.end() && range.contains(offset, length)) {
+        slice[shard].substr_of(range.get_val(), offset - range.get_off(), length);
+      }
+    }
+
+    return slice;
+  }
+
+  void shard_extent_map_t::get_buffer(int shard, uint64_t offset, uint64_t length,
+      buffer::list &append_to)
+  {
     ceph_assert(extent_maps.contains(shard));
     auto &&[range, _] = extent_maps.at(shard).get_containing_range(offset, length);
     ceph_assert(range != extent_maps.at(shard).end() && range.contains(offset, length));
 
-    buffer::list bl;
-    bl.substr_of(range.get_val(), offset - range.get_off(), length);
-    append_to.append(bl);
+    if (range.get_len() == length) {
+      append_to.append(range.get_val());
+    } else {
+      buffer::list bl;
+      bl.substr_of(range.get_val(), offset - range.get_off(), length);
+      append_to.append(bl);
+    }
   }
 
   map <int, extent_set> shard_extent_map_t::get_extent_set_map()
@@ -521,6 +567,40 @@ namespace ECUtil {
     }
 
     return eset_map;
+  }
+
+  void shard_extent_map_t::erase_shard(int shard)
+  {
+    if (extent_maps.erase(shard)) {
+      compute_ro_range();
+    }
+  }
+
+  bufferlist shard_extent_map_t::get_ro_buffer(
+    uint64_t ro_offset,
+    uint64_t ro_length)
+  {
+    bufferlist bl;
+    uint64_t chunk_size = sinfo->get_chunk_size();
+    int data_chunk_count = sinfo->get_data_chunk_count();
+
+    pair read_pair(ro_offset, ro_length);
+    auto chunk_aligned_read = sinfo->offset_len_to_chunk_bounds(read_pair);
+
+    int raw_shard = (ro_offset / chunk_size) % data_chunk_count;
+
+    for (uint64_t chunk_offset = chunk_aligned_read.first;
+        chunk_offset < chunk_aligned_read.first + chunk_aligned_read.second;
+        chunk_offset += chunk_size, raw_shard++) {
+
+      if (raw_shard == data_chunk_count) raw_shard = 0;
+
+      uint64_t sub_chunk_offset = std::max(chunk_offset, ro_offset);
+      uint64_t sub_chunk_len = std::min(ro_offset + ro_length, chunk_offset + chunk_size) - sub_chunk_offset;
+
+      get_buffer(sinfo->get_shard(raw_shard), sub_chunk_offset, sub_chunk_len, bl);
+    }
+    return bl;
   }
 }
 

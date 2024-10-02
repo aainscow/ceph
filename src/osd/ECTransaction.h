@@ -24,8 +24,9 @@
 namespace ECTransaction {
   struct WritePlan {
     bool invalidates_cache = false; // Yes, both are possible
-    std::map<hobject_t,extent_set> to_read;
-    std::map<hobject_t,extent_set> will_write;
+    std::map<hobject_t, std::map<int, extent_set>> to_read;
+    std::map<hobject_t, std::map<int, extent_set>> will_write;
+    std::map<hobject_t, std::map<int, extent_set>> to_rmw;
 
     std::map<hobject_t,ECUtil::HashInfoRef> hash_infos;
   };
@@ -62,26 +63,22 @@ namespace ECTransaction {
 	  plan.hash_infos[source] = shinfo;
 	}
 
-	auto &will_write = plan.will_write[obj];
+        extent_set raw_write_set;
+
+        /* If we are truncating, then we need to over-write the new end to
+         * the end of that stripe with zeros. Everything after that will get
+         * truncated to the shard objects. */
 	if (op.truncate &&
 	    op.truncate->first < projected_size) {
-	  if (!(sinfo.logical_offset_is_stripe_aligned(
-		  op.truncate->first))) {
-	    plan.to_read[obj].union_insert(
-	      sinfo.logical_to_prev_stripe_offset(op.truncate->first),
-	      sinfo.get_stripe_width());
 
-	    ldpp_dout(dpp, 20) << __func__ << ": unaligned truncate" << dendl;
+	  uint64_t new_projected_size = std::min(
+	    sinfo.logical_to_next_stripe_offset(op.truncate->first),
+	    projected_size);
 
-	    will_write.union_insert(
-	      sinfo.logical_to_prev_stripe_offset(op.truncate->first),
-	      sinfo.get_stripe_width());
-	  }
-	  projected_size = sinfo.logical_to_next_stripe_offset(
-	    op.truncate->first);
+	  raw_write_set.insert(op.truncate->first, new_projected_size);
+	  projected_size = new_projected_size;
 	}
 
-	extent_set raw_write_set;
 	for (auto &&extent: op.buffer_updates) {
 	  using BufferUpdate = PGTransaction::ObjectOperation::BufferUpdate;
 	  if (boost::get<BufferUpdate::CloneRange>(&(extent.get_val()))) {
@@ -92,94 +89,32 @@ namespace ECTransaction {
 	  raw_write_set.insert(extent.get_off(), extent.get_len());
 	}
 
-	auto orig_size = projected_size;
+        extent_set empty;
 	for (const auto& [offset, length] : raw_write_set) {
-	  uint64_t head_start =
-	    sinfo.logical_to_prev_stripe_offset(offset);
-	  uint64_t head_finish =
-	    sinfo.logical_to_next_stripe_offset(offset);
-	  if (head_start > projected_size) {
-	    head_start = projected_size;
-	  }
-	  if (head_start != head_finish &&
-	      head_start < orig_size) {
-	    ceph_assert(head_finish <= orig_size);
-	    ceph_assert(head_finish - head_start == sinfo.get_stripe_width());
-	    ldpp_dout(dpp, 20) << __func__ << ": reading partial head stripe "
-			       << head_start << "~" << sinfo.get_stripe_width()
-			       << dendl;
-	    plan.to_read[obj].union_insert(
-	      head_start, sinfo.get_stripe_width());
-	  }
+	  extent_set extent_superset;
+          auto &will_write = plan.will_write[obj];
+          auto &to_read = plan.to_read[obj];
+	  auto &to_rmw = plan.to_rmw[obj];
+          sinfo.ro_range_to_shard_extent_set(offset, length, will_write, extent_superset);
 
-	  uint64_t tail_start =
-	    sinfo.logical_to_prev_stripe_offset(offset + length);
-	  uint64_t tail_finish =
-	    sinfo.logical_to_next_stripe_offset(offset + length);
-	  if (tail_start != tail_finish &&
-	      (head_start == head_finish || tail_start != head_start) &&
-	      tail_start < orig_size) {
-	    ceph_assert(tail_finish <= orig_size);
-	    ceph_assert(tail_finish - tail_start == sinfo.get_stripe_width());
-	    ldpp_dout(dpp, 20) << __func__ << ": reading partial tail stripe "
-			       << tail_start << "~" << sinfo.get_stripe_width()
-			       << dendl;
-	    plan.to_read[obj].union_insert(
-	      tail_start, sinfo.get_stripe_width());
-	  }
+          for (int raw_shard = 0; raw_shard< sinfo.get_k_plus_m(); raw_shard++) {
+            int shard = sinfo.get_shard(raw_shard);
+            extent_set _to_read;
+            if (raw_shard < sinfo.get_m()) {
+              _to_read.insert(extent_superset);
+              _to_read.subtract(will_write[shard]);
 
-	  if (head_start != tail_finish) {
-	    uint64_t write_start = offset;
-	    uint64_t write_end = offset + length;
-	    uint64_t chunksize = sinfo.get_chunk_size();
-	    write_start = write_start - (write_start % chunksize);
-	    write_end = ((write_end + chunksize - 1) / chunksize) * chunksize;
-	    if (tail_finish > projected_size) {
-	      projected_size = tail_finish;
-	      write_end = tail_finish;
-	    }
-	    will_write.union_insert(write_start, write_end - write_start);
-	  } else {
-	    ceph_assert(tail_finish <= projected_size);
-	  }
-	}
-	ldpp_dout(dpp,0) << __func__ << " BILL: will_write: " << will_write << dendl;
+              if (!_to_read.empty())
+                to_read.emplace(shard, _to_read);
 
-        /* Avoid reading unnecessary data that is going to be overwritten */
-	if (plan.to_read.count(obj) != 0) {
-	  ldpp_dout(dpp, 0) << __func__ << " BILL: raw_write_set: " <<
-	    raw_write_set << dendl;
-	  ldpp_dout(dpp, 0) << __func__ << " BILL: before read plan: " <<
-	    plan.to_read[obj] << " " << plan.to_read[obj].empty() << dendl;
-	  for (const auto& [offset, length] : raw_write_set) {
-	    interval_set<uint64_t> overlap;
-	    /* Reduce range of write to chunk boundaries and remove
-             * this from the set of intervals to be read
-             */
-	    uint64_t chunksize = sinfo.get_chunk_size();
-	    uint64_t start = ((offset + chunksize - 1) / chunksize) * chunksize;
-	    uint64_t end = ((offset + length) / chunksize) * chunksize;
-	    if (end > start) {
-	      overlap.insert(start, end - start);
-	      overlap.intersection_of(plan.to_read[obj]);
-	      ldpp_dout(dpp, 0) << __func__ << " BILL: overlap: " <<
-		overlap << " " << offset << " " << length << dendl;
-	      plan.to_read[obj].subtract(overlap);
-	    }
-	  }
-	  ldpp_dout(dpp, 0) << __func__ << " BILL: after read plan: " <<
-	    plan.to_read[obj] << " " << plan.to_read[obj].empty() << dendl;
-	}
+            } else {
+              will_write[shard].insert(extent_superset);
+            }
 
-	if (op.truncate && op.truncate->second > projected_size) {
-	  uint64_t truncating_to =
-	    sinfo.logical_to_next_stripe_offset(op.truncate->second);
-	  ldpp_dout(dpp, 20) << __func__ << ": truncating out to "
-			     <<  truncating_to
-			     << dendl;
-	  will_write.union_insert(projected_size,
-				  truncating_to - projected_size);
-	  projected_size = truncating_to;
+            to_rmw[shard].union_of(
+              to_read.contains(shard)?to_read.at(shard):empty,
+              will_write.contains(shard)?will_write.at(shard):empty);
+          }
 	}
 
 	ldpp_dout(dpp, 20) << __func__ << ": " << obj

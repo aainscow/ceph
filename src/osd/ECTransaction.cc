@@ -34,27 +34,6 @@ using ceph::decode;
 using ceph::encode;
 using ceph::ErasureCodeInterfaceRef;
 
-static void get_min_want_to_write_shards(
-  const ECUtil::stripe_info_t &sinfo,
-  extent_set ro_extent_set,
-  map<int, extent_set> &want_to_write)
-{
-  extent_set extent_superset;
-  for (auto [offset, length]: ro_extent_set) {
-    sinfo.ro_range_to_shard_extent_set(offset, length, want_to_write,
-	                               extent_superset);
-  }
-
-  // Add coding parity chunks
-  for (int raw_shard = sinfo.get_k();
-       raw_shard < sinfo.get_k_plus_m();
-       raw_shard++) {
-    auto shard = sinfo.get_shard(raw_shard);
-
-    want_to_write[shard].insert(extent_superset);
-  }
-}
-
 static void encode_and_write(
   pg_t pgid,
   const hobject_t &oid,
@@ -567,9 +546,7 @@ void ECTransaction::generate_transactions(
 
 	// For an overwirte, we can restrict ourselves to the overwrite itself
 	// and parity updates.
-	map<int, extent_set> want_to_write;
-	get_min_want_to_write_shards(sinfo, plan.will_write[oid],
-	                             want_to_write);
+	auto &want_to_write = plan.will_write[oid];
 
 	/* Generate the clone transactions for every shard. These are the same
 	 * for each shard and cover complete chunks.

@@ -96,6 +96,8 @@ ostream &operator<<(ostream &lhs, const ECCommon::shard_read_t &rhs)
 ostream &operator<<(ostream &lhs, const ECCommon::read_request_t &rhs)
 {
   return lhs << "read_request_t(to_read=[" << rhs.to_read << "]"
+             << ", flags=" << rhs.flags
+             << ", shard_want_to_read=" << rhs.shard_want_to_read
 	     << ", shard_reads=" << rhs.shard_reads
 	     << ", want_attrs=" << rhs.want_attrs
 	     << ")";
@@ -127,7 +129,6 @@ ostream &operator<<(ostream &lhs, const ECCommon::ReadOp &rhs)
 	     << ", priority=" << rhs.priority
 	     << ", obj_to_source=" << rhs.obj_to_source
 	     << ", source_to_obj=" << rhs.source_to_obj
-	     << ", want_to_read" << rhs.want_to_read
 	     << ", in_progress=" << rhs.in_progress << ")";
 }
 
@@ -144,7 +145,6 @@ void ECCommon::ReadOp::dump(Formatter *f) const
   f->dump_int("priority", priority);
   f->dump_stream("obj_to_source") << obj_to_source;
   f->dump_stream("source_to_obj") << source_to_obj;
-  f->dump_stream("want_to_read") << want_to_read;
   f->dump_stream("in_progress") << in_progress;
 }
 
@@ -184,12 +184,10 @@ void ECCommon::ReadPipeline::complete_read_op(ReadOp &rop)
     rop.complete.begin();
   ceph_assert(rop.to_read.size() == rop.complete.size());
   for (; req_iter != rop.to_read.end(); ++req_iter, ++resiter) {
-    ceph_assert(rop.want_to_read.contains(req_iter->first));
     rop.on_complete->finish_single_request(
       req_iter->first,
       resiter->second,
-      req_iter->second.to_read,
-      rop.want_to_read[req_iter->first]);
+      req_iter->second);
   }
   ceph_assert(rop.on_complete);
   std::move(*rop.on_complete).finish(rop.priority);
@@ -283,7 +281,6 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
 
 int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   const hobject_t &hoid,
-  const map<int, extent_set> &want_shard_reads,
   bool for_recovery,
   bool do_redundant_reads,
   read_request_t &read_request,
@@ -299,7 +296,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   map<int, vector<pair<int, int>>> need;
   set<int> want;
 
-  for (auto &&[shard, _] : want_shard_reads) {
+  for (auto &&[shard, _] : read_request.shard_want_to_read) {
     want.insert(shard);
   }
 
@@ -318,7 +315,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   extent_set extra_extents;
 
   /* First deal with missing shards */
-  for (auto &&[shard, extent_set] : want_shard_reads) {
+  for (auto &&[shard, extent_set] : read_request.shard_want_to_read) {
     /* Work out what extra extents we need to read on each shard. If do
      * redundant reads is set, then we want to have the same reads on
      * every extent. Otherwise, we need to read every shard only if the
@@ -339,9 +336,9 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     shard_read.extents.union_of(extra_extents);
 
 
-    if (shard_index < (int)want_shard_reads.size() &&
-        want_shard_reads.contains(shard_index)) {
-      shard_read.extents.union_of(want_shard_reads.at(shard_index));
+    if (shard_index < (int)read_request.shard_want_to_read.size() &&
+        read_request.shard_want_to_read.contains(shard_index)) {
+      shard_read.extents.union_of(read_request.shard_want_to_read.at(shard_index));
     }
 
     shard_read.extents.align(CEPH_PAGE_SIZE);
@@ -375,12 +372,8 @@ int ECCommon::ReadPipeline::get_remaining_shards(
     error_shards.insert(shard);
   }
 
-  // Recalculate the data shards we need.
-  map<int, extent_set> want_shard_reads;
-  get_want_to_read_shards(read_request.to_read, want_shard_reads);
   int r = get_min_avail_to_read_shards(
     hoid,
-    want_shard_reads,
     for_recovery,
     fast_read,
     read_request,
@@ -399,9 +392,9 @@ int ECCommon::ReadPipeline::get_remaining_shards(
 
     auto &buffers_read = read_result.buffers_read;
     // Ignore where shard has not been read at all.
-    if (buffers_read.contains(pg_shard.shard)) {
+    if (buffers_read.contains_shard(pg_shard.shard)) {
 
-      shard_read.extents.subtract(buffers_read[pg_shard.shard].get_interval_set());
+      shard_read.extents.subtract(buffers_read.get_extent_map(pg_shard.shard).get_interval_set());
       if (shard_read.extents.empty()) {
         read_request.shard_reads.erase(pg_shard);
       }
@@ -413,7 +406,6 @@ int ECCommon::ReadPipeline::get_remaining_shards(
 
 void ECCommon::ReadPipeline::start_read_op(
   int priority,
-  map<hobject_t, set<int>> &want_to_read,
   map<hobject_t, read_request_t> &to_read,
   OpRequestRef _op,
   bool do_redundant_reads,
@@ -431,7 +423,6 @@ void ECCommon::ReadPipeline::start_read_op(
       for_recovery,
       std::move(on_complete),
       _op,
-      std::move(want_to_read),
       std::move(to_read))).first->second;
   dout(10) << __func__ << ": starting " << op << dendl;
   if (_op) {
@@ -468,7 +459,7 @@ void ECCommon::ReadPipeline::do_read_op(ReadOp &op)
       for (auto extent = shard_read.extents.begin();
       		extent != shard_read.extents.end();
 		extent++) {
-	messages[shard].to_read[hoid].push_back(boost::make_tuple(extent.get_start(), extent.get_len(), read_request.to_read.front().flags));
+	messages[shard].to_read[hoid].push_back(boost::make_tuple(extent.get_start(), extent.get_len(), read_request.flags));
       }
     }
     ceph_assert(!need_attrs);
@@ -530,70 +521,6 @@ void ECCommon::ReadPipeline::get_want_to_read_shards(
   }
 }
 
-uint64_t ECCommon::ReadPipeline::shard_buffer_list_to_chunk_buffer_list(
-  ec_align_t &read,
-  std::map<int, extent_map> buffers_read,
-  list<map<int, bufferlist>> &chunk_bufferlists,
-  list<set<int>> &want_to_reads)
-{
-  uint64_t chunk_size = sinfo.get_chunk_size();
-  int data_chunk_count = sinfo.get_data_chunk_count();
-  uint64_t stripe_width = sinfo.get_stripe_width();
-
-  pair read_pair(read.offset, read.size);
-  auto aligned_read = sinfo.offset_len_to_page_bounds(read_pair);
-  auto chunk_aligned_read = sinfo.offset_len_to_chunk_bounds(read_pair);
-  const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
-
-  int raw_shard = (aligned_read.first / chunk_size) % data_chunk_count;
-
-  for (uint64_t chunk_offset = chunk_aligned_read.first;
-      chunk_offset < chunk_aligned_read.first + chunk_aligned_read.second;
-      chunk_offset += chunk_size, raw_shard++) {
-    if (raw_shard == data_chunk_count) raw_shard = 0;
-    auto shard = ((int)chunk_mapping.size()) > raw_shard ?
-               chunk_mapping[raw_shard] : raw_shard;
-
-    set<int> want_to_read;
-    want_to_read.insert(shard);
-
-    uint64_t sub_chunk_offset = std::max(chunk_offset, aligned_read.first);
-    uint64_t sub_chunk_shard_offset = (chunk_offset / stripe_width) * chunk_size + sub_chunk_offset - chunk_offset;
-    uint64_t sub_chunk_len = std::min(aligned_read.first + aligned_read.second, chunk_offset + chunk_size) - sub_chunk_offset;
-    map<int, bufferlist> chunk_buffers;
-
-    if (buffers_read.contains(shard)) {
-      extent_map &emap = buffers_read[shard];
-      auto [range, _] = emap.get_containing_range(sub_chunk_shard_offset, sub_chunk_len);
-
-      /* We received a success for this range, so it had better contain the
-       * data. */
-      ceph_assert(range != emap.end());
-      ceph_assert(range.contains(sub_chunk_shard_offset, sub_chunk_len));
-      chunk_buffers[shard].substr_of(range.get_val(), sub_chunk_shard_offset - range.get_off(), sub_chunk_len);
-    } else for (auto [shardi, emap] : buffers_read) {
-      auto [range, _] = emap.get_containing_range(sub_chunk_shard_offset, sub_chunk_len);
-      /* EC can often recover without having read every data/coding shard, so
-       * ignore the range if the data is missing */
-      if (range != emap.end() && range.contains(sub_chunk_shard_offset, sub_chunk_len)) {
-        chunk_buffers[shardi].substr_of(range.get_val(), sub_chunk_shard_offset - range.get_off(), sub_chunk_len);
-      }
-    }
-    dout(20) << "decode_prepare: read: (" << read.offset << "~" << read.size << ")" <<
-      " aligned: " << aligned_read <<
-      " chunk_buffers: " << chunk_buffers <<
-      " want_to_read: " << want_to_read << dendl;
-    chunk_bufferlists.emplace_back(std::move(chunk_buffers));
-    want_to_reads.emplace_back(std::move(want_to_read));
-  }
-
-  /* At this point, we could potentially pack multiple chunk decodes into one,
-   * as the EC decode methods are able to cope with multiple chunks being
-   * decoded at once. Not doing that for now. */
-
-  return read.offset - aligned_read.first;
-}
-
 struct ClientReadCompleter : ECCommon::ReadCompleter {
   ClientReadCompleter(ECCommon::ReadPipeline &read_pipeline,
                       ECCommon::ClientAsyncReadStatus *status)
@@ -603,60 +530,27 @@ struct ClientReadCompleter : ECCommon::ReadCompleter {
   void finish_single_request(
     const hobject_t &hoid,
     ECCommon::read_result_t &res,
-    list<ECCommon::ec_align_t> to_read,
-    set<int> wanted_to_read) override
+    ECCommon::read_request_t &req) override
   {
     auto* cct = read_pipeline.cct;
     dout(20) << __func__ << " completing hoid=" << hoid
-             << " res=" << res << " to_read="  << to_read << dendl;
+             << " res=" << res << " req="  << req << dendl;
     extent_map result;
     if (res.r != 0)
       goto out;
     ceph_assert(res.errors.empty());
 
-    for (auto &&read: to_read) {
-      list<map<int, bufferlist>> chunk_bufferlists;
-      list<set<int>> want_to_reads;
+    /* Decode any missing buffers */
+    res.buffers_read.decode(read_pipeline.ec_impl, req.shard_want_to_read);
 
-      auto off =read_pipeline.shard_buffer_list_to_chunk_buffer_list(
-        read, res.buffers_read, chunk_bufferlists, want_to_reads);
-
-      bufferlist bl;
-      int r = ECUtil::decode(
-	read_pipeline.ec_impl,
-	want_to_reads,
-	chunk_bufferlists,
-	&bl);
-      if (r < 0) {
-        dout(10) << __func__ << " error on ECUtil::decode r=" << r << dendl;
-        res.r = r;
-        goto out;
-      }
-      bufferlist trimmed;
-      auto len = std::min(read.size, bl.length() - off);
-      dout(20) << __func__ << " bl.length()=" << bl.length()
-               << " len=" << len << " read.size=" << read.size
-               << " off=" << off << " read.offset=" << read.offset
-               << dendl;
-      trimmed.substr_of(bl, off, len);
-      result.insert(
-	read.offset, trimmed.length(), std::move(trimmed));
+    for (auto &&read: req.to_read) {
+      result.insert(read.offset, read.size,
+        std::move(res.buffers_read.get_ro_buffer(read.offset, read.size)));
     }
 out:
     dout(20) << __func__ << " calling complete_object with result="
              << result << dendl;
-    // FIXME: buffers_Read currently does not contain any buffer that was not
-    //        read.  The RMW path will cope with this for parity, but not
-    //        recovered buffers.  This is pretty inefficient and we should
-    //        not have this for the read path (we need a hint that this is an
-    //        RMW). Also, we should be able to decode the missing buffers
-    //        directly into buffers_read, although this is harder.
-    //        For now, we insert the result back into the buffer before passing
-    //        it to the completion function.
-    ECUtil::shard_extent_map_t shard_extent_map(&read_pipeline.sinfo, std::move(res.buffers_read));
-    shard_extent_map.insert_ro_extent_map(result);
-
-    status->complete_object(hoid, res.r, std::move(result), std::move(shard_extent_map));
+    status->complete_object(hoid, res.r, std::move(result), std::move(res.buffers_read));
     read_pipeline.kick_reads();
   }
 
@@ -684,28 +578,65 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct(
     return;
   }
 
+  map<hobject_t, read_request_t> for_read_op;
+  for (auto &&[hoid, to_read]: reads) {
+    map<int, extent_set> want_shard_reads;
+    get_want_to_read_shards(to_read, want_shard_reads);
+
+    read_request_t read_request(to_read, want_shard_reads, false);
+    int r = get_min_avail_to_read_shards(
+      hoid,
+      false,
+      fast_read,
+      read_request);
+    ceph_assert(r == 0);
+
+    int subchunk_size =
+      sinfo.get_chunk_size() / ec_impl->get_sub_chunk_count();
+    dout(20) << __func__
+             << " subchunk_size=" << subchunk_size
+             << " chunk_size=" << sinfo.get_chunk_size() << dendl;
+
+    for_read_op.insert(make_pair(hoid, read_request));
+  }
+
+  start_read_op(
+    CEPH_MSG_PRIO_DEFAULT,
+    for_read_op,
+    OpRequestRef(),
+    fast_read,
+    false,
+    std::make_unique<ClientReadCompleter>(*this, &(in_progress_client_reads.back())));
+}
+
+void ECCommon::ReadPipeline::objects_read_and_reconstruct_for_rmw(
+  const map<hobject_t, map<int, extent_set>> &to_read,
+  GenContextURef<ECCommon::ec_extents_t &&> &&func)
+{
+  in_progress_client_reads.emplace_back(to_read.size(), std::move(func));
+  if (!to_read.size()) {
+    kick_reads();
+    return;
+  }
+
   map<hobject_t, set<int>> obj_want_to_read;
   set<int> want_to_read;
 
   map<hobject_t, read_request_t> for_read_op;
-  for (auto &&[hoid, to_read]: reads) {
-    map<int, extent_set> want_shard_reads;
-
-    get_want_to_read_shards(to_read, want_shard_reads);
+  for (auto &&[hoid, shard_want_to_read]: to_read) {
 
     // This is required by the completion.  This currently only contains the
     // relevant shards. We may find this needs the actual relevant extents
     // within the shards, in which case a bigger refactor will be required.
-    for (auto &&[shard, _] : want_shard_reads) {
+    for (auto &&[shard, _] : shard_want_to_read) {
       want_to_read.insert(shard);
     }
 
-    read_request_t read_request(to_read, false);
+    read_request_t read_request(shard_want_to_read, false);
     int r = get_min_avail_to_read_shards(
       hoid,
-      want_shard_reads,
       false,
-      fast_read,
+      false,
       read_request);
     ceph_assert(r == 0);
 
@@ -721,13 +652,13 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct(
 
   start_read_op(
     CEPH_MSG_PRIO_DEFAULT,
-    obj_want_to_read,
     for_read_op,
     OpRequestRef(),
-    fast_read,
+    false,
     false,
     std::make_unique<ClientReadCompleter>(*this, &(in_progress_client_reads.back())));
 }
+
 
 
 int ECCommon::ReadPipeline::send_all_remaining_reads(
@@ -737,13 +668,14 @@ int ECCommon::ReadPipeline::send_all_remaining_reads(
   // (Note cuixf) If we need to read attrs and we read failed, try to read again.
   bool want_attrs =
     rop.to_read.find(hoid)->second.want_attrs &&
-    (!rop.complete[hoid].attrs || rop.complete[hoid].attrs->empty());
+    (!rop.complete.at(hoid).attrs || rop.complete.at(hoid).attrs->empty());
   if (want_attrs) {
     dout(10) << __func__ << " want attrs again" << dendl;
   }
 
-  read_request_t read_request(rop.to_read.find(hoid)->second.to_read, want_attrs);
-  int r = get_remaining_shards(hoid, rop.complete[hoid], read_request,
+  read_request_t &read_request = rop.to_read.at(hoid);
+  read_request.shard_reads = std::map<pg_shard_t, shard_read_t>();
+  int r = get_remaining_shards(hoid, rop.complete.at(hoid), read_request,
         rop.do_redundant_reads, want_attrs);
 
   if (r)
@@ -773,6 +705,8 @@ bool ECCommon::shard_read_t::operator==(const shard_read_t &other) const {
 
 bool ECCommon::read_request_t::operator==(const read_request_t &other) const {
   return to_read == other.to_read &&
+    flags == other.flags &&
+    shard_want_to_read == other.shard_want_to_read &&
     shard_reads == other.shard_reads &&
     want_attrs == other.want_attrs;
 }
@@ -815,6 +749,8 @@ bool ECCommon::RMWPipeline::try_state_to_reads()
   waiting_reads.push_back(*op);
 
   if (op->using_cache) {
+    /* FIXME: Cache currently invalidated on every transaction. So pointless
+     *        doing anything here.
     cache.open_write_pin(op->pin);
 
     extent_set empty;
@@ -844,6 +780,7 @@ bool ECCommon::RMWPipeline::try_state_to_reads()
 	op->pending_read[oid] = std::move(pending_read);
       }
     }
+    */
   } else {
     op->remote_read = op->plan.to_read;
   }

@@ -331,7 +331,7 @@ void ECBackend::RecoveryBackend::handle_recovery_push_reply(
 
 void ECBackend::RecoveryBackend::handle_recovery_read_complete(
   const hobject_t &hoid,
-  std::map<int, extent_map> &buffers_read,
+  ECUtil::shard_extent_map_t &buffers_read,
   std::optional<map<string, bufferlist, less<>> > attrs,
   RecoveryMessages *m)
 {
@@ -346,7 +346,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
     target[*i] = &(op.returned_data[*i]);
   }
   map<int, bufferlist> from;
-  for (auto &&[shard, emap] : buffers_read) {
+  for (auto &&[shard, emap] : buffers_read.get_extent_maps()) {
     auto range = emap.begin();
     from[shard].substr_of(range.get_val(), range.get_off(), range.get_len());
   }
@@ -432,14 +432,13 @@ struct RecoveryReadCompleter : ECCommon::ReadCompleter {
   void finish_single_request(
     const hobject_t &hoid,
     ECCommon::read_result_t &res,
-    list<ECCommon::ec_align_t> to_read,
-    set<int> wanted_to_read) override
+    ECCommon::read_request_t &req) override
   {
     if (!(res.r == 0 && res.errors.empty())) {
       backend._failed_push(hoid, res);
       return;
     }
-    ceph_assert(to_read.size() == 1);
+    ceph_assert(req.to_read.size() == 0);
     backend.handle_recovery_read_complete(
       hoid,
       res.buffers_read,
@@ -514,7 +513,6 @@ void ECBackend::RecoveryBackend::dispatch_recovery_messages(RecoveryMessages &m,
     return;
   read_pipeline.start_read_op(
     priority,
-    m.want_to_read,
     m.recovery_reads,
     OpRequestRef(),
     false,
@@ -560,15 +558,13 @@ void ECBackend::RecoveryBackend::continue_recovery_op(
 	encode(*(op.hinfo), op.xattrs[ECUtil::get_hinfo_key()]);
       }
 
-      list<ec_align_t> to_read;
-      to_read.emplace_back(op.recovery_progress.data_recovered_to, amount, 0);
-      read_request_t read_request(to_read, op.recovery_progress.first && !op.obc);
       std::map<int, extent_set> want_shard_reads;
       for (int w : want) {
 	want_shard_reads[w].insert(from, amount);
       }
+      read_request_t read_request(want_shard_reads, op.recovery_progress.first && !op.obc);
       int r = read_pipeline.get_min_avail_to_read_shards(
-        op.hoid, want_shard_reads, true, false, read_request);
+        op.hoid, true, false, read_request);
       if (r != 0) {
 	// we must have lost a recovery source
 	ceph_assert(!op.recovery_progress.first);
@@ -1180,6 +1176,7 @@ void ECBackend::handle_sub_read_reply(
     return;
   }
   ReadOp &rop = iter->second;
+
   for (auto &&[hoid, offset_buffer_map] : op.buffers_read) {
     ceph_assert(!op.errors.contains(hoid));	// If attribute error we better not have sent a buffer
     if (!rop.to_read.contains(hoid)) {
@@ -1188,9 +1185,9 @@ void ECBackend::handle_sub_read_reply(
       continue;
     }
 
-    auto &buffers_read = rop.complete[hoid].buffers_read;
+    auto &buffers_read = rop.complete.at(hoid).buffers_read;
     for (auto &&[offset, buffer_list] : offset_buffer_map) {
-      buffers_read[from.shard].insert(offset, buffer_list.length(), buffer_list);
+      buffers_read.insert_in_shard(from.shard, offset, buffer_list);
     }
   }
   for (auto i = op.attrs_read.begin();
@@ -1202,17 +1199,14 @@ void ECBackend::handle_sub_read_reply(
       dout(20) << __func__ << " to_read skipping" << dendl;
       continue;
     }
-    rop.complete[i->first].attrs.emplace();
-    (*(rop.complete[i->first].attrs)).swap(i->second);
+    rop.complete.at(i->first).attrs.emplace();
+    (*(rop.complete.at(i->first).attrs)).swap(i->second);
   }
-  for (auto i = op.errors.begin();
-       i != op.errors.end();
-       ++i) {
-    rop.complete[i->first].errors.insert(
-      make_pair(
-	from,
-	i->second));
-    dout(20) << __func__ << " shard=" << from << " error=" << i->second << dendl;
+  for (auto &&[hoid, err]:op.errors) {
+    auto &complete = rop.complete.at(hoid);
+    complete.errors.emplace(from, err);
+    complete.buffers_read.erase_shard(from.shard);
+    dout(20) << __func__ << " shard=" << from << " error=" << err << dendl;
   }
 
   map<pg_shard_t, set<ceph_tid_t> >::iterator siter =
@@ -1228,25 +1222,26 @@ void ECBackend::handle_sub_read_reply(
   // For redundant reads check for completion as each shard comes in,
   // or in a non-recovery read check for completion once all the shards read.
   if (rop.do_redundant_reads || rop.in_progress.empty()) {
-    for (map<hobject_t, read_result_t>::const_iterator iter =
-        rop.complete.begin();
-      iter != rop.complete.end();
-      ++iter) {
+    for ( auto &&[oid, read_result]: rop.complete) {
       set<int> have;
-      for ( auto&& [shard, _] : iter->second.buffers_read) {
+      for ( auto&& [shard, _] : read_result.buffers_read.get_extent_maps()) {
         have.insert(shard);
         dout(20) << __func__ << " have shard=" << shard << dendl;
       }
       map<int, vector<pair<int, int>>> dummy_minimum;
       int err;
-      if ((err = ec_impl->minimum_to_decode(rop.want_to_read[iter->first], have, &dummy_minimum)) < 0) {
+      set<int> want_to_read;
+      for (auto &&[shard, _]:rop.to_read.at(oid).shard_want_to_read) {
+        want_to_read.insert(shard);
+      }
+      if ((err = ec_impl->minimum_to_decode(want_to_read, have, &dummy_minimum)) < 0) {
 	dout(20) << __func__ << " minimum_to_decode failed" << dendl;
         if (rop.in_progress.empty()) {
 	  // If we don't have enough copies, try other pg_shard_ts if available.
 	  // During recovery there may be multiple osds with copies of the same shard,
 	  // so getting EIO from one may result in multiple passes through this code path.
 	  if (!rop.do_redundant_reads) {
-	    int r = read_pipeline.send_all_remaining_reads(iter->first, rop);
+	    int r = read_pipeline.send_all_remaining_reads(oid, rop);
 	    if (r == 0) {
 	      // We changed the rop's to_read and not incrementing is_complete
 	      need_resend = true;
@@ -1259,27 +1254,27 @@ void ECBackend::handle_sub_read_reply(
 	  // from different shards, so we'll return minimum_to_decode() error
 	  // (usually EIO) to reader.  It is likely an error here is due to a
 	  // damaged pg.
-	  rop.complete[iter->first].r = err;
+	  rop.complete.at(oid).r = err;
 	  ++is_complete;
 	}
       } else {
-        ceph_assert(rop.complete[iter->first].r == 0);
-	if (!rop.complete[iter->first].errors.empty()) {
+        ceph_assert(rop.complete.at(oid).r == 0);
+	if (!rop.complete.at(oid).errors.empty()) {
 	  if (cct->_conf->osd_read_ec_check_for_errors) {
 	    dout(10) << __func__ << ": Not ignoring errors, use one shard err=" << err << dendl;
-	    err = rop.complete[iter->first].errors.begin()->second;
-            rop.complete[iter->first].r = err;
+	    err = rop.complete.at(oid).errors.begin()->second;
+            rop.complete.at(oid).r = err;
 	  } else {
 	    get_parent()->clog_warn() << "Error(s) ignored for "
 				       << iter->first << " enough copies available";
 	    dout(10) << __func__ << " Error(s) ignored for " << iter->first
 		     << " enough copies available" << dendl;
-	    rop.complete[iter->first].errors.clear();
+	    rop.complete.at(oid).errors.clear();
 	  }
 	}
 	// avoid re-read for completed object as we may send remaining reads for uncopmpleted objects
-	rop.to_read.at(iter->first).shard_reads.clear();
-	rop.to_read.at(iter->first).want_attrs = false;
+	rop.to_read.at(oid).shard_reads.clear();
+	rop.to_read.at(oid).want_attrs = false;
 	++is_complete;
       }
     }
@@ -1610,6 +1605,14 @@ void ECBackend::objects_read_and_reconstruct(
 {
   return read_pipeline.objects_read_and_reconstruct(
     reads, fast_read, std::move(func));
+}
+
+void ECBackend::objects_read_and_reconstruct_for_rmw(
+  const map<hobject_t, map<int, extent_set>> &to_read,
+  GenContextURef<ECCommon::ec_extents_t &&> &&func)
+{
+  return read_pipeline.objects_read_and_reconstruct_for_rmw(
+    std::move(to_read), std::move(func));
 }
 
 void ECBackend::kick_reads() {
