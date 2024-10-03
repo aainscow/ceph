@@ -303,7 +303,7 @@ struct ECCommon {
     std::map<pg_shard_t, int> errors;
     std::optional<std::map<std::string, ceph::buffer::list, std::less<>> > attrs;
     ECUtil::shard_extent_map_t buffers_read;
-    read_result_t(ECUtil::stripe_info_t *sinfo) : r(0), buffers_read(sinfo) {}
+    read_result_t(const ECUtil::stripe_info_t *sinfo) : r(0), buffers_read(sinfo) {}
   };
 
   struct ReadCompleter {

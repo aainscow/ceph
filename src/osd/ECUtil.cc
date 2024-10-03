@@ -491,6 +491,12 @@ namespace ECUtil {
       int r = ecimpl->encode_chunks(shards, &chunk_buffers);
       if (r) return r;
 
+      /* NEEDS REVIEW:  The following calculates the new hinfo CRCs. This is
+       *                 currently considering ALL the buffers, including the
+       *                 parity buffers.  Is this really right?
+       *                 Also, does this really belong here? Its convenient
+       *                 because have just built the buffer list...
+       */
       if (ro_start >= before_ro_size) {
         ceph_assert(ro_start == before_ro_size);
         hinfo->append(
@@ -504,6 +510,7 @@ namespace ECUtil {
   void shard_extent_map_t::decode(ErasureCodeInterfaceRef& ecimpl,
     map<int, extent_set> want)
   {
+    bool decoded = false;
     for (auto &&[shard, eset]: want) {
       /* We are assuming here that a shard that has been read does not need
        * to be decoding. The ECBackend::handle_sub_read_reply code will erase
@@ -511,6 +518,8 @@ namespace ECUtil {
        */
       if (extent_maps.contains(shard))
         continue;
+
+      decoded = true;
 
       for (auto [offset, length]: eset) {
         /* Here we recover each missing shard independently. There may be
@@ -522,11 +531,21 @@ namespace ECUtil {
         std::map<int, bufferlist> decoded;
 
         want_to_read.insert(shard);
-        ecimpl->decode_chunks(want_to_read, slice(offset, length), &decoded);
+        /* Call the decode function.  This is not particularly efficient, as it
+         * creates buffers for every shard, even if they are not needed.
+         *
+         * Currently, some plugins rely on this behaviour.
+         *
+         * The chunk size passed in is only used in the clay encoding.
+         */
+        ecimpl->decode(want_to_read, slice(offset, length), &decoded, sinfo->get_chunk_size());
 
-        insert_in_shard(shard, offset, decoded[shard]);
+        ceph_assert(decoded[shard].length() == length);
+        insert_in_shard(shard, offset, decoded[shard], ro_start, ro_end);
       }
     }
+
+    if (decoded) compute_ro_range();
   }
 
   std::map<int, bufferlist> shard_extent_map_t::slice(int offset, int length)
@@ -544,11 +563,22 @@ namespace ECUtil {
   }
 
   void shard_extent_map_t::get_buffer(int shard, uint64_t offset, uint64_t length,
-      buffer::list &append_to)
+                                      buffer::list &append_to, bool zero_pad)
   {
     ceph_assert(extent_maps.contains(shard));
     auto &&[range, _] = extent_maps.at(shard).get_containing_range(offset, length);
-    ceph_assert(range != extent_maps.at(shard).end() && range.contains(offset, length));
+
+    bool contained = range != extent_maps.at(shard).end() && range.contains(offset, length);
+    if (!contained) {
+      extent_map padded;
+      bufferlist zeros;
+      zeros.append_zero(length);
+      padded.insert(offset, length, zeros);
+      extent_map intersect = extent_maps.at(shard).intersect(offset, length);
+      padded.insert(intersect);
+      ceph_assert(zero_pad);
+      return append_to.append(padded.begin().get_val());
+    }
 
     if (range.get_len() == length) {
       append_to.append(range.get_val());
@@ -582,6 +612,7 @@ namespace ECUtil {
   {
     bufferlist bl;
     uint64_t chunk_size = sinfo->get_chunk_size();
+    uint64_t stripe_size = sinfo->get_stripe_width();
     int data_chunk_count = sinfo->get_data_chunk_count();
 
     pair read_pair(ro_offset, ro_length);
@@ -596,9 +627,10 @@ namespace ECUtil {
       if (raw_shard == data_chunk_count) raw_shard = 0;
 
       uint64_t sub_chunk_offset = std::max(chunk_offset, ro_offset);
+      uint64_t sub_chunk_shard_offset = (chunk_offset / stripe_size) * chunk_size + sub_chunk_offset - chunk_offset;
       uint64_t sub_chunk_len = std::min(ro_offset + ro_length, chunk_offset + chunk_size) - sub_chunk_offset;
 
-      get_buffer(sinfo->get_shard(raw_shard), sub_chunk_offset, sub_chunk_len, bl);
+      get_buffer(sinfo->get_shard(raw_shard), sub_chunk_shard_offset, sub_chunk_len, bl, false);
     }
     return bl;
   }

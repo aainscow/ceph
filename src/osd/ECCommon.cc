@@ -336,8 +336,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     shard_read.extents.union_of(extra_extents);
 
 
-    if (shard_index < (int)read_request.shard_want_to_read.size() &&
-        read_request.shard_want_to_read.contains(shard_index)) {
+    if (read_request.shard_want_to_read.contains(shard_index)) {
       shard_read.extents.union_of(read_request.shard_want_to_read.at(shard_index));
     }
 
@@ -620,17 +619,9 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct_for_rmw(
   }
 
   map<hobject_t, set<int>> obj_want_to_read;
-  set<int> want_to_read;
 
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&[hoid, shard_want_to_read]: to_read) {
-
-    // This is required by the completion.  This currently only contains the
-    // relevant shards. We may find this needs the actual relevant extents
-    // within the shards, in which case a bigger refactor will be required.
-    for (auto &&[shard, _] : shard_want_to_read) {
-      want_to_read.insert(shard);
-    }
 
     read_request_t read_request(shard_want_to_read, false);
     int r = get_min_avail_to_read_shards(
@@ -647,7 +638,6 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct_for_rmw(
              << " chunk_size=" << sinfo.get_chunk_size() << dendl;
 
     for_read_op.insert(make_pair(hoid, read_request));
-    obj_want_to_read.insert(make_pair(hoid, want_to_read));
   }
 
   start_read_op(
@@ -748,39 +738,39 @@ bool ECCommon::RMWPipeline::try_state_to_reads()
   waiting_state.pop_front();
   waiting_reads.push_back(*op);
 
+  /* FIXME: Cache currently invalidated on every transaction. So pointless
+   *        doing anything here. */
+  op->using_cache = false;
   if (op->using_cache) {
-    /* FIXME: Cache currently invalidated on every transaction. So pointless
-     *        doing anything here.
-    cache.open_write_pin(op->pin);
-
-    extent_set empty;
-    for (auto && [oid, to_write_plan] : op->plan.will_write) {
-      auto to_read_plan_iter = op->plan.to_read.find(oid);
-      const extent_set &to_read_plan =
-	to_read_plan_iter == op->plan.to_read.end() ?
-	empty :
-	to_read_plan_iter->second;
-
-      extent_set to_rmw_plan;
-      to_rmw_plan.union_of(to_write_plan, to_read_plan);
-      dout(0) << __func__ << " BILL: wp: " << to_write_plan << " rp: "<< to_read_plan << " rmw_plan: " << to_rmw_plan << dendl;
-      extent_set remote_read = cache.reserve_extents_for_rmw(
-	oid,
-	op->pin,
-	to_rmw_plan,
-	to_read_plan);
-
-      extent_set pending_read = to_read_plan;
-      pending_read.subtract(remote_read);
-
-      if (!remote_read.empty()) {
-	op->remote_read[oid] = std::move(remote_read);
-      }
-      if (!pending_read.empty()) {
-	op->pending_read[oid] = std::move(pending_read);
-      }
-    }
-    */
+ //    cache.open_write_pin(op->pin);
+ //
+ //    extent_set empty;
+ //    for (auto && [oid, to_write_plan] : op->plan.will_write) {
+ //      auto to_read_plan_iter = op->plan.to_read.find(oid);
+ //      const extent_set &to_read_plan =
+ //        to_read_plan_iter == op->plan.to_read.end() ?
+ //        empty :
+ //        to_read_plan_iter->second;
+ //
+ //      extent_set to_rmw_plan;
+ //      to_rmw_plan.union_of(to_write_plan, to_read_plan);
+ //      dout(0) << __func__ << " BILL: wp: " << to_write_plan << " rp: "<< to_read_plan << " rmw_plan: " << to_rmw_plan << dendl;
+ //      extent_set remote_read = cache.reserve_extents_for_rmw(
+ //       oid,
+ //       op->pin,
+ //       to_rmw_plan,
+ //       to_read_plan);
+ //
+ //      extent_set pending_read = to_read_plan;
+ //      pending_read.subtract(remote_read);
+ //
+ //      if (!remote_read.empty()) {
+ //       op->remote_read[oid] = std::move(remote_read);
+ //      }
+ //      if (!pending_read.empty()) {
+ //       op->pending_read[oid] = std::move(pending_read);
+ //      }
+ //    }
   } else {
     op->remote_read = op->plan.to_read;
   }

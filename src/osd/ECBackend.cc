@@ -1185,22 +1185,24 @@ void ECBackend::handle_sub_read_reply(
       continue;
     }
 
+    if (!rop.complete.contains(hoid)) {
+      rop.complete.emplace(hoid, &sinfo);
+    }
+
     auto &buffers_read = rop.complete.at(hoid).buffers_read;
     for (auto &&[offset, buffer_list] : offset_buffer_map) {
       buffers_read.insert_in_shard(from.shard, offset, buffer_list);
     }
   }
-  for (auto i = op.attrs_read.begin();
-       i != op.attrs_read.end();
-       ++i) {
-    ceph_assert(!op.errors.count(i->first));	// if read error better not have sent an attribute
-    if (!rop.to_read.count(i->first)) {
+  for (auto &&[hoid, attr] : op.attrs_read) {
+    ceph_assert(!op.errors.count(hoid));	// if read error better not have sent an attribute
+    if (!rop.to_read.count(hoid)) {
       // We canceled this read! @see filter_read_op
       dout(20) << __func__ << " to_read skipping" << dendl;
       continue;
     }
-    rop.complete.at(i->first).attrs.emplace();
-    (*(rop.complete.at(i->first).attrs)).swap(i->second);
+    rop.complete.at(hoid).attrs.emplace();
+    (*(rop.complete.at(hoid).attrs)).swap(attr);
   }
   for (auto &&[hoid, err]:op.errors) {
     auto &complete = rop.complete.at(hoid);
@@ -1445,7 +1447,11 @@ void ECBackend::submit_transaction(
   if (client_op) {
     op->trace = client_op->pg_trace;
   }
-  op->plan = op->get_write_plan(
+  op->plan = op->
+
+
+
+  get_write_plan(
     sinfo,
     *(op->t),
     [&](const hobject_t &i) {

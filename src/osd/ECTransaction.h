@@ -26,9 +26,15 @@ namespace ECTransaction {
     bool invalidates_cache = false; // Yes, both are possible
     std::map<hobject_t, std::map<int, extent_set>> to_read;
     std::map<hobject_t, std::map<int, extent_set>> will_write;
-    std::map<hobject_t, std::map<int, extent_set>> to_rmw;
 
     std::map<hobject_t,ECUtil::HashInfoRef> hash_infos;
+
+    uint64_t generate(
+      hobject_t obj,
+      uint64_t projected_size,
+      const PGTransaction::ObjectOperation &op,
+      const ECUtil::stripe_info_t &sinfo,
+      DoutPrefixProvider *dpp);
   };
 
   template <typename F>
@@ -63,75 +69,12 @@ namespace ECTransaction {
 	  plan.hash_infos[source] = shinfo;
 	}
 
-        extent_set raw_write_set;
+        projected_size = plan.generate(obj, projected_size, op, sinfo, dpp);
 
-        /* If we are truncating, then we need to over-write the new end to
-         * the end of that stripe with zeros. Everything after that will get
-         * truncated to the shard objects. */
-	if (op.truncate &&
-	    op.truncate->first < projected_size) {
+        hinfo->set_projected_total_logical_size(
+          sinfo,
+          projected_size);
 
-	  uint64_t new_projected_size = std::min(
-	    sinfo.logical_to_next_stripe_offset(op.truncate->first),
-	    projected_size);
-
-	  raw_write_set.insert(op.truncate->first, new_projected_size);
-	  projected_size = new_projected_size;
-	}
-
-	for (auto &&extent: op.buffer_updates) {
-	  using BufferUpdate = PGTransaction::ObjectOperation::BufferUpdate;
-	  if (boost::get<BufferUpdate::CloneRange>(&(extent.get_val()))) {
-	    ceph_assert(
-	      0 ==
-	      "CloneRange is not allowed, do_op should have returned ENOTSUPP");
-	  }
-	  raw_write_set.insert(extent.get_off(), extent.get_len());
-	}
-
-        extent_set empty;
-	for (const auto& [offset, length] : raw_write_set) {
-	  extent_set extent_superset;
-          auto &will_write = plan.will_write[obj];
-          auto &to_read = plan.to_read[obj];
-	  auto &to_rmw = plan.to_rmw[obj];
-          sinfo.ro_range_to_shard_extent_set(offset, length, will_write, extent_superset);
-
-          for (int raw_shard = 0; raw_shard< sinfo.get_k_plus_m(); raw_shard++) {
-            int shard = sinfo.get_shard(raw_shard);
-            extent_set _to_read;
-            if (raw_shard < sinfo.get_m()) {
-              _to_read.insert(extent_superset);
-              _to_read.subtract(will_write[shard]);
-
-              if (!_to_read.empty())
-                to_read.emplace(shard, _to_read);
-
-            } else {
-              will_write[shard].insert(extent_superset);
-            }
-
-            to_rmw[shard].union_of(
-              to_read.contains(shard)?to_read.at(shard):empty,
-              will_write.contains(shard)?will_write.at(shard):empty);
-          }
-	}
-
-	ldpp_dout(dpp, 20) << __func__ << ": " << obj
-			   << " projected size "
-			   << projected_size
-			   << dendl;
-	hinfo->set_projected_total_logical_size(
-	  sinfo,
-	  projected_size);
-
-	/* validate post conditions:
-	 * to_read should have an entry for `obj` if it isn't empty
-	 * and if we are reading from `obj`, we can't be renaming or
-	 * cloning it */
-	ceph_assert(plan.to_read.count(obj) == 0 ||
-	       (!plan.to_read.at(obj).empty() &&
-		!i.second.has_source()));
       });
     return plan;
   }

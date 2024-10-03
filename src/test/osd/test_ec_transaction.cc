@@ -26,7 +26,7 @@ struct mydpp : public DoutPrefixProvider {
 
 #define dout_context g_ceph_context
 
-TEST(ectransaction, two_writes_separated)
+TEST(ectransaction, two_writes_separated_append)
 {
   hobject_t h;
   PGTransactionUPtr t(new PGTransaction);
@@ -50,6 +50,35 @@ TEST(ectransaction, two_writes_separated)
   generic_derr << "will_write " << plan.will_write << dendl;
 
   ASSERT_EQ(0u, plan.to_read.size());
+  ASSERT_EQ(1u, plan.will_write.size());
+}
+
+TEST(ectransaction, two_writes_separated_misaligned_overwrite)
+{
+  hobject_t h;
+  PGTransactionUPtr t(new PGTransaction);
+  bufferlist a, b;
+  t->create(h);
+  a.append_zero(565760);
+  t->write(h, 0, a.length(), a, 0);
+  b.append_zero(2437120);
+  t->write(h, 669856, b.length(), b, 0);
+
+  ECUtil::stripe_info_t sinfo(2, 8192, 0, std::vector<int>(0));
+  auto plan = ECTransaction::get_write_plan(
+    sinfo,
+    *t,
+    [&](const hobject_t &i) {
+      ECUtil::HashInfoRef ref(new ECUtil::HashInfo(1));
+      ref->set_total_chunk_size_clear_hash(1556480);
+      ref->set_projected_total_logical_size(sinfo, 3112960);
+      return ref;
+    },
+    &dpp);
+  generic_derr << "to_read " << plan.to_read << dendl;
+  generic_derr << "will_write " << plan.will_write << dendl;
+
+  ASSERT_EQ(1u, plan.to_read.size());
   ASSERT_EQ(1u, plan.will_write.size());
 }
 
@@ -121,4 +150,43 @@ TEST(ectransaction, many_writes)
 
   ASSERT_EQ(0u, plan.to_read.size());
   ASSERT_EQ(1u, plan.will_write.size());
+}
+
+TEST(ectransaction, two_misaligned_writes)
+{
+  hobject_t h;
+  PGTransactionUPtr t(new PGTransaction);
+  bufferlist a, b;
+  a.append_zero(2048);
+  b.append_zero(2048);
+  t->create(h);
+
+  ECUtil::stripe_info_t sinfo(2, 8192, 2, std::vector<int>(0));
+  t->write(h, 8192, a.length(), a, 0);
+  t->write(h, 4096, a.length(), a, 0);
+
+  auto plan = ECTransaction::get_write_plan(
+    sinfo,
+    *t,
+    [&](const hobject_t &i) {
+      ECUtil::HashInfoRef ref(new ECUtil::HashInfo(1));
+      ref->set_total_chunk_size_clear_hash(8192);
+      ref->set_projected_total_logical_size(sinfo, 8192*2);
+      return ref;
+    },
+    &dpp);
+  generic_derr << "to_read " << plan.to_read << dendl;
+  generic_derr << "will_write " << plan.will_write << dendl;
+
+  std::map<hobject_t, std::map<int, extent_set>> ref_to_read;
+  ref_to_read[h][0].insert(0, 8192);
+  ref_to_read[h][1].insert(0, 8192);
+  ASSERT_EQ(ref_to_read, plan.to_read);
+
+  std::map<hobject_t, std::map<int, extent_set>> ref_will_write;
+  ref_will_write[h][0].insert(4096, 4096);
+  ref_will_write[h][1].insert(0, 4096);
+  ref_will_write[h][2].insert(0, 8192);
+  ref_will_write[h][3].insert(0, 8192);
+  ASSERT_EQ(ref_will_write, plan.will_write);
 }

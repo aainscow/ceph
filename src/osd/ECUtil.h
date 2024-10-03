@@ -424,7 +424,7 @@ public:
   extent_set get_extent_superset() const;
   int encode(ErasureCodeInterfaceRef& ecimpl, HashInfoRef &hinfo, uint64_t before_ro_size);
   void decode(ErasureCodeInterfaceRef& ecimpl, std::map<int, extent_set> want);
-  void get_buffer(int shard, uint64_t offset, uint64_t length, buffer::list &append_to);
+  void get_buffer(int shard, uint64_t offset, uint64_t length, buffer::list &append_to, bool zero_pad);
   bufferlist get_ro_buffer(uint64_t ro_offset, uint64_t ro_length);
   std::map <int, extent_set> get_extent_set_map();
   void insert_parity_buffers();
