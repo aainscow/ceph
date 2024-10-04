@@ -219,15 +219,14 @@ public:
   }
 };
 
-
-static uint64_t page_mask() {
+inline uint64_t page_mask() {
   static const uint64_t page_mask = ((uint64_t)CEPH_PAGE_SIZE) - 1;
   return page_mask;
 }
-static uint64_t align_page_next(uint64_t val) {
+inline uint64_t align_page_next(uint64_t val) {
   return (val + page_mask()) & ~page_mask();
 }
-static uint64_t align_page_prev(uint64_t val) {
+inline uint64_t align_page_prev(uint64_t val) {
   return val & ~page_mask();
 }
 

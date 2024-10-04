@@ -1205,6 +1205,8 @@ void ECBackend::handle_sub_read_reply(
     (*(rop.complete.at(hoid).attrs)).swap(attr);
   }
   for (auto &&[hoid, err]:op.errors) {
+    // FIXME!
+    ceph_assert(false);
     auto &complete = rop.complete.at(hoid);
     complete.errors.emplace(from, err);
     complete.buffers_read.erase_shard(from.shard);
@@ -1237,7 +1239,10 @@ void ECBackend::handle_sub_read_reply(
         want_to_read.insert(shard);
       }
       if ((err = ec_impl->minimum_to_decode(want_to_read, have, &dummy_minimum)) < 0) {
+        //FIXME: Probably don't really want to explode.
+        ceph_assert(false);
 	dout(20) << __func__ << " minimum_to_decode failed" << dendl;
+
         if (rop.in_progress.empty()) {
 	  // If we don't have enough copies, try other pg_shard_ts if available.
 	  // During recovery there may be multiple osds with copies of the same shard,
@@ -1548,6 +1553,8 @@ void ECBackend::objects_read_async(
 
       int r = 0;
       for (auto &&read: to_read) {
+        //FAIL REVIEW
+        ceph_assert(got.err == 0);
 	if (got.err < 0) {
 	  // error handling
 	  if (read.second.second) {

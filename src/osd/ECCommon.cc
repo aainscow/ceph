@@ -535,6 +535,9 @@ struct ClientReadCompleter : ECCommon::ReadCompleter {
     dout(20) << __func__ << " completing hoid=" << hoid
              << " res=" << res << " req="  << req << dendl;
     extent_map result;
+
+    //FIXME
+    ceph_assert(res.r == 0);
     if (res.r != 0)
       goto out;
     ceph_assert(res.errors.empty());
