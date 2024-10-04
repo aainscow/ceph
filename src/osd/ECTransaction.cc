@@ -94,127 +94,130 @@ uint64_t ECTransaction::WritePlan::generate(
   const ECUtil::stripe_info_t &sinfo,
   DoutPrefixProvider *dpp)
 {
-    extent_set ro_writes;
+  extent_set ro_writes;
 
-    /* If we are truncating, then we need to over-write the new end to
-     * the end of that stripe with zeros. Everything after that will get
-     * truncated to the shard objects. */
-    if (op.truncate &&
-	op.truncate->first < projected_size) {
+  /* If we are truncating, then we need to over-write the new end to
+   * the end of that page with zeros. Everything after that will get
+   * truncated to the shard objects. */
+  if (op.truncate &&
+      op.truncate->first < projected_size) {
 
-      uint64_t new_projected_size = std::min(
-	sinfo.logical_to_next_stripe_offset(op.truncate->first),
-	projected_size);
+    uint64_t new_projected_size = std::min(
+      ECUtil::align_page_next(op.truncate->first),
+      projected_size);
 
-      ro_writes.insert(op.truncate->first, new_projected_size);
-      projected_size = new_projected_size;
+    ro_writes.insert(op.truncate->first, new_projected_size);
+    projected_size = new_projected_size;
+  }
+
+  for (auto &&extent: op.buffer_updates) {
+    using BufferUpdate = PGTransaction::ObjectOperation::BufferUpdate;
+    if (boost::get<BufferUpdate::CloneRange>(&(extent.get_val()))) {
+      ceph_assert(
+	0 ==
+	"CloneRange is not allowed, do_op should have returned ENOTSUPP");
+    }
+    uint64_t start = extent.get_off();
+    uint64_t end = start + extent.get_len();
+
+    if (end > projected_size) {
+      // This is an append. round up to a full page.
+      end = sinfo.logical_to_next_stripe_offset(end);
     }
 
-    for (auto &&extent: op.buffer_updates) {
-      using BufferUpdate = PGTransaction::ObjectOperation::BufferUpdate;
-      if (boost::get<BufferUpdate::CloneRange>(&(extent.get_val()))) {
-	ceph_assert(
-	  0 ==
-	  "CloneRange is not allowed, do_op should have returned ENOTSUPP");
+    if(start > projected_size) {
+      start = projected_size;
+    }
+
+    ro_writes.insert(start, end - start);
+  }
+
+  auto &write = will_write[obj];
+  extent_set outter_extent_superset;
+
+  std::optional<std::map<int, extent_set>> inner;
+  for (const auto& [ro_off, ro_len] : ro_writes) {
+    /* Here, we calculate the "inner" and "outer" extent sets. The inner
+     * represents the complete pages read. The outer represents the rounded
+     * up/down pages. Clearly if the IO is entirely aligned, then the inner
+     * and outer sets are the same and we optimise this by avoiding
+     * calculating the inner in this case.
+     *
+     * This is useful because partially written pages must be fully read
+     * from the backend as part of the RMW.
+     */
+    uint64_t raw_end = ro_off + ro_len;
+    uint64_t outter_off = ECUtil::align_page_prev(ro_off);
+    uint64_t outter_len = ECUtil::align_page_next(raw_end) - outter_off;
+    uint64_t inner_off = ECUtil::align_page_next(ro_off);
+    uint64_t inner_len = ECUtil::align_page_prev(raw_end) - inner_off;
+
+    if (inner || outter_off != inner_off || outter_len != inner_len) {
+      if (!inner) inner = std::map(write);
+      sinfo.ro_range_to_shard_extent_set(inner_off,inner_len, *inner);
+    }
+
+    // Will write is expanded to page offsets.
+    sinfo.ro_range_to_shard_extent_set(outter_off,outter_len,
+      write, outter_extent_superset);
+
+    projected_size = std::max(outter_off + outter_len, projected_size);
+  }
+  std::map<int, extent_set> &small_set = inner?*inner:write;
+
+  // std::map<int, extent_set> object_limit;
+  // sinfo.ro_range_to_shard_extent_set(0,projected_size, *inner);
+
+  /* Construct the to read on the stack, to avoid having to insert and
+   * erase into maps */
+  std::map<int, extent_set> reads;
+  for (int raw_shard = 0; raw_shard< sinfo.get_k_plus_m(); raw_shard++) {
+    int shard = sinfo.get_shard(raw_shard);
+    extent_set _to_read;
+
+    if (raw_shard < sinfo.get_k()) {
+      _to_read.insert(outter_extent_superset);
+
+      if (write.contains(shard)) {
+        _to_read.insert(write.at(shard));
       }
-      uint64_t start = extent.get_off();
-      uint64_t end = start + extent.get_len();
 
-      if (end > projected_size) {
-        // This is an append. round up to a full stripe.
-	// FIXME: We want this to be a page, not a stripe in the future.
-	end = sinfo.logical_to_next_stripe_offset(end);
+      if (small_set.contains(shard)) {
+        extent_set intersection;
+        // FIXME: A subtraction should be sufficient on its own. However,
+        //        there is a limitation in interval_set.erase when
+        //        erasing a larger extent from a smaller one.
+        intersection.intersection_of(_to_read,small_set.at(shard));
+        _to_read.subtract(intersection);
       }
 
-      if(start > projected_size) {
-	start = projected_size;
+      if (!_to_read.empty()) {
+        reads.emplace(shard, std::move(_to_read));
       }
-
-      ro_writes.insert(start, end - start);
+    } else {
+      write[shard].insert(outter_extent_superset);
     }
+  }
 
-    std::optional<std::map<int, extent_set>> inner;
-    auto &write = will_write[obj];
-    extent_set big_extent_superset;
+  // Do not do a read if there is nothing to read!
+  if (!reads.empty()) {
+     to_read.emplace(obj, std::move(reads));
+  }
 
-    for (const auto& [ro_off, ro_len] : ro_writes) {
-      static const uint64_t round_mask = ((uint64_t)CEPH_PAGE_SIZE) - 1;
-      /* Here, we calculate the "inner" and "outer" extent sets. The inner
-       * represents the complete pages read. The outer represents the rounded
-       * up/down pages. Clearly if the IO is entirely aligned, then the inner
-       * and outer sets are the same and we optimise this by avoiding
-       * calculating the inner in this case.
-       *
-       * This is useful because partially written pages must be fully read
-       * from the backend as part of the RMW.
-       */
-      uint64_t raw_end = ro_off + ro_len;
-      uint64_t outter_off = ro_off & ~round_mask;
-      uint64_t outter_len = ((raw_end + round_mask) & ~round_mask) - outter_off;
-      uint64_t inner_off = (ro_off + round_mask) & ~round_mask;
-      uint64_t inner_len = (raw_end & ~round_mask) - inner_off;
+  ldpp_dout(dpp, 20) << __func__ << ": " << obj
+		     << " projected_size="
+		     << projected_size
+                     << " plan=" << this
+		     << dendl;
 
-      if (inner || outter_off != inner_off || outter_len != inner_len) {
-        if (!inner) inner = std::map(write);
-        sinfo.ro_range_to_shard_extent_set(inner_off,inner_len, *inner);
-      }
-
-      // Will write is expanded to page offsets.
-      sinfo.ro_range_to_shard_extent_set(outter_off,outter_len,
-        write, big_extent_superset);
-    }
-    std::map<int, extent_set> &small_set = inner?*inner:write;
-
-    /* Construct the to read on the stack, to avoid having to insert and
-     * erase into maps */
-    std::map<int, extent_set> reads;
-    for (int raw_shard = 0; raw_shard< sinfo.get_k_plus_m(); raw_shard++) {
-      int shard = sinfo.get_shard(raw_shard);
-      extent_set _to_read;
-
-      if (raw_shard < sinfo.get_k()) {
-        _to_read.insert(big_extent_superset);
-
-        if (write.contains(shard)) {
-          _to_read.insert(write.at(shard));
-        }
-
-        if (small_set.contains(shard)) {
-          extent_set intersection;
-          // FIXME: A subtraction should be sufficient on its own. However,
-          //        there is a limitation in interval_set.erase when
-          //        erasing a larger extent from a smaller one.
-          intersection.intersection_of(_to_read,small_set.at(shard));
-          _to_read.subtract(intersection);
-        }
-
-        if (!_to_read.empty()) {
-          reads.emplace(shard, std::move(_to_read));
-        }
-      } else {
-        write[shard].insert(big_extent_superset);
-      }
-    }
-
-    // Do not do a read if there is nothing to read!
-    if (!reads.empty()) {
-       to_read.emplace(obj, std::move(reads));
-    }
-
-    ldpp_dout(dpp, 20) << __func__ << ": " << obj
-		       << " projected_size="
-		       << projected_size
-                       << " plan=" << this
-		       << dendl;
-
-    /* validate post conditions:
-     * to_read should have an entry for `obj` if it isn't empty
-     * and if we are reading from `obj`, we can't be renaming or
-     * cloning it */
-    if (to_read.contains(obj)) {
-      ceph_assert(!to_read.at(obj).empty());
-      ceph_assert(!op.has_source());
-    }
+  /* validate post conditions:
+   * to_read should have an entry for `obj` if it isn't empty
+   * and if we are reading from `obj`, we can't be renaming or
+   * cloning it */
+  if (to_read.contains(obj)) {
+    ceph_assert(!to_read.at(obj).empty());
+    ceph_assert(!op.has_source());
+  }
 
   return projected_size;
 }

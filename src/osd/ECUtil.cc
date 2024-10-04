@@ -445,14 +445,12 @@ namespace ECUtil {
      */
     for (int i=sinfo->get_k(); i<sinfo->get_k_plus_m(); i++) {
       int shard = sinfo->get_shard(i);
-      if (!extent_maps.contains(shard)) {
-        for (auto &&[offset, length] : encode_set) {
-          std::set<int> shards;
-          std::map<int, buffer::list> chunk_buffers;
-          bufferlist bl(length);
-          bl.push_back(buffer::create_aligned(length, SIMD_ALIGN));
-          extent_maps[shard].insert(offset, length, bl);
-        }
+      for (auto &&[offset, length] : encode_set) {
+        std::set<int> shards;
+        std::map<int, buffer::list> chunk_buffers;
+        bufferlist bl(length);
+        bl.push_back(buffer::create_aligned(length, SIMD_ALIGN));
+        extent_maps[shard].insert(offset, length, bl);
       }
     }
   }
@@ -773,5 +771,3 @@ const string &ECUtil::get_hinfo_key()
 {
   return HINFO_KEY;
 }
-
-
