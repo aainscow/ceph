@@ -579,7 +579,10 @@ namespace ECUtil {
     }
 
     if (range.get_len() == length) {
-      append_to.append(range.get_val());
+      buffer::list bl = range.get_val();
+      // This should be asserted on extent map insertion.
+      ceph_assert(bl.length() == length);
+      append_to.append(bl);
     } else {
       buffer::list bl;
       bl.substr_of(range.get_val(), offset - range.get_off(), length);
