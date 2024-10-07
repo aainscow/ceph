@@ -5386,6 +5386,8 @@ struct FillInVerifyExtent : public Context {
 	  *rval = -EIO;
 	  *r = 0;
 	}
+        // FIXME
+        ceph_assert(false);
       }
     }
   }
