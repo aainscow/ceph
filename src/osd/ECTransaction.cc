@@ -75,7 +75,11 @@ static void encode_and_write(
       for (auto &&[offset, len]: to_write_eset) {
 	buffer::list bl;
 	shard_extent_map.get_buffer(shard_id, offset, len, bl, false);
-	t.write(
+        ldpp_dout(dpp, 0) << __func__ << "ALEX: oid: " << oid
+                             << " write: [" << offset << "~" << len << "] "
+                             << " crc: " << bl.crc32c(-1)
+                             << dendl;
+        t.write(
 	  coll_t(spg_t(pgid, shard_id)),
 	  ghobject_t(oid, ghobject_t::NO_GEN, shard_id),
 	  sinfo.logical_to_prev_chunk_offset(offset),
@@ -204,10 +208,10 @@ uint64_t ECTransaction::WritePlan::generate(
      to_read.emplace(obj, std::move(reads));
   }
 
-  ldpp_dout(dpp, 20) << __func__ << ": " << obj
+  ldpp_dout(dpp, 0) << __func__ << ": ALEX: " << obj
 		     << " projected_size="
 		     << projected_size
-                     << " plan=" << this
+                     << " plan=" << *this
 		     << dendl;
 
   /* validate post conditions:
@@ -791,4 +795,13 @@ void ECTransaction::generate_transactions(
       populated with buffers.
       */
     });
+}
+
+std::ostream& ECTransaction::operator<<(std::ostream& lhs, const ECTransaction::WritePlan& rhs)
+{
+  return lhs << " { invalidate_caches : " << rhs.invalidates_cache
+      << ", to_read : " << rhs.to_read
+      << ", will_write : " << rhs.will_write
+      << ", hash_infos : " << rhs.hash_infos
+      << "}";
 }

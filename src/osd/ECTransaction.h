@@ -36,6 +36,7 @@ namespace ECTransaction {
       const ECUtil::stripe_info_t &sinfo,
       DoutPrefixProvider *dpp);
   };
+  std::ostream& operator<<(std::ostream& lhs, const ECTransaction::WritePlan& rhs);
 
   template <typename F>
   WritePlan get_write_plan(
