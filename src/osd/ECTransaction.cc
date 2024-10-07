@@ -527,6 +527,9 @@ void ECTransaction::generate_transactions(
       if (pextiter != partial_extents.end()) {
 	to_write = pextiter->second;
       }
+      //FIXME: Do we need this?
+      ldpp_dout(dpp, 0) << "ALEX: generate_transactions: to_write base. "
+         << to_write << dendl;
 
       vector<pair<uint64_t, uint64_t>> rollback_extents;
       const uint64_t orig_size = hinfo->get_total_logical_size(sinfo);
@@ -543,14 +546,22 @@ void ECTransaction::generate_transactions(
 	                   << new_size << dendl;
 	if (new_size != op.truncate->first) {
 	  // 0 the unaligned part
+	  // FIXME: Remove ALEX and set to 20
 	  to_write.append_zeros_to_ro_offset(new_size);
 	  append_after = sinfo.logical_to_prev_stripe_offset(
 	    op.truncate->first);
+	  ldpp_dout(dpp, 0) << "ALEX: generate_transactions: append zeros to end of stripe. "
+             << to_write << " " << append_after
+             << dendl;
 	}
 	else {
 	  append_after = new_size;
 	}
+
 	to_write.erase_after_ro_offset(new_size);
+        ldpp_dout(dpp, 0) << "ALEX: generate_transactions: erase_after_ro_offset "
+         << to_write << " " << new_size
+         << dendl;
 
 	if (entry && !op.is_fresh_object()) {
 	  uint64_t restore_from = sinfo.logical_to_prev_chunk_offset(
@@ -646,12 +657,13 @@ void ECTransaction::generate_transactions(
 	  new_size = end;
 
         // FIXME: Remove CRC, remove ALEX, set to 20
-        ldpp_dout(dpp, 0) << "ALEX: generate_transactions: inserting buffer "
-                   << "off: " << off
-                   << ", len: " << len
-                   << ", bl.crc: " << bl.crc32c(-1)
-                   << dendl;
         sinfo.ro_range_to_shard_extent_map(off, len, bl, to_write);
+        ldpp_dout(dpp, 0) << "ALEX: generate_transactions: inserting buffer "
+           << "off: " << off
+           << ", len: " << len
+           << ", bl.crc: " << bl.crc32c(-1)
+           << ", to_write: " << to_write
+           << dendl;
       }
 
       if (op.truncate &&
@@ -677,14 +689,20 @@ void ECTransaction::generate_transactions(
       }
 
       auto to_overwrite = to_write.intersect_ro_range(0, append_after);
-      ldpp_dout(dpp, 20) << "generate_transactions: to_overwrite: "
+      // FIXME: Remove ALEX and set to 20
+      ldpp_dout(dpp, 0) << "ALEX: generate_transactions: to_overwrite: "
 	                 << to_overwrite
 	                 << dendl;
 
       if (!to_overwrite.empty()) {
 	// Depending on the write, we may or may not have the parity buffers.
 	// Here we invent some buffers.
+
 	to_overwrite.insert_parity_buffers();
+        // FIXME: Remove ALEX and set to 20 (or remove)
+        ldpp_dout(dpp, 0) << "ALEX: generate_transactions: inserted parity into overwrite "
+           << to_overwrite
+           << dendl;
 
 	// For an overwirte, we can restrict ourselves to the overwrite itself
 	// and parity updates.
@@ -731,12 +749,17 @@ void ECTransaction::generate_transactions(
       auto to_append = to_write.intersect_ro_range(
 	append_after,
 	std::numeric_limits<uint64_t>::max() - append_after);
-      ldpp_dout(dpp, 20) << "generate_transactions: to_append: "
+      // FIXME: Remove ALEX and set to 20
+      ldpp_dout(dpp, 0) << "ALEX: generate_transactions: to_append: "
 	                 << to_append
 	                 << dendl;
 
       if (!to_append.empty()) {
 	// The above would not have buffers for parity, so add them now
+
+        ldpp_dout(dpp, 0) << "ALEX: generate_transactions: inserted parity into overwrite "
+           << to_append
+           << dendl;
 	to_append.insert_parity_buffers();
 
 	// For appends, we need to write everything (even if it is zeros)
