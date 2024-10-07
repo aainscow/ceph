@@ -16,6 +16,8 @@
 #define ECUTIL_H
 
 #include <ostream>
+#include <opentelemetry/ext/http/client/http_client.h>
+
 #include "erasure-code/ErasureCodeInterface.h"
 #include "include/buffer_fwd.h"
 #include "include/ceph_assert.h"
@@ -441,6 +443,19 @@ public:
   void insert_parity_buffers();
   void erase_shard(int shard);
   std::map<int, bufferlist> slice(int offset, int length);
+
+
+  void assert_buffer_contents_equal(shard_extent_map_t other) const
+  {
+    for (auto &&[shard, emap]: extent_maps) {
+      for (auto &&i : emap) {
+        bufferlist bl = i.get_val();
+        bufferlist otherbl;
+        other.get_buffer(shard, i.get_off(), i.get_len(), otherbl, false);
+        ceph_assert(bl.contents_equal(otherbl));
+      }
+    }
+  }
 
   friend std::ostream& operator<<(std::ostream& lhs, const shard_extent_map_t& rhs);
 };

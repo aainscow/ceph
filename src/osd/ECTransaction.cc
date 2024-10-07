@@ -623,7 +623,8 @@ void ECTransaction::generate_transactions(
 	  ceph_assert(off > append_after);
 	  bl.prepend_zero(off - new_size);
 	  len += off - new_size;
-	  ldpp_dout(dpp, 20) << "generate_transactions: prepending zeroes to align "
+	  // FIXME: Remove ALEX and set to 20
+	  ldpp_dout(dpp, 0) << "ALEX: generate_transactions: prepending zeroes to align "
 			     << off << "->" << new_size
 			     << dendl;
 	  off = new_size;
@@ -632,7 +633,8 @@ void ECTransaction::generate_transactions(
 	  uint64_t aligned_end = sinfo.logical_to_next_stripe_offset(end);
 	  uint64_t tail = aligned_end - end;
 	  bl.append_zero(tail);
-	  ldpp_dout(dpp, 20) << "generate_transactions: appending zeroes to align end "
+	  // FIXME: Remove ALEX and set to 20
+          ldpp_dout(dpp, 0) << "ALEX: generate_transactions: appending zeroes to align end "
 			     << end << "->" << end+tail
 			     << ", len: " << len << "->" << len+tail
 			     << dendl;
@@ -643,6 +645,12 @@ void ECTransaction::generate_transactions(
 	if (end > new_size)
 	  new_size = end;
 
+        // FIXME: Remove CRC, remove ALEX, set to 20
+        ldpp_dout(dpp, 0) << "ALEX: generate_transactions: inserting buffer "
+                   << "off: " << off
+                   << ", len: " << len
+                   << ", bl.crc: " << bl.crc32c(-1)
+                   << dendl;
         sinfo.ro_range_to_shard_extent_map(off, len, bl, to_write);
       }
 
@@ -657,7 +665,8 @@ void ECTransaction::generate_transactions(
 	bl.append_zero(zeroes);
 	sinfo.ro_range_to_shard_extent_map(new_size, zeroes, bl, to_write);
 	new_size = truncate_to;
-	ldpp_dout(dpp, 20) << "generate_transactions: truncating out to "
+        // FIXME: Remove ALEX and set to 20
+	ldpp_dout(dpp, 0) << "ALEX: generate_transactions: truncating out to "
 			   << truncate_to
 			   << dendl;
       }

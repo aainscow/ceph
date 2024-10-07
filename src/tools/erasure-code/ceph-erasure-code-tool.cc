@@ -115,7 +115,7 @@ int do_test_plugin_exists(const std::vector<const char*> &args) {
   std::lock_guard l{instance.lock};
   int r = instance.load(
     args[0], g_conf().get_val<std::string>("erasure_code_dir"), &plugin, &ss);
-  std::cerr << ss.str() << endl;
+  std::cerr << ss.str() << std::endl;
   return r;
 }
 

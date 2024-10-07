@@ -400,10 +400,11 @@ namespace ECUtil {
    */
   void shard_extent_map_t::append_zeros_to_ro_offset( uint64_t ro_offset )
   {
-    if (ro_offset <= ro_end)
+    long _ro_end = ro_end == invalid_offset ? 0 : ro_end;
+    if (ro_offset <= _ro_end)
       return;
-    uint64_t append_offset = ro_end;
-    uint64_t append_length = ro_offset - ro_end;
+    uint64_t append_offset = _ro_end;
+    uint64_t append_length = ro_offset - _ro_end;
     insert_ro_zero_buffer(append_offset, append_length);
   }
 
