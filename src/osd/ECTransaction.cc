@@ -187,12 +187,7 @@ uint64_t ECTransaction::WritePlan::generate(
       }
 
       if (small_set.contains(shard)) {
-        extent_set intersection;
-        // FIXME: A subtraction should be sufficient on its own. However,
-        //        there is a limitation in interval_set.erase when
-        //        erasing a larger extent from a smaller one.
-        intersection.intersection_of(_to_read,small_set.at(shard));
-        _to_read.subtract(intersection);
+        _to_read.subtract(small_set.at(shard));
       }
 
       if (!_to_read.empty()) {
