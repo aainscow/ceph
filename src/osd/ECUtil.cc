@@ -400,7 +400,7 @@ namespace ECUtil {
    */
   void shard_extent_map_t::append_zeros_to_ro_offset( uint64_t ro_offset )
   {
-    long _ro_end = ro_end == invalid_offset ? 0 : ro_end;
+    uint64_t _ro_end = ro_end == invalid_offset ? 0 : ro_end;
     if (ro_offset <= _ro_end)
       return;
     uint64_t append_offset = _ro_end;
@@ -466,22 +466,12 @@ namespace ECUtil {
 
     for (auto &&[offset, length] : encode_set) {
       std::set<int> shards;
-      std::map<int, buffer::list> chunk_buffers;
+      std::map<int, buffer::list> chunk_buffers = slice(offset, length);
 
-      for (auto &&[shard, emap] : extent_maps) {
-        auto &&[begin, _] = emap.get_containing_range(offset, length);
-        if (begin.contains(offset, length)) {
-          shards.insert(shard);
-          chunk_buffers[shard].substr_of(begin.get_val(),
-                                         offset - begin.get_off(),
-                                         length);
-          // FIXME: This whole re-align should not be needed and we plan to
-          //        remove it. As such, we have left the hard-coded value in
-          //        for now.
-          chunk_buffers[shard].rebuild_aligned_size_and_memory(length, SIMD_ALIGN);
-        }
+      for (int shard : sinfo->chunk_mapping) {
+        ceph_assert(chunk_buffers.contains(shard));
+        ceph_assert(chunk_buffers[shard].length() == length);
       }
-
 
       /* Eventually this will call a new API to allow for delta writes. For now
        * however, we call this interface, which will segfault if a full stripe
