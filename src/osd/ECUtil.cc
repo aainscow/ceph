@@ -130,6 +130,8 @@ void ECUtil::stripe_info_t::ro_range_to_shards(
         shard_bl.substr_of(*bl, bl_offset, min((uint64_t)bl->length() - bl_offset, chunk_size-start_adj));
         buffer_shard_start_offset += chunk_size - start_adj;
         bl_offset += chunk_size - start_adj + (k - 1) * chunk_size;
+      } else {
+        buffer_shard_start_offset += chunk_size;
       }
       while (bl_offset < bl->length()) {
         buffer::list tmp;
@@ -545,6 +547,7 @@ namespace ECUtil {
       auto &&[range, _] = extent_maps.at(shard).get_containing_range(offset, length);
       if (range != emap.end() && range.contains(offset, length)) {
         slice[shard].substr_of(range.get_val(), offset - range.get_off(), length);
+        slice[shard].rebuild_aligned_size_and_memory(length, SIMD_ALIGN);
       }
     }
 
@@ -625,6 +628,33 @@ namespace ECUtil {
       get_buffer(sinfo->get_shard(raw_shard), sub_chunk_shard_offset, sub_chunk_len, bl, false);
     }
     return bl;
+  }
+
+  std::string shard_extent_map_t::debug_string(uint64_t interval, uint64_t offset)
+  {
+    std::stringstream str;
+    str << "shard_extent_map_t: " << *this << " bufs: [";
+
+    bool comma = false;
+    for ( auto &&[shard, emap]: get_extent_maps()) {
+      str << shard << ": [";
+      bool comma = false;
+      for ( auto &&extent: emap ) {
+        bufferlist bl = extent.get_val();
+        char *buf = bl.c_str();
+        for (uint64_t i=0; i < extent.get_len(); i += interval) {
+          int *seed = (int*)&buf[i + offset];
+          str << (i + extent.get_off()) << ":" << std::to_string(*seed);
+          if (comma) str << ", ";
+          comma = true;
+        }
+      }
+      str << "]";
+      if (comma) str << ", ";
+      comma = true;
+    }
+    str << "]";
+    return str.str();
   }
 }
 

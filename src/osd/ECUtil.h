@@ -443,7 +443,7 @@ public:
   void insert_parity_buffers();
   void erase_shard(int shard);
   std::map<int, bufferlist> slice(int offset, int length);
-
+  std::string debug_string(uint64_t inteval, uint64_t offset)
 
   void assert_buffer_contents_equal(shard_extent_map_t other) const
   {
