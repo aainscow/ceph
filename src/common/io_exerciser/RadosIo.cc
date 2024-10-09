@@ -118,7 +118,8 @@ void RadosIo::applyIoOp(IoOp &op)
       op_info = std::make_shared<AsyncOpInfo>(0, op.length1);
       op_info->bl1 = db->generate_data(0, op.length1);
       op_info->wop.write_full(op_info->bl1);
-      auto create_cb = [this] (boost::system::error_code ec) {
+      auto create_cb = [this] (boost::system::error_code ec,
+                             version_t ver) {
         ceph_assert(ec == boost::system::errc::success);
         finish_io();
       };
@@ -132,7 +133,8 @@ void RadosIo::applyIoOp(IoOp &op)
       start_io();
       op_info = std::make_shared<AsyncOpInfo>();
       op_info->wop.remove();
-      auto remove_cb = [this] (boost::system::error_code ec) {
+      auto remove_cb = [this] (boost::system::error_code ec,
+                             version_t ver) {
         ceph_assert(ec == boost::system::errc::success);
         finish_io();
       };
@@ -148,9 +150,10 @@ void RadosIo::applyIoOp(IoOp &op)
       op_info->rop.read(op.offset1 * block_size,
                         op.length1 * block_size,
                         &op_info->bl1, nullptr);
-      auto read_cb = [this, op_info] (boost::system::error_code ec, bufferlist bl) {
-        ceph_assert(ec == boost::system::errc::success);
-        db->validate(op_info->bl1, op_info->offset1, op_info->length1);
+      auto read_cb = [this, op_info] (boost::system::error_code ec,
+                                     version_t ver, bufferlist bl) {
+        ceph_assertf(ec == boost::system::errc::success, "pool: %s", pool);
+        ceph_assertf(db->validate(op_info->bl1, op_info->offset1, op_info->length1), "pool: %s", pool);
         finish_io();
       };
       librados::async_operate(asio, io, oid,
@@ -174,10 +177,11 @@ void RadosIo::applyIoOp(IoOp &op)
                     op.length2 * block_size,
                     &op_info->bl2, nullptr);
       auto read2_cb = [this, op_info] (boost::system::error_code ec,
+                                       version_t ver,
                                        bufferlist bl) {
-        ceph_assert(ec == boost::system::errc::success);
-        db->validate(op_info->bl1, op_info->offset1, op_info->length1);
-        db->validate(op_info->bl2, op_info->offset2, op_info->length2);
+        ceph_assertf(ec == boost::system::errc::success, "pool: %s", pool);
+        ceph_assertf(db->validate(op_info->bl1, op_info->offset1, op_info->length1), "pool: %s", pool);
+        ceph_assertf(db->validate(op_info->bl2, op_info->offset2, op_info->length2), "pool: %s", pool);
         finish_io();
       };
       librados::async_operate(asio, io, oid,
@@ -202,11 +206,12 @@ void RadosIo::applyIoOp(IoOp &op)
                     op.length3 * block_size,
                     &op_info->bl3, nullptr);
       auto read3_cb = [this, op_info] (boost::system::error_code ec,
+                                       version_t ver,
                                        bufferlist bl) {
-        ceph_assert(ec == boost::system::errc::success);
-        db->validate(op_info->bl1, op_info->offset1, op_info->length1);
-        db->validate(op_info->bl2, op_info->offset2, op_info->length2);
-        db->validate(op_info->bl3, op_info->offset3, op_info->length3);
+        ceph_assertf(ec == boost::system::errc::success, "pool: %s", pool);
+        ceph_assertf(db->validate(op_info->bl1, op_info->offset1, op_info->length1), "pool: %s", pool);
+        ceph_assertf(db->validate(op_info->bl2, op_info->offset2, op_info->length2), "pool: %s", pool);
+        ceph_assertf(db->validate(op_info->bl3, op_info->offset3, op_info->length3), "pool: %s", pool);
         finish_io();
       };
       librados::async_operate(asio, io, oid,
@@ -222,8 +227,9 @@ void RadosIo::applyIoOp(IoOp &op)
       op_info->bl1 = db->generate_data(op.offset1, op.length1);
 
       op_info->wop.write(op.offset1 * block_size, op_info->bl1);
-      auto write_cb = [this] (boost::system::error_code ec) {
-        ceph_assert(ec == boost::system::errc::success);
+      auto write_cb = [this] (boost::system::error_code ec,
+                             version_t ver) {
+        ceph_assertf(ec == boost::system::errc::success, "pool: %s", pool);
         finish_io();
       };
       librados::async_operate(asio, io, oid,
@@ -241,8 +247,9 @@ void RadosIo::applyIoOp(IoOp &op)
       op_info->bl2 = db->generate_data(op.offset2, op.length2);
       op_info->wop.write(op.offset1 * block_size, op_info->bl1);
       op_info->wop.write(op.offset2 * block_size, op_info->bl2);
-      auto write2_cb = [this] (boost::system::error_code ec) {
-        ceph_assert(ec == boost::system::errc::success);
+      auto write2_cb = [this] (boost::system::error_code ec,
+                             version_t ver) {
+        ceph_assertf(ec == boost::system::errc::success, "pool: %s", pool);
         finish_io();
       };
       librados::async_operate(asio, io, oid,
@@ -263,8 +270,9 @@ void RadosIo::applyIoOp(IoOp &op)
       op_info->wop.write(op.offset1 * block_size, op_info->bl1);
       op_info->wop.write(op.offset2 * block_size, op_info->bl2);
       op_info->wop.write(op.offset3 * block_size, op_info->bl3);
-      auto write3_cb = [this] (boost::system::error_code ec) {
-        ceph_assert(ec == boost::system::errc::success);
+      auto write3_cb = [this] (boost::system::error_code ec,
+                             version_t ver) {
+        ceph_assertf(ec == boost::system::errc::success, "pool: %s", pool);
         finish_io();
       };
       librados::async_operate(asio, io, oid,
