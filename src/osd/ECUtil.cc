@@ -635,7 +635,7 @@ namespace ECUtil {
     std::stringstream str;
     str << "shard_extent_map_t: " << *this << " bufs: [";
 
-    bool comma = false;
+    bool s_comma = false;
     for ( auto &&[shard, emap]: get_extent_maps()) {
       str << shard << ": [";
       bool comma = false;
@@ -650,8 +650,8 @@ namespace ECUtil {
         }
       }
       str << "]";
-      if (comma) str << ", ";
-      comma = true;
+      if (s_comma) str << ", ";
+      s_comma = true;
     }
     str << "]";
     return str.str();

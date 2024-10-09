@@ -227,7 +227,7 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
        ++i) {
     dout(10) << __func__ << ": checking acting " << *i << dendl;
     const pg_missing_t &missing = get_parent()->get_shard_missing(*i);
-    if (error_shards && error_shards.contains(*i)) {
+    if (error_shards && error_shards->contains(*i)) {
       continue;
     }
     if (cct->_conf->bluestore_debug_inject_read_err &&
@@ -290,7 +290,8 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   bool for_recovery,
   bool do_redundant_reads,
   read_request_t &read_request,
-  const std::optional<set<pg_shard_t>>& error_shards) {
+  const std::optional<set<pg_shard_t>>& error_shards)
+{
   // Make sure we don't do redundant reads for recovery
   ceph_assert(!for_recovery || !do_redundant_reads);
 
@@ -307,8 +308,10 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   }
 
   int r = ec_impl->minimum_to_decode(want, have, &need);
-  if (r < 0)
+  if (r < 0) {
+    dout(0) << "ALEX: minimum_to_decode_failed r: " << r <<"want: " << want << " have: " << have <<" need: " << need << dendl;
     return r;
+  }
 
   if (do_redundant_reads) {
     vector<pair<int, int>> subchunks_list;
@@ -350,6 +353,12 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     read_request.shard_reads[pg_shard] = shard_read;
   }
 
+  //FIXME
+  dout(0) << __func__ << " ALEX: for_recovery: " << for_recovery
+    << " do_redundant_reads: " << do_redundant_reads
+    << " read_request: " << read_request
+    << " error_shards: " << error_shards
+    <<- dendl;
   return 0;
 }
 
@@ -541,18 +550,15 @@ struct ClientReadCompleter : ECCommon::ReadCompleter {
     dout(20) << __func__ << " completing hoid=" << hoid
              << " res=" << res << " req="  << req << dendl;
     extent_map result;
-
-    //FIXME
-    ceph_assert(res.r == 0);
     if (res.r != 0)
       goto out;
     ceph_assert(res.errors.empty());
 
-    dout(0) << "ALEX: " << __func__ << res.buffers_read.debug_string() << dendl;
+    dout(0) << "ALEX: " << __func__ << res.buffers_read.debug_string(2048, 8) << dendl;
     /* Decode any missing buffers */
     res.buffers_read.decode(read_pipeline.ec_impl, req.shard_want_to_read);
 
-    dout(0) << "ALEX: " << __func__ << res.buffers_read.debug_string() << dendl;
+    dout(0) << "ALEX: " << __func__ << res.buffers_read.debug_string(2048, 8) << dendl;
 
     for (auto &&read: req.to_read) {
       result.insert(read.offset, read.size,
