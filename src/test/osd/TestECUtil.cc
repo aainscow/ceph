@@ -462,3 +462,34 @@ TEST(ECUtil, shard_extent_map_t_insert_ro_buffer)
   sinfo.ro_range_to_shard_extent_map(30*1024, 1024, insert_bl, semap);
   semap.assert_buffer_contents_equal(ref_semap);
 }
+
+// Sanity check that k=3 buffer inserts work
+TEST(ECUtil, shard_extent_map_t_insert_ro_buffer_3)
+{
+  int k=3;
+  int m=2;
+  int chunk_size = 4096;
+  uint64_t ro_offset = 10 * 1024;
+  uint64_t ro_length = 32 * 1024;
+
+  char c = 5;
+  stripe_info_t sinfo(k, chunk_size*k, m, vector<int>(0));
+  shard_extent_map_t semap(&sinfo);
+  bufferlist ref;
+  bufferlist in;
+  ref.append_zero(ro_length);
+  in.append_zero(ro_length);
+
+  for (uint64_t i=0; i<ro_length; i += 2048) {
+    ref.c_str()[i+8] = c;
+    in.c_str()[i+8] = c;
+    c++;
+  }
+
+  extent_map emap_in;
+  emap_in.insert(ro_offset, ro_length, in);
+  semap.insert_ro_extent_map(emap_in);
+  bufferlist out = semap.get_ro_buffer(ro_offset, ro_length);
+
+  ASSERT_TRUE(out.contents_equal(ref)) << semap.debug_string();
+}
