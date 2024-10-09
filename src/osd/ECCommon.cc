@@ -542,8 +542,11 @@ struct ClientReadCompleter : ECCommon::ReadCompleter {
       goto out;
     ceph_assert(res.errors.empty());
 
+    dout(0) << "ALEX: " << __func__ << res.buffers_read.debug_string() << dendl;
     /* Decode any missing buffers */
     res.buffers_read.decode(read_pipeline.ec_impl, req.shard_want_to_read);
+
+    dout(0) << "ALEX: " << __func__ << res.buffers_read.debug_string() << dendl;
 
     for (auto &&read: req.to_read) {
       result.insert(read.offset, read.size,
