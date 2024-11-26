@@ -1454,7 +1454,7 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
     map<hobject_t, ECUtil::shard_extent_map_t>* written,
     std::map<shard_id_t, ObjectStore::Transaction> *transactions,
     DoutPrefixProvider *dpp,
-    const ceph_release_t require_osd_release) final
+    const OSDMapRef& osdmap) final
   {
     assert(t);
     ECTransaction::generate_transactions(
@@ -1470,7 +1470,22 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
       &temp_added,
       &temp_cleared,
       dpp,
-      require_osd_release);
+      osdmap);
+  }
+
+  bool skip_transaction(
+      std::set<shard_id_t>& pending_roll_forward,
+      shard_id_t shard,
+      ceph::os::Transaction& transaction) final
+  {
+// FIXME: BILL: Enable EC partial metadata writes
+#if 0
+    if (transaction.empty()) {
+      return true;
+    }
+#endif
+    pending_roll_forward.insert(shard);
+    return false;
   }
 };
 

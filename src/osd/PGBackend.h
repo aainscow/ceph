@@ -491,6 +491,10 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      const pg_log_entry_t &entry,
      ObjectStore::Transaction *t);
 
+   void partialwrite(
+     pg_info_t *info,
+     const pg_log_entry_t &entry);
+
    void remove(
      const hobject_t &hoid,
      ObjectStore::Transaction *t);
@@ -504,7 +508,8 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
    void rollback_setattrs(
      const hobject_t &hoid,
      std::map<std::string, std::optional<ceph::buffer::list> > &old_attrs,
-     ObjectStore::Transaction *t);
+     ObjectStore::Transaction *t,
+     bool only_oi);
 
    /// Truncate object to rollback append
    void rollback_append(
