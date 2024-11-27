@@ -23,13 +23,14 @@ enum class OpType {
   Write,                 // Write
   Write2,                // Two writes in a single op
   Write3,                // Three writes in a single op
-  FailedWrite,           // A write which should fail
-  FailedWrite2,          // Two writes in one op which should fail
-  FailedWrite3,          // Three writes in one op which should fail
-  InjectReadError,       // Op to tell OSD to inject read errors
-  InjectWriteError,      // Op to tell OSD to inject write errors
-  ClearReadErrorInject,  // Op to tell OSD to clear read error injects
-  ClearWriteErrorInject  // Op to tell OSD to clear write error injects
+  Append,                 // Append
+  FailedWrite,            // A write which should fail
+  FailedWrite2,           // Two writes in one op which should fail
+  FailedWrite3,           // Three writes in one op which should fail
+  InjectReadError,        // Op to tell OSD to inject read errors
+  InjectWriteError,       // Op to tell OSD to inject write errors
+  ClearReadErrorInject,   // Op to tell OSD to clear read error injects
+  ClearWriteErrorInject   // Op to tell OSD to clear write error injects
 };
 
 enum class InjectOpType {
@@ -69,6 +70,8 @@ struct fmt::formatter<ceph::io_exerciser::OpType> {
         return fmt::format_to(ctx.out(), "Write2");
       case ceph::io_exerciser::OpType::Write3:
         return fmt::format_to(ctx.out(), "Write3");
+      case ceph::io_exerciser::OpType::Append:
+        return fmt::format_to(ctx.out(), "Append");
       case ceph::io_exerciser::OpType::FailedWrite:
         return fmt::format_to(ctx.out(), "FailedWrite");
       case ceph::io_exerciser::OpType::FailedWrite2:
