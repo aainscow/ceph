@@ -51,4 +51,5 @@ class ObjectModel : public Model {
   void decode(ceph::buffer::list::const_iterator& bl);
 };
 }  // namespace io_exerciser
-}  // namespace ceph
+}
+// namespace ceph
