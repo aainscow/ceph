@@ -742,9 +742,9 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op)
       plan.will_write,
       plan.orig_size,
       plan.projected_size,
-      [op](ECExtentCache::OpRef &cache_op)
+      [op](ECUtil::shard_extent_map_t &result)
       {
-        op->cache_ready(op->hoid, cache_op->get_result());
+        op->cache_ready(op->hoid, result);
       });
     op->cache_ops.emplace(op->hoid, std::move(cache_op));
   }
@@ -933,8 +933,7 @@ void ECCommon::RMWPipeline::finish_rmw(OpRef &op)
   if (get_osdmap()->require_osd_release >= ceph_release_t::kraken && extent_cache.idle()) {
     if (op->version > get_parent()->get_log().get_can_rollback_to()) {
       int transactions_since_last_idle = extent_cache.get_and_reset_counter();
-      uint64_t cumm_size = extent_cache.get_and_reset_cumm_size();
-      dout(20) << __func__ << " version=" << op->version << " ec_counter=" << transactions_since_last_idle << " size=" << cumm_size << dendl;
+      dout(20) << __func__ << " version=" << op->version << " ec_counter=" << transactions_since_last_idle << dendl;
       // submit a dummy, transaction-empty op to kick the rollforward
       auto tid = get_parent()->get_tid();
       auto nop = std::make_shared<ECDummyOp>();
@@ -946,18 +945,21 @@ void ECCommon::RMWPipeline::finish_rmw(OpRef &op)
       nop->pending_cache_ops = 1;
       nop->pipeline = this;
 
+      tid_to_op_map[tid] = nop;
+
       ECExtentCache::OpRef cache_op = extent_cache.prepare(op->hoid,
         std::nullopt,
         ECUtil::shard_extent_set_t(),
-        op->plan.plans.at(op->hoid).orig_size,
+        op->plan.plans.at(op->hoid).projected_size, // This op does not change any sizes.
         op->plan.plans.at(op->hoid).projected_size,
-        [nop](ECExtentCache::OpRef cache_op)
+        [nop](ECUtil::shard_extent_map_t &result)
         {
-          nop->cache_ops.emplace(nop->hoid, std::move(cache_op));
-          nop->cache_ready(nop->hoid, std::nullopt);
+          nop->cache_ready(nop->hoid, result);
         });
 
-      tid_to_op_map[tid] = std::move(nop);
+      // FIXME
+      // nop->cache_ops.emplace(nop->hoid, std::move(cache_op));
+      // extent_cache.execute(nop->cache_ops[nop->hoid]);
     }
   }
 

@@ -121,6 +121,9 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
       ECUtil::align_page_next(projected_size));
   }
 
+  /* Convert the RO buffer update extent map into shard coordinates.
+   * Do not round up to the nearest 4k just yet, because we need to read any
+   * partially written page, which we work out in the next loop. */
   for (auto &&extent: op.buffer_updates) {
     using BufferUpdate = PGTransaction::ObjectOperation::BufferUpdate;
     ceph_assertf(!boost::get<BufferUpdate::CloneRange>(&(extent.get_val())),
@@ -137,7 +140,7 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
   std::optional<ECUtil::shard_extent_set_t> inner;
   for (const auto& [ro_off, ro_len] : ro_writes) {
     /* Here, we calculate the "inner" and "outer" extent sets. The inner
-     * represents the complete pages read. The outer represents the rounded
+     * represents all complete pages written. The outter represents the rounded
      * up/down pages. Clearly if the IO is entirely aligned, then the inner
      * and outer sets are the same and we optimise this by avoiding
      * calculating the inner in this case.
@@ -148,8 +151,8 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
     uint64_t raw_end = ro_off + ro_len;
     uint64_t outter_off = ECUtil::align_page_prev(ro_off);
     uint64_t outter_len = ECUtil::align_page_next(raw_end) - outter_off;
-    uint64_t inner_off = ECUtil::align_page_next(ro_off);
-    uint64_t inner_len = std::max(inner_off, ECUtil::align_page_prev(raw_end)) - inner_off;
+    uint64_t inner_off  = ECUtil::align_page_next(ro_off);
+    uint64_t inner_len  = std::max(inner_off, ECUtil::align_page_prev(raw_end)) - inner_off;
 
     if (inner || outter_off != inner_off || outter_len != inner_len) {
       if (!inner) inner = ECUtil::shard_extent_set_t(will_write);
@@ -191,6 +194,16 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
     uint64_t aligned_orig_size = ECUtil::align_page_next(orig_size);
     sinfo.ro_size_to_read_mask(orig_size, read_mask);
 
+    /* Here we deal with potentially zeroing out any buffers. We rely on a
+     * *store requirement that any holes in objects are padded with zeros when
+     * read, therefore there is no requirement to write them.
+     * For certain truncates, however, we need to be careful, as we must zero
+     * out any unwritten sections in the overwrite.  At the time of writing,
+     * this would take up space, but it is anticipated that the forthcoming
+     * zero-buffer enhancements will make this space efficient.  Multiple
+     * truncates/appends within a single transactions are expected be very rare.
+     */
+
     /* The zero stripe is any area that gets zeroed if not written to. It is used
      * by appends (old size -> new size) and truncates if truncate.second >
      * truncate.first.
@@ -200,8 +213,11 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
         projected_size - aligned_orig_size, zero, outter_extent_superset);
     }
     if (op.truncate && op.truncate->first < op.truncate->second) {
-      sinfo.ro_range_to_shard_extent_set(op.truncate->first,
-        op.truncate->second - op.truncate->first, zero);
+      uint64_t aligned_zero_start = ECUtil::align_page_next(op.truncate->first);
+      uint64_t aligned_zero_end = ECUtil::align_page_next(op.truncate->second);
+      sinfo.ro_range_to_shard_extent_set(
+        aligned_zero_start, aligned_zero_end - aligned_zero_start,
+        zero, outter_extent_superset);
     }
 
     for (unsigned int raw_shard = 0; raw_shard< sinfo.get_k_plus_m(); raw_shard++) {
@@ -488,6 +504,8 @@ void ECTransaction::generate_transactions(
 	to_write = pextiter->second;
       }
       debug(oid, "to_write", to_write, dpp);
+      ldpp_dout(dpp, 20) << "generate_transactions: plan: " << plan << dendl;
+      if (plan.to_read) ceph_assert(*plan.to_read == to_write.get_shard_extent_set());
 
       std::vector<std::pair<uint64_t,uint64_t>> rollback_extents;
       std::vector<std::set<shard_id_t>> rollback_shards;
@@ -759,6 +777,11 @@ void ECTransaction::generate_transactions(
 	      ghobject_t(oid, ghobject_t::NO_GEN, st.first),
 	      OI_ATTR,
 	      to_set[OI_ATTR]);
+	    st.second.setattr(
+              coll_t(spg_t(pgid, st.first)),
+              ghobject_t(oid, ghobject_t::NO_GEN, st.first),
+              SS_ATTR,
+              to_set[SS_ATTR]);
           } // Else: Unwritten shard - Don't update any attributes
 	}
 	ceph_assert(!xattr_rollback.empty());
