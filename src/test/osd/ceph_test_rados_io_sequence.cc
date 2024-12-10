@@ -49,6 +49,7 @@ using SingleWriteOp = ceph::io_exerciser::SingleWriteOp;
 using DoubleWriteOp = ceph::io_exerciser::DoubleWriteOp;
 using TripleWriteOp = ceph::io_exerciser::TripleWriteOp;
 using SingleAppendOp = ceph::io_exerciser::SingleAppendOp;
+using TruncateOp = ceph::io_exerciser::TruncateOp;
 using SingleFailedWriteOp = ceph::io_exerciser::SingleFailedWriteOp;
 using DoubleFailedWriteOp = ceph::io_exerciser::DoubleFailedWriteOp;
 using TripleFailedWriteOp = ceph::io_exerciser::TripleFailedWriteOp;
@@ -813,6 +814,10 @@ bool ceph::io_sequence::tester::TestRunner::run_interactive_test() {
     {
       uint64_t length = get_numeric_token();
       ioop = SingleAppendOp::generate(length);
+    }
+    else if (op == "truncate")
+    {
+      ioop = TruncateOp::generate(get_numeric_token());
     }
     else if (op == "failedwrite")
     {
