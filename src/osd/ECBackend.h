@@ -23,6 +23,8 @@
 #include "erasure-code/ErasureCodeInterface.h"
 #include "ECUtil.h"
 #include "ECExtentCache.h"
+#include "ECListener.h"
+#include "ECTypes.h"
 
 //forward declaration
 struct ECSubWrite;
@@ -32,6 +34,7 @@ struct ECSubReadReply;
 class ECSwitch;
 
 struct RecoveryMessages;
+class ECSwitch;
 
 class ECBackend : public ECCommon {
 public:
@@ -48,7 +51,7 @@ public:
     ObjectContextRef head,
     ObjectContextRef obc,
       PGBackend::RecoveryHandle *h
-      );
+    );
 
   bool _handle_message(
     OpRequestRef op
@@ -140,7 +143,7 @@ public:
    * check_recovery_sources.
    */
   void objects_read_and_reconstruct(
-    const std::map<hobject_t, std::list<ECCommon::ec_align_t>> &reads,
+    const std::map<hobject_t, std::list<ec_align_t>> &reads,
     bool fast_read,
     uint64_t object_size,
     GenContextURef<ECCommon::ec_extents_t &&> &&func) override;
@@ -159,7 +162,7 @@ public:
   void objects_read_async(
     const hobject_t &hoid,
       uint64_t object_size,
-    const std::list<std::pair<ECCommon::ec_align_t,
+    const std::list<std::pair<ec_align_t,
                               std::pair<ceph::buffer::list*, Context*>>> &to_read,
     Context *on_complete,
       bool fast_read = false);
@@ -340,9 +343,9 @@ public:
     bool is_repair);
 
 public:
-    PGBackend::Listener *parent;
-    CephContext *cct;
-    ECSwitch *switcher;
+  PGBackend::Listener *parent;
+  CephContext *cct;
+  ECSwitch *switcher;
   struct ReadPipeline read_pipeline;
   struct RMWPipeline rmw_pipeline;
   struct ECRecoveryBackend recovery_backend;

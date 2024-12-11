@@ -62,13 +62,6 @@ static ostream& _prefix(std::ostream *_dout,
 }
 static ostream& _prefix(std::ostream *_dout, struct ClientReadCompleter *read_completer);
 
-ostream &operator<<(ostream &lhs, const ECCommon::ec_align_t &rhs)
-{
-  return lhs << rhs.offset << ","
-	     << rhs.size << ","
-	     << rhs.flags;
-}
-
 ostream &operator<<(ostream &lhs, const ECCommon::ec_extent_t &rhs)
 {
   return lhs << rhs.err << ","
@@ -209,18 +202,16 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
   bool for_recovery,
   const std::optional<set<pg_shard_t>>& error_shards)
 {
-  for (set<pg_shard_t>::const_iterator i =
-	 get_parent()->get_acting_shards().begin();
-       i != get_parent()->get_acting_shards().end();
-       ++i) {
-    dout(10) << __func__ << ": checking acting " << *i << dendl;
-    const pg_missing_t &missing = get_parent()->get_shard_missing(*i);
-      if (error_shards.contains(*i)) {
-        continue;
-      }
-      if (cct->_conf->bluestore_debug_inject_read_err &&
-          ECInject::test_read_error1(ghobject_t(hoid, ghobject_t::NO_GEN, i->shard))) {
-        dout(0) << __func__ << " Error inject - Missing shard " << i->shard << dendl;
+  for (auto &&pg_shard : get_parent()->get_acting_shards()) {
+    dout(10) << __func__ << ": checking acting " << pg_shard << dendl;
+    const pg_missing_t &missing = get_parent()->get_shard_missing(pg_shard);
+    if (error_shards && error_shards->contains(pg_shard)) {
+      continue;
+    }
+    const shard_id_t &shard = pg_shard.shard;
+    if (cct->_conf->bluestore_debug_inject_read_err &&
+        ECInject::test_read_error1(ghobject_t(hoid, ghobject_t::NO_GEN, shard))) {
+      dout(0) << __func__ << " Error inject - Missing shard " << shard << dendl;
       continue;
     }
     if (!missing.is_missing(hoid)) {
@@ -277,6 +268,11 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   // Make sure we don't do redundant reads for recovery
   ceph_assert(!for_recovery || !do_redundant_reads);
 
+  if (read_request.object_size == 0) {
+    dout(10) << __func__ << " empty read" << dendl;
+    return 0;
+  }
+
   set<int> have;
   map<shard_id_t, pg_shard_t> shards;
 
@@ -307,8 +303,6 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   extent_set extra_extents;
   ECUtil::shard_extent_set_t read_mask;
   ECUtil::shard_extent_set_t zero_mask;
-
-  ceph_assert(read_request.object_size != 0);
 
   sinfo.ro_size_to_read_mask(read_request.object_size, read_mask);
   sinfo.ro_size_to_zero_mask(read_request.object_size, zero_mask);
@@ -592,7 +586,7 @@ static ostream& _prefix(std::ostream *_dout, ClientReadCompleter *read_completer
 }
 
 void ECCommon::ReadPipeline::objects_read_and_reconstruct(
-  const map<hobject_t, std::list<ECCommon::ec_align_t>> &reads,
+  const map<hobject_t, std::list<ec_align_t>> &reads,
   bool fast_read,
   uint64_t object_size,
   GenContextURef<ECCommon::ec_extents_t &&> &&func)
@@ -712,7 +706,7 @@ void ECCommon::ReadPipeline::kick_reads()
   }
 }
 
-bool ECCommon::ec_align_t::operator==(const ec_align_t &other) const {
+bool ec_align_t::operator==(const ec_align_t &other) const {
   return offset == other.offset && size == other.size && flags == other.flags;
 }
 
@@ -736,21 +730,20 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op)
   tid_to_op_map[op->tid] = op;
 
   op->pending_cache_ops = op->plan.plans.size();
-  for (auto &&[oid, plan] : op->plan.plans) {
-    ECExtentCache::OpRef cache_op = extent_cache.prepare(oid,
+  for (auto &plan : op->plan.plans) {
+    ECExtentCache::OpRef cache_op = extent_cache.prepare(plan.hoid,
       plan.to_read,
       plan.will_write,
       plan.orig_size,
       plan.projected_size,
-      [op](ECUtil::shard_extent_map_t &result)
+      plan.invalidates_cache,
+      [op](ECExtentCache::OpRef &cop)
       {
-        op->cache_ready(op->hoid, result);
+        op->cache_ready(cop->get_hoid(), cop->get_result());
       });
-    op->cache_ops.emplace(op->hoid, std::move(cache_op));
+    op->cache_ops.emplace_back(std::move(cache_op));
   }
-  for (auto &&[_, cache_op] : op->cache_ops) {
-    extent_cache.execute(cache_op);
-  }
+  extent_cache.execute(op->cache_ops);
 }
 
 void ECCommon::RMWPipeline::cache_ready(Op &op)
@@ -859,7 +852,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
       local_write_op.claim(sop);
       } else if (cct->_conf->bluestore_debug_inject_read_err &&
                  ECInject::test_write_error1(ghobject_t(op.hoid,
-                   ghobject_t::NO_GEN, pg_shard->shard))) {
+                   ghobject_t::NO_GEN, pg_shard.shard))) {
         dout(0) << " Error inject - Dropping write message to shard " <<
           pg_shard.shard << dendl;
     } else {
@@ -869,14 +862,6 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
       r->min_epoch = get_parent()->get_interval_start_epoch();
       r->trace = trace;
       messages.push_back(std::make_pair(pg_shard.osd, r));
-    }
-  }
-
-  for (auto &&[oid, cop]: op.cache_ops) {
-    if (written.contains(oid)) {
-      extent_cache.write_done(cop, std::move(written.at(oid)));
-    } else {
-      extent_cache.write_done(cop, ECUtil::shard_extent_map_t(&sinfo));
     }
   }
 
@@ -892,10 +877,14 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
       op.trace);
   }
 
-  for (auto i = op.on_write.begin();
-       i != op.on_write.end();
-       op.on_write.erase(i++)) {
-    (*i)();
+
+  for (auto &cop : op.cache_ops) {
+    hobject_t &oid = cop->get_hoid();
+    if (written.contains(oid)) {
+      extent_cache.write_done(cop, std::move(written.at(oid)));
+    } else {
+      extent_cache.write_done(cop, ECUtil::shard_extent_map_t(&sinfo));
+    }
   }
 }
 
@@ -923,6 +912,7 @@ struct ECDummyOp : ECCommon::RMWPipeline::Op {
 
 void ECCommon::RMWPipeline::finish_rmw(OpRef &op)
 {
+  dout(20) << __func__ << " op=" << *op << dendl;
   if (op->pg_committed_to > completed_to)
     completed_to = op->pg_committed_to;
   if (op->version > committed_to)
@@ -947,19 +937,11 @@ void ECCommon::RMWPipeline::finish_rmw(OpRef &op)
 
       tid_to_op_map[tid] = nop;
 
-      ECExtentCache::OpRef cache_op = extent_cache.prepare(op->hoid,
-        std::nullopt,
-        ECUtil::shard_extent_set_t(),
-        op->plan.plans.at(op->hoid).projected_size, // This op does not change any sizes.
-        op->plan.plans.at(op->hoid).projected_size,
-        [nop](ECUtil::shard_extent_map_t &result)
-        {
-          nop->cache_ready(nop->hoid, result);
-        });
-
-      // FIXME
-      // nop->cache_ops.emplace(nop->hoid, std::move(cache_op));
-      // extent_cache.execute(nop->cache_ops[nop->hoid]);
+      /* This does not need to go through the extent cache at all. The cache
+       * is idle (we checked above) and this IO never blocks for the kernel,
+       * so its just a waste of effort.
+       */
+      nop->cache_ready(nop->hoid, ECUtil::shard_extent_map_t(&sinfo));
     }
   }
 
@@ -972,21 +954,17 @@ void ECCommon::RMWPipeline::on_change()
 
   completed_to = eversion_t();
   committed_to = eversion_t();
+  extent_cache.on_change();
   tid_to_op_map.clear();
   oid_to_version.clear();
 }
 
 void ECCommon::RMWPipeline::on_change2() {
-  extent_cache.on_change();
-  ceph_assert(extent_cache.idle());
+  extent_cache.on_change2();
 }
 
 void ECCommon::RMWPipeline::call_write_ordered(std::function<void(void)> &&cb) {
-  // FIXME: The original function waits for all pipeline writes to complete.
-  //        I think what we want to do here is to flush the cache and queue a
-  //        a write behind it.  I have no idea how critical ordered writes are.
-  ceph_abort("Ordered writes not implemented");
-  cb();
+  extent_cache.add_on_write(std::move(cb));
 }
 
 ECUtil::HashInfoRef ECCommon::UnstableHashInfoRegistry::maybe_put_hash_info(
@@ -1037,306 +1015,4 @@ ECUtil::HashInfoRef ECCommon::UnstableHashInfoRegistry::get_hash_info(
     }
   }
   return ref;
-}
-
-// Error inject interfaces
-static ceph::recursive_mutex ec_inject_lock =
-  ceph::make_recursive_mutex("ECCommon::ec_inject_lock");
-static std::map<ghobject_t,std::pair<int64_t,int64_t>> ec_inject_read_failures0;
-static std::map<ghobject_t,std::pair<int64_t,int64_t>> ec_inject_read_failures1;
-static std::map<ghobject_t,std::pair<int64_t,int64_t>> ec_inject_write_failures0;
-static std::map<ghobject_t,std::pair<int64_t,int64_t>> ec_inject_write_failures1;
-static std::map<ghobject_t,std::pair<int64_t,int64_t>> ec_inject_write_failures2;
-static std::map<ghobject_t,std::pair<int64_t,int64_t>> ec_inject_write_failures3;
-static std::map<ghobject_t,shard_id_t> ec_inject_write_failures0_shard;
-static std::set<osd_reqid_t> ec_inject_write_failures0_reqid;
-
-/**
- * Configure a read error inject that typically forces additional reads of
- * shards in an EC pool to recover data using the redundancy. With multiple
- * errors it is possible to force client reads to fail.
- *
- * Type 0 - Simulate a medium error. Fail a read with -EIO to force
- * additional reads and a decode
- *
- * Type 1 - Simulate a missing OSD. Dont even try to read a shard
- *
- * @brief Set up a read error inject for an object in an EC pool.
- * @param o Target object for the error inject.
- * @param when Error inject starts after this many object store reads.
- * @param duration Error inject affects this many object store reads.
- * @param type Type of error inject 0 = EIO, 1 = missing shard.
- * @return string Result of configuring the error inject.
- */
-std::string ec_inject_read_error(const ghobject_t& o,
-				 const int64_t type,
-				 const int64_t when,
-				 const int64_t duration) {
-  std::lock_guard<ceph::recursive_mutex> l(ec_inject_lock);
-  ghobject_t os = o;
-  if (os.hobj.oid.name == "*") {
-    os.hobj.set_hash(0);
-  }
-  switch (type) {
-  case 0:
-    ec_inject_read_failures0[os] = std::pair(when, duration);
-    return "ok - read returns EIO";
-  case 1:
-    ec_inject_read_failures1[os] = std::pair(when, duration);
-    return "ok - read pretends shard is missing";
-  default:
-    break;
-  }
-  return "unrecognized error inject type";
-}
-
-/**
- * Configure a write error inject that either fails an OSD or causes a
- * client write operation to be rolled back.
- *
- * Type 0 - Tests rollback. Drop a write I/O to a shard, then simulate an OSD
- * down to force rollback to occur, lastly fail the retried write from the
- * client so the results of the rollback can be inspected.
- *
- * Type 1 - Drop a write I/O to a shard. Used on its own this will hang a
- * write I/O.
- *
- * Type 2 - Simulate an OSD down (ceph osd down) to force a new epoch. Usually
- * used together with type 1 to force a rollback
- *
- * Type 3 - Abort when an OSD processes a write I/O to a shard. Typically the
- * client write will be commited while the OSD is absent which will result in
- * recovery or backfill later when the OSD returns.
- *
- * @brief Set up a write error inject for an object in an EC pool.
- * @param o Target object for the error inject.
- * @param when Error inject starts after this many object store reads.
- * @param duration Error inject affects this many object store reads.
- * @param type Type of error inject 0 = EIO, 1 = missing shard.
- * @return string Result of configuring the error inect.
- */
-std::string ec_inject_write_error(const ghobject_t& o,
-				  const int64_t type,
-				  const int64_t when,
-				  const int64_t duration) {
-  std::lock_guard<ceph::recursive_mutex> l(ec_inject_lock);
-  std::map<ghobject_t,std::pair<int64_t,int64_t>> *failures;
-  ghobject_t os = o;
-  bool no_shard = true;
-  std::string result;
-  switch (type) {
-  case 0:
-    failures = &ec_inject_write_failures0;
-    result = "ok - drop write, sim OSD down and fail client retry with EINVAL";
-    break;
-  case 1:
-    failures = &ec_inject_write_failures1;
-    no_shard = false;
-    result = "ok - drop write to shard";
-    break;
-  case 2:
-    failures = &ec_inject_write_failures2;
-    result = "ok - inject OSD down";
-    break;
-  case 3:
-    if (duration != 1) {
-      return "duration must be 1";
-    }
-    failures = &ec_inject_write_failures3;
-    result = "ok - write abort OSDs";
-    break;
-  default:
-    return "unrecognized error inject type";
-  }
-  if (no_shard) {
-    os.set_shard(shard_id_t::NO_SHARD);
-  }
-  if (os.hobj.oid.name == "*") {
-    os.hobj.set_hash(0);
-  }
-  (*failures)[os] = std::pair(when, duration);
-  if (type == 0) {
-    ec_inject_write_failures0_shard[os] = o.shard_id;
-  }
-  return result;
-}
-
-/**
- * @brief Clear a previously configured read error inject.
- * @param o Target object for the error inject.
- * @param type Type of error inject 0 = EIO, 1 = missing shard.
- * @return string Indication of how many errors were cleared.
- */
-std::string ec_inject_clear_read_error(const ghobject_t& o,
-				       const int64_t type) {
-  std::lock_guard<ceph::recursive_mutex> l(ec_inject_lock);
-  std::map<ghobject_t,std::pair<int64_t,int64_t>> *failures;
-  ghobject_t os = o;
-  int64_t remaining = 0;
-  switch (type) {
-  case 0:
-    failures = &ec_inject_read_failures0;
-    break;
-  case 1:
-    failures = &ec_inject_read_failures1;
-    break;
-  default:
-    return "unrecognized error inject type";
-  }
-  if (os.hobj.oid.name == "*") {
-    os.hobj.set_hash(0);
-  }
-  auto it = failures->find(os);
-  if (it != failures->end()) {
-    remaining = it->second.second;
-    failures->erase(it);
-  }
-  if (remaining == 0) {
-    return "no outstanding error injects";
-  } else if (remaining == 1) {
-    return "ok - 1 inject cleared";
-  }
-  return "ok - " + std::to_string(remaining) + " injects cleared";
-}
-
-/**
- * @brief Clear a previously configured write error inject.
- * @param o Target object for the error inject.
- * @param type Type of error inject 0 = EIO, 1 = missing shard.
- * @return string Indication of how many errors were cleared.
- */
-std::string ec_inject_clear_write_error(const ghobject_t& o,
-					const int64_t type) {
-  std::lock_guard<ceph::recursive_mutex> l(ec_inject_lock);
-  std::map<ghobject_t,std::pair<int64_t,int64_t>> *failures;
-  ghobject_t os = o;
-  bool no_shard = true;
-  int64_t remaining = 0;
-  switch (type) {
-  case 0:
-    failures = &ec_inject_write_failures0;
-    break;
-  case 1:
-    failures = &ec_inject_write_failures1;
-    no_shard = false;
-    break;
-  case 2:
-    failures = &ec_inject_write_failures2;
-    break;
-  case 3:
-    failures = &ec_inject_write_failures3;
-    break;
-  default:
-    return "unrecognized error inject type";
-  }
-  if (no_shard) {
-    os.set_shard(shard_id_t::NO_SHARD);
-  }
-  if (os.hobj.oid.name == "*") {
-    os.hobj.set_hash(0);
-  }
-  auto it = failures->find(os);
-  if (it != failures->end()) {
-    remaining = it->second.second;
-    failures->erase(it);
-    if (type == 0) {
-      ec_inject_write_failures0_shard.erase(os);
-    }
-  }
-  if (remaining == 0) {
-    return "no outstanding error injects";
-  } else if (remaining == 1) {
-    return "ok - 1 inject cleared";
-  }
-  return "ok - " + std::to_string(remaining) + " injects cleared";
-}
-
-static bool ec_inject_test_error(const ghobject_t& o,
-  std::map<ghobject_t,std::pair<int64_t,int64_t>> *failures)
-{
-  std::lock_guard<ceph::recursive_mutex> l(ec_inject_lock);
-  auto it = failures->find(o);
-  if (it == failures->end()) {
-    ghobject_t os = o;
-    os.hobj.oid.name = "*";
-    os.hobj.set_hash(0);
-    it = failures->find(os);
-  }
-  if (it != failures->end()) {
-    auto && [when,duration] = it->second;
-    if (when > 0) {
-      when--;
-      return false;
-    }
-    if (--duration <= 0) {
-      failures->erase(it);
-    }
-    return true;
-  }
-  return false;
-}
-
-bool ec_inject_test_read_error0(const ghobject_t& o)
-{
-  return ec_inject_test_error(o, &ec_inject_read_failures0);
-}
-
-bool ec_inject_test_read_error1(const ghobject_t& o)
-{
-  return ec_inject_test_error(o, &ec_inject_read_failures1);
-}
-
-bool ec_inject_test_write_error0(const hobject_t& o,
-				 const osd_reqid_t& reqid) {
-  std::lock_guard<ceph::recursive_mutex> l(ec_inject_lock);
-  ghobject_t os = ghobject_t(o, ghobject_t::NO_GEN, shard_id_t::NO_SHARD);
-  if (ec_inject_write_failures0_reqid.count(reqid)) {
-    // Matched reqid of retried write - flag for failure
-    ec_inject_write_failures0_reqid.erase(reqid);
-    return true;
-  }
-  auto it = ec_inject_write_failures0.find(os);
-  if (it == ec_inject_write_failures0.end()) {
-    os.hobj.oid.name = "*";
-    os.hobj.set_hash(0);
-    it = ec_inject_write_failures0.find(os);
-  }
-  if (it != ec_inject_write_failures0.end()) {
-    auto && [when, duration] = it->second;
-    auto shard = ec_inject_write_failures0_shard.find(os)->second;
-    if (when > 0) {
-      when--;
-    } else {
-      if (--duration <= 0) {
-	ec_inject_write_failures0.erase(it);
-	ec_inject_write_failures0_shard.erase(os);
-      }
-      // Error inject triggered - save reqid
-      ec_inject_write_failures0_reqid.insert(reqid);
-      // Set up error inject to drop message to primary
-      ec_inject_write_error(ghobject_t(o, ghobject_t::NO_GEN, shard), 1, 0, 1);
-    }
-  }
-  return false;
-}
-
-bool ec_inject_test_write_error1(const ghobject_t& o) {
-  bool rc = ec_inject_test_error(o, &ec_inject_write_failures1);
-  if (rc) {
-    // Set up error inject to generate OSD down
-    ec_inject_write_error(o, 2, 0, 1);
-  }
-  return rc;
-}
-
-bool ec_inject_test_write_error2(const hobject_t& o) {
-  return ec_inject_test_error(
-    ghobject_t(o, ghobject_t::NO_GEN, shard_id_t::NO_SHARD),
-    &ec_inject_write_failures2);
-}
-
-bool ec_inject_test_write_error3(const hobject_t& o) {
-  return ec_inject_test_error(
-    ghobject_t(o, ghobject_t::NO_GEN, shard_id_t::NO_SHARD),
-    &ec_inject_write_failures3);
 }

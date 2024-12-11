@@ -276,6 +276,11 @@ public:
     return 0;
   }
 
+  unsigned get_minimum_granularity() override { return 0; }
+  void encode_delta(const bufferptr &old_data, const bufferptr &new_data
+    , bufferptr *delta) override {}
+  void apply_delta(const std::map<int, bufferptr> &in
+    , std::map<int, bufferptr> &out) override {}
 };
 
 class ECListenerStub : public ECListener {
@@ -519,7 +524,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // read nothing at the very beginning
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(0, 0, 0);
+    ec_align_t to_read(0, 0, 0);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ASSERT_EQ(want_to_read,  empty_extent_set_map);
   }
@@ -527,14 +532,14 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // read nothing at the middle (0-sized partial read)
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(2048, 0, 0);
+    ec_align_t to_read(2048, 0, 0);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ASSERT_EQ(want_to_read,  empty_extent_set_map);
   }
   // read nothing at the the second stripe (0-sized partial read)
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth, 0, 0);
+    ec_align_t to_read(swidth, 0, 0);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ASSERT_EQ(want_to_read,  empty_extent_set_map);
   }
@@ -542,7 +547,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // read not-so-many (< chunk_size) bytes at the middle (partial read)
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(2048, 42, 1);
+    ec_align_t to_read(2048, 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[2].insert(0, 42);
@@ -552,7 +557,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // read not-so-many (< chunk_size) bytes after the first stripe.
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth+2048, 42, 1);
+    ec_align_t to_read(swidth+2048, 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[2].insert(csize, 42);
@@ -562,7 +567,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // read more (> chunk_size) bytes at the middle (partial read)
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(csize, csize + 42, 1);
+    ec_align_t to_read(csize, csize + 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[1].insert(0, csize);
@@ -573,7 +578,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // read more (> chunk_size) bytes at the middle (partial read), second stripe
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth + csize, csize + 42, 1);
+    ec_align_t to_read(swidth + csize, csize + 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[1].insert(csize, csize);
@@ -584,7 +589,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // full stripe except last chunk
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(0, 3*csize, 1);
+    ec_align_t to_read(0, 3*csize, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[0].insert(0, csize);
@@ -596,7 +601,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // full stripe except last chunk (second stripe)
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth, 3*csize, 1);
+    ec_align_t to_read(swidth, 3*csize, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[0].insert(csize, csize);
@@ -608,7 +613,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // full stripe except 1st chunk
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(csize, swidth - csize, 1);
+    ec_align_t to_read(csize, swidth - csize, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[1].insert(0, csize);
@@ -620,7 +625,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // full stripe except 1st chunk (second stripe)
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth + csize, swidth - csize, 1);
+    ec_align_t to_read(swidth + csize, swidth - csize, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[1].insert(csize, csize);
@@ -635,7 +640,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // X000
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(csize, swidth * 42, 1);
+    ec_align_t to_read(csize, swidth * 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[0].insert(csize, csize*42);
@@ -651,7 +656,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // X000
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth + csize, swidth * 42, 1);
+    ec_align_t to_read(swidth + csize, swidth * 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
     ref[0].insert(csize*2, csize*42);
@@ -664,7 +669,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // large read from the beginning
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(0, swidth * 42, 1);
+    ec_align_t to_read(0, swidth * 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
 
@@ -678,7 +683,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // large read from the beginning
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(0, swidth * 42, 1);
+    ec_align_t to_read(0, swidth * 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
 
@@ -692,7 +697,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // large read from the beginning (second stripe)
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth, swidth * 42, 1);
+    ec_align_t to_read(swidth, swidth * 42, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
 
@@ -706,7 +711,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // large read that starts and ends on same shard.
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth, swidth+csize/2, 1);
+    ec_align_t to_read(swidth, swidth+csize/2, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
 
@@ -720,7 +725,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // large read that starts and ends on last shard
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth-csize, swidth+csize/2, 1);
+    ec_align_t to_read(swidth-csize, swidth+csize/2, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
 
@@ -733,7 +738,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   // large read that starts and ends on last shard, partial first shard.
   {
     ECUtil::shard_extent_set_t want_to_read;
-    ECCommon::ec_align_t to_read(swidth-csize/2, swidth, 1);
+    ec_align_t to_read(swidth-csize/2, swidth, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECUtil::shard_extent_set_t ref;
 
@@ -1022,7 +1027,7 @@ TEST(ECCommon, shard_read_combo_tests)
   {
     ECUtil::shard_extent_set_t want_to_read;
 
-    ECCommon::ec_align_t to_read(36*1024,10*1024, 1);
+    ec_align_t to_read(36*1024,10*1024, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECCommon::read_request_t read_request(want_to_read, false, object_size);
 
@@ -1048,7 +1053,7 @@ TEST(ECCommon, shard_read_combo_tests)
   {
     ECUtil::shard_extent_set_t want_to_read;
 
-    ECCommon::ec_align_t to_read(12*1024,12*1024, 1);
+    ec_align_t to_read(12*1024,12*1024, 1);
     pipeline.get_min_want_to_read_shards(to_read, want_to_read);
     ECCommon::read_request_t read_request(want_to_read, false, object_size);
     pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request);
@@ -1094,8 +1099,8 @@ TEST(ECCommon, get_min_want_to_read_shards_bug67087)
   ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
 
   ECUtil::shard_extent_set_t want_to_read;
-  ECCommon::ec_align_t to_read1(512,512, 1);
-  ECCommon::ec_align_t to_read2(512+16*1024,512, 1);
+  ec_align_t to_read1(512,512, 1);
+  ec_align_t to_read2(512+16*1024,512, 1);
 
   ECUtil::shard_extent_set_t ref;
 
@@ -1190,6 +1195,7 @@ TEST(ECCommon, get_remaining_shards)
     buffer::list bl;
     bl.append_zero(chunk_size/2);
     read_result.buffers_read.insert_in_shard(0, chunk_size/2, bl);
+    read_result.processed_read_requests[0].insert(chunk_size/2, bl.length());
 
     pipeline.get_remaining_shards(hoid, read_result, read_request, false, false);
 
@@ -1218,9 +1224,6 @@ TEST(ECCommon, encode)
   const uint64_t swidth = 2*page_size;
   const unsigned int k = 2;
   const unsigned int m = 2;
-  const int nshards = 6;
-  const uint64_t chunk_size = swidth / k;
-  const uint64_t object_size = swidth * 1024;
 
   g_ceph_context->_conf->osd_ec_partial_reads_experimental = true;
 

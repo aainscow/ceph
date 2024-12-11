@@ -40,7 +40,7 @@ void debug(const hobject_t &oid, const std::string &str, const ECUtil::shard_ext
   ldpp_dout(dpp, 20)
     << "EC_DEBUG_BUFFERS: generate_transactions: "
     << "oid: " << oid
-    << " " << str << " " << map.debug_string(2048, 8) << dendl;
+    << " " << str << " " << map.debug_string(3767, 0) << dendl;
 #else
   ldpp_dout(dpp, 20)
     << "generate_transactions: "
@@ -67,31 +67,42 @@ static void encode_and_write(
 	             << " plan " << plan
 	             << dendl;
 
-  for (auto &&[shard_id, t]: *transactions) {
-    if (plan.will_write.contains(shard_id)) {
-      extent_set to_write_eset = plan.will_write[shard_id];
+  for (auto && [shard, to_write_eset]  : plan.will_write) {
+    shard_id_t shard_id(shard);
+    /* Zero pad, even if we are not writing.  The extent cache requires that
+     * all shards are fully populated with write data, even if the OSDs are
+     * down. This is not a fundamental requirement of the cache, but dealing
+     * with implied zeros due to incomplete writes is both difficult and
+     * removes a level of protection against bugs.
+     */
+    for (auto &&[offset, len]: to_write_eset) {
+      shard_extent_map.zero_pad(shard_id, offset, len);
+    }
+
+    if (transactions->contains(shard_id)) {
+      auto &t = transactions->at(shard_id);
       if (to_write_eset.begin().get_start() >= plan.orig_size) {
-	t.set_alloc_hint(
-	  coll_t(spg_t(pgid, shard_id)),
-	  ghobject_t(oid, ghobject_t::NO_GEN, shard_id),
-	  0, 0,
-	  CEPH_OSD_ALLOC_HINT_FLAG_SEQUENTIAL_WRITE |
-	  CEPH_OSD_ALLOC_HINT_FLAG_APPEND_ONLY);
+        t.set_alloc_hint(
+          coll_t(spg_t(pgid, shard_id)),
+          ghobject_t(oid, ghobject_t::NO_GEN, shard_id),
+          0, 0,
+          CEPH_OSD_ALLOC_HINT_FLAG_SEQUENTIAL_WRITE |
+          CEPH_OSD_ALLOC_HINT_FLAG_APPEND_ONLY);
       }
 
       for (auto &&[offset, len]: to_write_eset) {
-	buffer::list bl;
-        shard_extent_map.zero_pad(shard_id, offset, len);
-	shard_extent_map.get_buffer(shard_id, offset, len, bl);
+        buffer::list bl;
+        shard_extent_map.get_buffer(shard_id, offset, len, bl);
         t.write(coll_t(spg_t(pgid, shard_id)),
-	  ghobject_t(oid, ghobject_t::NO_GEN, shard_id),
-	  offset, bl.length(), bl, flags);
+          ghobject_t(oid, ghobject_t::NO_GEN, shard_id),
+          offset, bl.length(), bl, flags);
       }
     }
   }
 }
 
 ECTransaction::WritePlanObj::WritePlanObj(
+  const hobject_t &hoid,
   const PGTransaction::ObjectOperation &op,
   const ECUtil::stripe_info_t &sinfo,
   uint64_t orig_size,
@@ -99,6 +110,7 @@ ECTransaction::WritePlanObj::WritePlanObj(
   const std::optional<object_info_t> &soi,
   const ECUtil::HashInfoRef &&hinfo,
   const ECUtil::HashInfoRef &&shinfo) :
+hoid(hoid),
 hinfo(hinfo),
 shinfo(shinfo),
 orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
@@ -110,6 +122,9 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
   if (soi) {
     projected_size = soi->size;
   }
+
+  hobject_t source;
+  invalidates_cache = op.has_source(&source) || op.is_delete();
 
   /* If we are truncating, then we need to over-write the new end to
    * the end of that page with zeros. Everything after that will get
@@ -181,8 +196,10 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
         int shard = sinfo.get_shard(raw_shard);
         will_write[shard].insert(outter_extent_superset);
         if (read_mask.contains(shard)) {
-          reads[shard].insert(outter_extent_superset);
-          reads[shard].intersection_of(read_mask[shard]);
+          extent_set _read;
+          _read.insert(outter_extent_superset);
+          _read.intersection_of(read_mask.at(shard));
+          if (!_read.empty()) reads.emplace(shard, std::move(_read));
         }
       }
     }
@@ -191,7 +208,6 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
     ECUtil::shard_extent_set_t zero;
     ECUtil::shard_extent_set_t read_mask;
 
-    uint64_t aligned_orig_size = ECUtil::align_page_next(orig_size);
     sinfo.ro_size_to_read_mask(orig_size, read_mask);
 
     /* Here we deal with potentially zeroing out any buffers. We rely on a
@@ -204,14 +220,6 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
      * truncates/appends within a single transactions are expected be very rare.
      */
 
-    /* The zero stripe is any area that gets zeroed if not written to. It is used
-     * by appends (old size -> new size) and truncates if truncate.second >
-     * truncate.first.
-     */
-    if (aligned_orig_size < projected_size) {
-      sinfo.ro_range_to_shard_extent_set(aligned_orig_size,
-        projected_size - aligned_orig_size, zero, outter_extent_superset);
-    }
     if (op.truncate && op.truncate->first < op.truncate->second) {
       uint64_t aligned_zero_start = ECUtil::align_page_next(op.truncate->first);
       uint64_t aligned_zero_end = ECUtil::align_page_next(op.truncate->second);
@@ -308,7 +316,13 @@ void ECTransaction::generate_transactions(
         ceph_assert(oid.is_temp());
       }
 
-      WritePlanObj &plan = plans.plans.at(oid);
+      /* Transactions must be submitted in the same order that they were
+       * planned in.
+       */
+      ceph_assert(!plans.plans.empty());
+      WritePlanObj &plan = plans.plans.front();
+      ceph_assert(plan.hoid == oid);
+
 
       if (oid.is_temp()) {
         if (op.is_fresh_object()) {
@@ -505,7 +519,6 @@ void ECTransaction::generate_transactions(
       }
       debug(oid, "to_write", to_write, dpp);
       ldpp_dout(dpp, 20) << "generate_transactions: plan: " << plan << dendl;
-      if (plan.to_read) ceph_assert(*plan.to_read == to_write.get_shard_extent_set());
 
       std::vector<std::pair<uint64_t,uint64_t>> rollback_extents;
       std::vector<std::set<shard_id_t>> rollback_shards;
@@ -579,11 +592,46 @@ void ECTransaction::generate_transactions(
       } else if (op.truncate && op.truncate->first < clone_max) {
         clone_max = ECUtil::align_page_next(op.truncate->first);
       }
-      if (!sinfo.supports_ec_optimizations()) {
-        clone_max = sinfo.logical_to_next_stripe_offset(clone_max);
-      }
       ECUtil::shard_extent_set_t cloneable_range;
       sinfo.ro_size_to_read_mask (clone_max, cloneable_range);
+
+      if (plan.orig_size < plan.projected_size) {
+        ECUtil::shard_extent_set_t projected_cloneable_range;
+        sinfo.ro_size_to_read_mask( plan.projected_size, projected_cloneable_range);
+
+        for (auto &&[shard, eset] : projected_cloneable_range) {
+          uint64_t old_shard_size = 0;
+          if (cloneable_range.contains(shard))
+          {
+            old_shard_size = cloneable_range.at(shard).range_end();
+          }
+          uint64_t new_shard_size = eset.range_end();
+
+          if (new_shard_size == old_shard_size) continue;
+
+          uint64_t write_end = 0;
+          if (plan.will_write.contains(shard)) {
+            write_end = plan.will_write.at(shard).range_end();
+          }
+
+          if (write_end == new_shard_size) continue;
+
+          /* If code is executing here, it means that the written part of the
+           * shard does not reflect the size that EC believes the shard to be.
+           * This is not a problem for reads (they will be truncated), but it
+           * is a problem for writes, where future writes may attempt a clone
+           * off the end of the object.
+           * To solve this, we use an interesting quirk of "truncate" where we
+           * can actually truncate to a size larger than the object!
+           */
+          shard_id_t shard_id(shard);
+          auto &&t = (*transactions)[shard_id];
+          t.truncate(
+            coll_t(spg_t(pgid, shard_id)),
+            ghobject_t(oid, ghobject_t::NO_GEN, shard_id),
+            new_shard_size);
+        }
+      }
 
       set<shard_id_t> touched;
 
@@ -650,6 +698,15 @@ void ECTransaction::generate_transactions(
         // Depending on the write, we may or may not have the parity buffers.
         // Here we invent some buffers.
         to_write.insert_parity_buffers();
+        if (!sinfo.supports_partial_writes()) {
+          for (auto &&[shard, eset] : plan.will_write) {
+            if (sinfo.get_raw_shard(shard) >= sinfo.get_k()) continue;
+
+            for (auto [off, len] : eset) {
+              to_write.zero_pad(shard, off, len);
+            }
+          }
+        }
 	encode_and_write(pgid, oid, ec_impl, plan, to_write, fadvise_flags,
 	  transactions, dpp);
       }
@@ -677,7 +734,7 @@ void ECTransaction::generate_transactions(
 	ldpp_dout(dpp, 20) << "generate_transactions: marking append "
 			   << plan.orig_size
 			   << dendl;
-	entry->mod_desc.append(plan.orig_size);
+	entry->mod_desc.append(ECUtil::align_page_next(plan.orig_size));
       }
 
       // Update shard_versions in object_info to record which shards are being
@@ -696,7 +753,7 @@ void ECTransaction::generate_transactions(
 	} else {
           for (unsigned int shard = 0; shard < sinfo.get_k_plus_m(); shard++) {
 	    if (sinfo.is_nonprimary_shard(shard_id_t(shard))) {
-              if (entry->is_written_shard(shard_id_t(shard))) {
+              if (entry->is_written_shard(shard_id_t(shard)) || plan.orig_size != plan.projected_size) {
 		// Written - erase per shard version
 		if (oi.shard_versions.erase(shard_id_t(shard))) {
 		  update = true;
@@ -770,7 +827,7 @@ void ECTransaction::generate_transactions(
 	      coll_t(spg_t(pgid, st.first)),
 	      ghobject_t(oid, ghobject_t::NO_GEN, st.first),
 	      to_set);
-	  } else if (entry->is_written_shard(st.first)) {
+	  } else if (entry->is_written_shard(st.first) || plan.orig_size != plan.projected_size) {
 	    // Written shard - Only update object_info attribute
 	    st.second.setattr(
 	      coll_t(spg_t(pgid, st.first)),
@@ -805,13 +862,14 @@ void ECTransaction::generate_transactions(
 	  }
 	}
       }
+
+      plans.plans.pop_front();
     });
 }
 
 std::ostream& ECTransaction::operator<<(std::ostream& lhs, const ECTransaction::WritePlan& rhs)
 {
-  return lhs << " { invalidate_caches : " << rhs.invalidates_cache
-      << ", plans : " << rhs.plans
+  return lhs << " { plans : " << rhs.plans
       << "}";
 }
 
@@ -823,5 +881,6 @@ std::ostream& ECTransaction::operator<<(std::ostream& lhs, const ECTransaction::
     << " hinfo: " << obj.hinfo
     << " shinfo: " << obj.shinfo
     << " orig_size: " << obj.orig_size
-    << " projected_size: " << obj.projected_size;
+    << " projected_size: " << obj.projected_size
+    << " invalidates_cache: " << obj.invalidates_cache;
 }

@@ -66,6 +66,13 @@ namespace ECUtil {
     void clear() { map.clear(); }
     auto erase(int shard) { return map.erase(shard); }
     auto erase(std::map<int, extent_set>::iterator &iter) { return map.erase(iter);}
+    void erase_stripe(uint64_t offset, uint64_t length) {
+      for (auto it = map.begin(); it != map.end();) {
+        it->second.erase(offset, length);
+        if (it->second.empty()) it = map.erase(it);
+        else ++it;
+      }
+    }
     auto begin() const { return map.begin(); }
     auto begin() { return map.begin(); }
     auto end() const { return map.end(); }
@@ -195,6 +202,30 @@ public:
       chunk_mapping_reverse(reverse_chunk_mapping(chunk_mapping)) {
     ceph_assert(stripe_width % k == 0);
   }
+  stripe_info_t(unsigned int k, unsigned int m, uint64_t stripe_width,
+                  pg_pool_t *pool, std::vector<int> _chunk_mapping)
+      : stripe_width(stripe_width),
+        plugin_flags(0xFFFFFFFFFFFFFFFFul), // Everything enabled for test harnesses.
+        chunk_size(stripe_width / k),
+        pool(pool),
+        k(k),
+        m(m),
+        chunk_mapping(complete_chunk_mapping(_chunk_mapping, k + m)),
+        chunk_mapping_reverse(reverse_chunk_mapping(chunk_mapping)) {
+    ceph_assert(stripe_width % k == 0);
+  }
+  stripe_info_t(unsigned int k, unsigned int m, uint64_t stripe_width,
+                  pg_pool_t *pool)
+      : stripe_width(stripe_width),
+        plugin_flags(0xFFFFFFFFFFFFFFFFul), // Everything enabled for test harnesses.
+        chunk_size(stripe_width / k),
+        pool(pool),
+        k(k),
+        m(m),
+        chunk_mapping(complete_chunk_mapping(std::vector<int>(), k + m)),
+        chunk_mapping_reverse(reverse_chunk_mapping(chunk_mapping)) {
+    ceph_assert(stripe_width % k == 0);
+  }
   uint64_t object_size_to_shard_size(const uint64_t size, int shard) const {
     uint64_t remainder = size % get_stripe_width();
     uint64_t shard_size = (size - remainder) / k;
@@ -229,22 +260,17 @@ public:
   bool is_nonprimary_shard(const shard_id_t shard) const {
     return pool->is_nonprimary_shard(shard);
   }
-  bool supports_ec_optimizations() const {
-    return pool->allows_ecoptimizations();
-  }
   bool supports_ec_overwrites() const {
     return pool->allows_ecoverwrites();
   }
   bool require_hinfo() const {
-    return !supports_ec_overwrites() || !supports_ec_optimizations();
+    return !supports_ec_overwrites();
   }
   bool supports_partial_reads() const {
-    return supports_ec_optimizations() &&
-      (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_PARTIAL_READ_OPTIMIZATION) != 0;
+    return (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_PARTIAL_READ_OPTIMIZATION) != 0;
   }
   bool supports_partial_writes() const {
-    return supports_ec_optimizations() &&
-      (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_PARTIAL_WRITE_OPTIMIZATION) != 0;
+    return (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_PARTIAL_WRITE_OPTIMIZATION) != 0;
   }
   bool logical_offset_is_stripe_aligned(uint64_t logical) const {
     return (logical % stripe_width) == 0;

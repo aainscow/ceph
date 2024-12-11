@@ -59,15 +59,15 @@ shard_extent_set_t iset_from_vector(vector<vector<pair<uint64_t, uint64_t>>> &&i
 
 struct Client : public ECExtentCache::BackendRead
 {
-  hobject_t oid;
+  hobject_t oid = hobject_t().make_temp_hobject("My first object");
   stripe_info_t sinfo;
   ECExtentCache::LRU lru;
   ECExtentCache cache;
   optional<shard_extent_set_t> active_reads;
-  optional<shard_extent_map_t> result;
+  list<shard_extent_map_t> results;
 
   Client(uint64_t chunk_size, int k, int m, uint64_t cache_size) :
-    sinfo(k, chunk_size * k, m, vector<int>(0)),
+    sinfo(k, m, k*chunk_size, vector<int>(0)),
     lru(cache_size), cache(*this, lru, sinfo, g_ceph_context) {};
 
   void backend_read(hobject_t _oid, const shard_extent_set_t& request,
@@ -79,7 +79,7 @@ struct Client : public ECExtentCache::BackendRead
   void cache_ready(hobject_t& _oid, const shard_extent_map_t& _result)
   {
     ceph_assert(oid == _oid);
-    result = _result;
+    results.emplace_back(_result);
   }
 
   void complete_read()
@@ -94,12 +94,15 @@ struct Client : public ECExtentCache::BackendRead
     shard_extent_map_t emap = imap_from_iset(op->get_writes(), &sinfo);
     //Fill in the parity. Parity correctness does not matter to the cache.
     emap.insert_parity_buffers();
-    result.reset();
+    results.clear();
     cache.write_done(op, std::move(emap));
   }
 
-  void kick_cache() {
-    cache.read_done(oid, shard_extent_map_t(&sinfo));
+  void cache_execute(ECExtentCache::OpRef &op)
+  {
+    list<ECExtentCache::OpRef> l;
+    l.emplace_back(op);
+    cache.execute(l);
   }
 };
 
@@ -118,22 +121,23 @@ TEST(ECExtentCache, simple_write)
       CacheReadyCb &&ready_cb)
       */
 
-    optional op = cl.cache.prepare(cl.oid, to_read, to_write, 10, 10,
-      [&cl](shard_extent_map_t &result)
+    optional op = cl.cache.prepare(cl.oid, to_read, to_write, 10, 10, false,
+      [&cl](ECExtentCache::OpRef &op)
       {
-        cl.cache_ready(cl.oid, result);
+        cl.cache_ready(op->get_hoid(), op->get_result());
       });
-    cl.cache.execute(*op);
+    cl.cache_execute(*op);
     ASSERT_EQ(to_read, cl.active_reads);
-    ASSERT_FALSE(cl.result);
+    ASSERT_TRUE(cl.results.empty());
     cl.complete_read();
 
     ASSERT_FALSE(cl.active_reads);
-    ASSERT_EQ(to_read, cl.result->get_extent_set());
+    ASSERT_EQ(1, cl.results.size());
+    ASSERT_EQ(to_read, cl.results.front().get_extent_set());
     cl.complete_write(*op);
 
     ASSERT_FALSE(cl.active_reads);
-    ASSERT_FALSE(cl.result);
+    ASSERT_TRUE(cl.results.empty());
     op.reset();
   }
 
@@ -142,18 +146,16 @@ TEST(ECExtentCache, simple_write)
   {
     auto to_read = iset_from_vector( {{{0, 2}}, {{0, 2}}});
     auto to_write = iset_from_vector({{{0, 10}}, {{0, 10}}});
-    optional op = cl.cache.prepare(cl.oid, to_read, to_write, 10, 10,
-      [&cl](shard_extent_map_t &result)
+    optional op = cl.cache.prepare(cl.oid, to_read, to_write, 10, 10, false,
+      [&cl](ECExtentCache::OpRef &op)
       {
-        cl.cache_ready(cl.oid, result);
+        cl.cache_ready(op->get_hoid(), op->get_result());
       });
-    cl.cache.execute(*op);
-    // FIXME: LRU Cache Disabled.
-    ASSERT_TRUE(cl.active_reads);
-    cl.complete_read();
-
-    ASSERT_TRUE(cl.result);
-    ASSERT_EQ(to_read, cl.result->get_extent_set());
+    cl.cache_execute(*op);
+    ASSERT_FALSE(cl.active_reads);
+    ASSERT_FALSE(cl.results.empty());
+    ASSERT_EQ(1, cl.results.size());
+    ASSERT_EQ(to_read, cl.results.front().get_extent_set());
     cl.complete_write(*op);
     op.reset();
   }
@@ -164,17 +166,17 @@ TEST(ECExtentCache, simple_write)
   {
     auto to_read = iset_from_vector( {{{2, 2}}, {{2, 2}}});
     auto to_write = iset_from_vector({{{0, 10}}, {{0, 10}}});
-    optional op = cl.cache.prepare(cl.oid, to_read, to_write, 10, 10,
-      [&cl](shard_extent_map_t &result)
+    optional op = cl.cache.prepare(cl.oid, to_read, to_write, 10, 10, false,
+      [&cl](ECExtentCache::OpRef &op)
       {
-        cl.cache_ready(cl.oid, result);
+        cl.cache_ready(op->get_hoid(), op->get_result());
       });
-    cl.cache.execute(*op);
-    // FIXME: LRU Cache Disabled.
-    ASSERT_TRUE(cl.active_reads);
-    cl.complete_read();
+    cl.cache_execute(*op);
 
-    ASSERT_EQ(to_read, cl.result->get_extent_set());
+    // SHould have remained in LRU!
+    ASSERT_FALSE(cl.active_reads);
+    ASSERT_EQ(1, cl.results.size());
+    ASSERT_EQ(to_read, cl.results.front().get_extent_set());
     cl.complete_write(*op);
     op.reset();
   }
@@ -186,28 +188,28 @@ TEST(ECExtentCache, sequential_appends) {
   auto to_write1 = iset_from_vector({{{0, 10}}});
 
   // The first write...
-  optional op1 = cl.cache.prepare(cl.oid, nullopt, to_write1, 0, 10,
-    [&cl](shard_extent_map_t &result)
-    {
-      cl.cache_ready(cl.oid, result);
-    });
-  cl.cache.execute(*op1);
+  optional op1 = cl.cache.prepare(cl.oid, nullopt, to_write1, 0, 10, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op1);
 
   // Write should have been honoured immediately.
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   auto to_write2 = iset_from_vector({{{10, 10}}});
   cl.complete_write(*op1);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // The first write...
-  optional op2 = cl.cache.prepare(cl.oid, nullopt, to_write1, 10, 20,
-    [&cl](shard_extent_map_t &result)
-    {
-      cl.cache_ready(cl.oid, result);
-    });
-  cl.cache.execute(*op2);
+  optional op2 = cl.cache.prepare(cl.oid, nullopt, to_write1, 10, 20, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op2);
 
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   cl.complete_write(*op2);
 
 }
@@ -220,77 +222,73 @@ TEST(ECExtentCache, multiple_writes)
   auto to_write1 = iset_from_vector({{{0, 10}}});
 
   // This should drive a request for this IO, which we do not yet honour.
-  optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 10, 10,
-    [&cl](shard_extent_map_t &result)
-    {
-      cl.cache_ready(cl.oid, result);
-    });
-  cl.cache.execute(*op1);
+  optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 10, 10, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op1);
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Perform another request. We should not see any change in the read requests.
   auto to_read2 = iset_from_vector( {{{8, 4}}});
   auto to_write2 = iset_from_vector({{{10, 10}}});
-  optional op2 = cl.cache.prepare(cl.oid, to_read2, to_write2, 10, 10,
-    [&cl](shard_extent_map_t &result)
-    {
-      cl.cache_ready(cl.oid, result);
-    });
-  cl.cache.execute(*op2);
+  optional op2 = cl.cache.prepare(cl.oid, to_read2, to_write2, 10, 10, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op2);
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Perform another request, this to check that reads are coalesced.
   auto to_read3 = iset_from_vector( {{{32, 6}}});
   auto to_write3 = iset_from_vector({{}, {{40, 0}}});
-  optional op3 = cl.cache.prepare(cl.oid, to_read3, to_write3, 10, 10,
-    [&cl](shard_extent_map_t &result)
-    {
-      cl.cache_ready(cl.oid, result);
-    });
-  cl.cache.execute(*op3);
+  optional op3 = cl.cache.prepare(cl.oid, to_read3, to_write3, 10, 10, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op3);
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Finally op4, with no reads.
   auto to_write4 = iset_from_vector({{{20, 10}}});
-  optional op4 = cl.cache.prepare(cl.oid, nullopt, to_write4, 10, 10,
-    [&cl](shard_extent_map_t &result)
-    {
-      cl.cache_ready(cl.oid, result);
-    });
-  cl.cache.execute(*op4);
+  optional op4 = cl.cache.prepare(cl.oid, nullopt, to_write4, 10, 10, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op4);
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Completing the first read will allow the first write and start a batched read.
   // Note that the cache must not read what was written in op 1.
   cl.complete_read();
   auto expected_read = iset_from_vector({{{10,2}, {32,6}}});
   ASSERT_EQ(expected_read, cl.active_reads);
-  ASSERT_EQ(to_read1, cl.result->get_extent_set());
+  ASSERT_EQ(1, cl.results.size());
+  ASSERT_EQ(to_read1, cl.results.front().get_extent_set());
   cl.complete_write(*op1);
 
   // The next write requires some more reads, so should not occur.
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // All reads complete, this should allow for op2 to be ready.
   cl.complete_read();
   ASSERT_FALSE(cl.active_reads);
-  ASSERT_EQ(to_read2, cl.result->get_extent_set());
+  ASSERT_EQ(3, cl.results.size());
+  auto result = cl.results.begin();
+  ASSERT_EQ(to_read2, result++->get_extent_set());
+  ASSERT_EQ(to_read3, result++->get_extent_set());
+  ASSERT_TRUE(result++->empty());
+
   cl.complete_write(*op2);
-  // In the real code, this happens inside the complete read callback. Here
-  // we need to kick the statemachine.
-  cl.kick_cache();
-
-  // Since no further reads are required op3 and op4 should occur immediately.
-  ASSERT_TRUE(cl.result);
-  ASSERT_EQ(to_read3, cl.result->get_extent_set());
   cl.complete_write(*op3);
-
-  // No write data for op 4.
-  ASSERT_FALSE(cl.result);
   cl.complete_write(*op4);
 
   op1.reset();
@@ -319,22 +317,45 @@ TEST(ECExtentCache, on_change)
   ceph_assert(dummies == 1);
   {
     shared_ptr<Dummy> d = *dummy;
-    // This should drive a request for this IO, which we do not yet honour.
-    op.emplace(cl.cache.prepare(cl.oid, to_read1, to_write1, 10, 10,
-      [d](shard_extent_map_t &result)
+    /* Here we generate an op that we never expect to be completed. Note that
+     * some static code analysis tools suggest deleting d here. DO NOT DO THIS
+     * as we are relying on side effects from the destruction of d in this test.
+     */
+    op.emplace(cl.cache.prepare(cl.oid, to_read1, to_write1, 10, 10, false,
+      [d](ECExtentCache::OpRef &ignored)
       {
         ceph_abort("Should be cancelled");
       }));
   }
+  cl.cache_execute(*op);
 
-  cl.cache.execute(*op);
-  dummy.reset();
+  /* We now have the following graph of objects:
+   * cache -- op -- lambda -- d
+   *                 dummy --/
+   */
   ASSERT_EQ(1, dummies);
-  op.reset();
-  ASSERT_EQ(1, dummies);
+
+  /* Executing the on_change will "cancel" this cache op.  This will cause it
+   * to release the lambda, reducing us down to dummy -- d
+   */
   cl.cache.on_change();
+  ASSERT_EQ(1, dummies);
 
-  ceph_assert(dummies == 0);
+  /* This emulates the rmw pipeline clearing outstanding IO.  We now have no
+   * references to d, so we should have destructed the object.
+   * */
+  dummy.reset();
+  ASSERT_EQ(0, dummies);
+
+  /* Keeping the op alive here is emulating the dummy keeping a record of the
+   * cache op. It will also be destroyed at this point by rmw pipeline.
+   */
+  ASSERT_FALSE(cl.cache.idle());
+  op.reset();
+  ASSERT_TRUE(cl.cache.idle());
+
+  // The cache has its own asserts, which we should honour.
+  cl.cache.on_change2();
 }
 
 TEST(ECExtentCache, multiple_misaligned_writes)
@@ -358,52 +379,52 @@ TEST(ECExtentCache, multiple_misaligned_writes)
   auto to_write3 = iset_from_vector({{{12*1024, 12*1024}}});
 
   //Perform the first write, which should result in a read.
-  optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 22*1024, 22*1024,
-  [&cl](shard_extent_map_t &result)
-  {
-    cl.cache_ready(cl.oid, result);
-  });
-  cl.cache.execute(*op1);
+  optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 22*1024, 22*1024, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+     cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op1);
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Submit the second IO.
-  optional op2 = cl.cache.prepare(cl.oid, to_read2, to_write2, 22*1024, 22*1024,
-  [&cl](shard_extent_map_t &result)
-  {
-    cl.cache_ready(cl.oid, result);
-  });
-  cl.cache.execute(*op2);
+  optional op2 = cl.cache.prepare(cl.oid, to_read2, to_write2, 22*1024, 22*1024, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+     cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op2);
   // We should still be executing read 1.
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Allow the read to complete. We should now have op1 done...
   cl.complete_read();
   ASSERT_EQ(to_read2_exec, cl.active_reads);
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   cl.complete_write(*op1);
 
   // And move on to op3
-  optional op3 = cl.cache.prepare(cl.oid, to_read3, to_write3, 22*1024, 22*1024,
-  [&cl](shard_extent_map_t &result)
-  {
-    cl.cache_ready(cl.oid, result);
-  });
-  cl.cache.execute(*op3);
+  optional op3 = cl.cache.prepare(cl.oid, to_read3, to_write3, 22*1024, 22*1024, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+     cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op3);
   // We should still be executing read 1.
   ASSERT_EQ(to_read2_exec, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Allow the read to complete. We should now have op2 done...
   cl.complete_read();
   ASSERT_EQ(to_read3_exec, cl.active_reads);
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   cl.complete_write(*op2);
   ASSERT_EQ(to_read3_exec, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
   cl.complete_read();
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   cl.complete_write(*op3);
 
 }
@@ -429,52 +450,230 @@ TEST(ECExtentCache, multiple_misaligned_writes2)
   auto to_write3 = iset_from_vector({{{12*1024, 12*1024}}});
 
   //Perform the first write, which should result in a read.
-  optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 22*1024, 22*1024,
-  [&cl](shard_extent_map_t &result)
-  {
-    cl.cache_ready(cl.oid, result);
-  });
-  cl.cache.execute(*op1);
+  optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 22*1024, 22*1024, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+     cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op1);
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Submit the second IO.
-  optional op2 = cl.cache.prepare(cl.oid, to_read2, to_write2, 22*1024, 22*1024,
-  [&cl](shard_extent_map_t &result)
-  {
-    cl.cache_ready(cl.oid, result);
-  });
-  cl.cache.execute(*op2);
+  optional op2 = cl.cache.prepare(cl.oid, to_read2, to_write2, 22*1024, 22*1024, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+     cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op2);
   // We should still be executing read 1.
   ASSERT_EQ(to_read1, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Allow the read to complete. We should now have op1 done...
   cl.complete_read();
   ASSERT_EQ(to_read2_exec, cl.active_reads);
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   cl.complete_write(*op1);
 
   // And move on to op3
-  optional op3 = cl.cache.prepare(cl.oid, to_read3, to_write3, 22*1024, 22*1024,
-  [&cl](shard_extent_map_t &result)
-  {
-    cl.cache_ready(cl.oid, result);
-  });
-  cl.cache.execute(*op3);
+  optional op3 = cl.cache.prepare(cl.oid, to_read3, to_write3, 22*1024, 22*1024, false,
+   [&cl](ECExtentCache::OpRef &op)
+   {
+     cl.cache_ready(op->get_hoid(), op->get_result());
+   });
+  cl.cache_execute(*op3);
   // We should still be executing read 1.
   ASSERT_EQ(to_read2_exec, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
 
   // Allow the read to complete. We should now have op2 done...
   cl.complete_read();
   ASSERT_EQ(to_read3_exec, cl.active_reads);
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   cl.complete_write(*op2);
   ASSERT_EQ(to_read3_exec, cl.active_reads);
-  ASSERT_FALSE(cl.result);
+  ASSERT_TRUE(cl.results.empty());
   cl.complete_read();
-  ASSERT_TRUE(cl.result);
+  ASSERT_FALSE(cl.results.empty());
   cl.complete_write(*op3);
 
+}
+
+TEST(ECExtentCache, test_invalidate)
+{
+  Client cl(256*1024, 2, 1, 1024*1024);
+
+  /* First attempt a write which does not do any reads */
+  {
+    auto to_read1 = iset_from_vector( {{{0, 4096}}});
+    auto to_write1 = iset_from_vector({{{0, 4096}}});
+    optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 4096, 4096, false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op1);
+    ASSERT_EQ(to_read1, cl.active_reads);
+    ASSERT_TRUE(cl.results.empty());
+
+    /* Now perform an invalidating cache write */
+    optional op2 = cl.cache.prepare(cl.oid, nullopt, shard_extent_set_t(), 4*1024, 0, false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op2);
+
+    cl.complete_read();
+    ASSERT_EQ(2, cl.results.size());
+    auto result = cl.results.begin();
+    ASSERT_FALSE(result++->empty());
+    ASSERT_TRUE(result++->empty());
+
+    cl.complete_write(*op1);
+    ASSERT_FALSE(cl.active_reads);
+    cl.complete_write(*op2);
+
+    cl.cache.on_change();
+    op1.reset();
+    op2.reset();
+    cl.cache.on_change2();
+    ASSERT_TRUE(cl.cache.idle());
+  }
+
+  /* Second test, modifies, deletes, creates, then modifies.  */
+  {
+    auto to_read1 = iset_from_vector( {{{0, 8192}}});
+    auto to_write1 = iset_from_vector({{{0, 8192}}});
+    auto to_write2 = iset_from_vector({{{4096, 4096}}});
+    auto to_read3 = iset_from_vector( {{{0, 4096}}});
+    auto to_write3 = iset_from_vector({{{0, 4096}}});
+    optional op1 = cl.cache.prepare(cl.oid, to_read1, to_write1, 8192, 8192, false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    optional op2 = cl.cache.prepare(cl.oid, nullopt, shard_extent_set_t(), 4*1024, 0, false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    optional op3 = cl.cache.prepare(cl.oid, nullopt, to_write2, 0, 8192, false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    optional op4 = cl.cache.prepare(cl.oid, to_read3, to_write3, 8192, 8192, false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op1);
+    cl.cache_execute(*op2);
+    cl.cache_execute(*op3);
+    cl.cache_execute(*op4);
+
+    /* The first result must actually read. */
+    cl.complete_read();
+    ASSERT_EQ(4, cl.results.size());
+    auto result = cl.results.begin();
+    ASSERT_FALSE(result++->empty());
+    ASSERT_TRUE(result++->empty());
+    ASSERT_TRUE(result++->empty());
+    ASSERT_TRUE(result++->empty());
+    cl.complete_write(*op1);
+    cl.complete_write(*op2);
+    cl.complete_write(*op3);
+    cl.complete_write(*op4);
+
+    cl.cache.on_change();
+    op1.reset();
+    op2.reset();
+    op3.reset();
+    op4.reset();
+    cl.cache.on_change2();
+    ASSERT_TRUE(cl.cache.idle());
+  }
+}
+
+TEST(ECExtentCache, test_invalidate_lru)
+{
+  uint64_t c = 4096;
+  int k = 4;
+  int m = 2;
+  Client cl(c, k, m, 1024*c);
+
+  /* Populate the cache LRU and then invalidate the cache. */
+  {
+    uint64_t bs = 3767;
+    auto io1 = iset_from_vector({{{align_page_prev(35*bs), align_page_next(36*bs) - align_page_prev(35*bs)}}});
+    io1[k].insert(io1.get_extent_superset());
+    io1[k+1].insert(io1.get_extent_superset());
+    auto io2 = iset_from_vector({{{align_page_prev(18*bs), align_page_next(19*bs) - align_page_prev(18*bs)}}});
+    io2[k].insert(io1.get_extent_superset());
+    io2[k+1].insert(io1.get_extent_superset());
+    // io 3 is the truncate
+    auto io3 = shard_extent_set_t();
+    auto io4 = iset_from_vector({{{align_page_prev(30*bs), align_page_next(31*bs) - align_page_prev(30*bs)}}});
+    io3[k].insert(io1.get_extent_superset());
+    io3[k+1].insert(io1.get_extent_superset());
+    auto io5 = iset_from_vector({{{align_page_prev(18*bs), align_page_next(19*bs) - align_page_prev(18*bs)}}});
+    io4[k].insert(io1.get_extent_superset());
+    io4[k+1].insert(io1.get_extent_superset());
+
+    optional op1 = cl.cache.prepare(cl.oid, nullopt, io1, 0, align_page_next(36*bs), false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+
+    cl.cache_execute(*op1);
+    ASSERT_FALSE(cl.active_reads);
+    cl.complete_write(*op1);
+    op1.reset();
+
+    optional op2 = cl.cache.prepare(cl.oid, io2, io2, align_page_next(36*bs), align_page_next(36*bs), false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op2);
+    // We have active reads because the object was discarded fro the cache
+    // and has forgotten about all the zero reads.
+    ASSERT_TRUE(cl.active_reads);
+    cl.complete_read();
+    cl.complete_write(*op2);
+    op2.reset();
+
+    optional op3 = cl.cache.prepare(cl.oid, nullopt, io3, align_page_next(36*bs), 0, false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op3);
+    ASSERT_FALSE(cl.active_reads);
+    cl.complete_write(*op3);
+    op3.reset();
+
+    optional op4 = cl.cache.prepare(cl.oid, nullopt, io4, 0, align_page_next(30*bs), false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op4);
+    ASSERT_FALSE(cl.active_reads);
+    cl.complete_write(*op4);
+    op4.reset();
+
+    optional op5 = cl.cache.prepare(cl.oid, io5, io5, align_page_next(30*bs), align_page_next(30*bs), false,
+      [&cl](ECExtentCache::OpRef &op)
+      {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op5);
+    ASSERT_TRUE(cl.active_reads);
+    cl.complete_write(*op5);
+    op5.reset();
+  }
 }

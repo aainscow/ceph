@@ -27,14 +27,17 @@ namespace ECTransaction {
   {
   public:
 
+    const hobject_t hoid;
     std::optional<ECUtil::shard_extent_set_t> to_read;
     ECUtil::shard_extent_set_t will_write;
     const ECUtil::HashInfoRef hinfo;
     const ECUtil::HashInfoRef shinfo;
     const uint64_t orig_size;
     uint64_t projected_size;
+    bool invalidates_cache;
 
     WritePlanObj(
+      const hobject_t &hoid,
       const PGTransaction::ObjectOperation &op,
       const ECUtil::stripe_info_t &sinfo,
       uint64_t orig_size,
@@ -47,9 +50,8 @@ namespace ECTransaction {
   };
 
   struct WritePlan {
-    bool invalidates_cache = false; // Yes, both are possible
     bool want_read;
-    std::map<hobject_t, WritePlanObj> plans;
+    std::list<WritePlanObj> plans;
   };
   std::ostream& operator<<(std::ostream& lhs, const ECTransaction::WritePlan& rhs);
   std::ostream& operator<<(std::ostream& lhs, const WritePlanObj& rhs);

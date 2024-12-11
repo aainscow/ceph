@@ -378,29 +378,30 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
   op.returned_data.emplace(std::move(buffers_read));
   extent_set buffer_superset = op.returned_data->get_extent_superset();
 
-  ECUtil::shard_extent_set_t missing;
-  for (auto && shard : op.missing_on_shards) {
-    missing[shard.id].insert(buffer_superset);
-  }
+  ECUtil::shard_extent_set_t zero_mask;
+  sinfo.ro_size_to_zero_mask(op.recovery_info.size, zero_mask);
 
-  ECUtil::shard_extent_set_t zero_pad;
+  ECUtil::shard_extent_set_t shard_want_to_read;
+  for (int raw_shard = 0; raw_shard < sinfo.get_k(); raw_shard++) {
+    int shard = sinfo.get_shard(raw_shard);
+    shard_want_to_read[shard].insert(buffer_superset);
 
-  uint64_t aligned_size = ECUtil::align_page_next(op.obc->obs.oi.size);
-
-  sinfo.ro_size_to_zero_mask(aligned_size, zero_pad);
-
-  for (auto &&[shard, eset] : zero_pad) {
-    eset.intersection_of(buffer_superset);
-    if (missing.contains(shard))
-      continue;
-    for (auto [z_off, z_len] : eset) {
-      bufferlist bl;
-      bl.append_zero(z_len);
-      op.returned_data->insert_in_shard(shard, z_off, bl);
+    //FIXME: decode needs to be improved to interpret missing buffers as zero.
+    //       Once this happens, this code can be removed.
+    extent_set zero;
+    zero.intersection_of(zero_mask[shard], buffer_superset);
+    if (!zero.empty() && (zero.range_start() == 0 || op.returned_data->contains_shard(shard))) {
+      op.returned_data->zero_pad(shard, zero.range_start(), zero.size());
     }
   }
 
-  int r = op.returned_data->decode(ec_impl, missing);
+  uint64_t ro_end = op.returned_data->get_ro_end();
+  if (ro_end == op.recovery_info.size)
+  op.returned_data->append_zeros_to_ro_offset(sinfo.logical_to_next_stripe_offset(op.returned_data->get_ro_end()));
+
+  uint64_t aligned_size = ECUtil::align_page_next(op.obc->obs.oi.size);
+
+  int r = op.returned_data->decode(ec_impl, shard_want_to_read);
   ceph_assert(r == 0);
   // We are never appending here, so we never need hinfo.
   op.returned_data->insert_parity_buffers();
@@ -1483,7 +1484,7 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
       ceph::os::Transaction& transaction) final
   {
 // FIXME: BILL: Enable EC partial metadata writes
-#if 1
+#if 0
     if (transaction.empty()) {
       return true;
     }
@@ -1585,20 +1586,22 @@ void ECBackend::submit_transaction(
     std::optional<object_info_t> soi;
     ECUtil::HashInfoRef hinfo;
 
-    if (!sinfo.supports_ec_optimizations() || !sinfo.supports_ec_overwrites()) {
+    if (!sinfo.supports_ec_overwrites()) {
       hinfo = get_hinfo_from_disk(oid);
     }
 
     hobject_t source;
     if (inner_op.has_source(&source)) {
-      // typically clone or mv
-      plans.invalidates_cache = true;
       shinfo = get_hinfo_from_disk(source);
       soi = get_object_info_from_obc(obc_map.at(source));
     }
 
     uint64_t old_object_size = 0;
     if (rmw_pipeline.extent_cache.contains_object(oid)) {
+      /* We have a valid extent cache for this object. If we need to read, we
+       * need to behave as if the object is already the size projected by the
+       * extent cache, or we may not read enough data.
+       */
       old_object_size = rmw_pipeline.extent_cache.get_projected_size(oid);
     } else {
       std::optional<object_info_t> old_oi = get_object_info_from_obc(obc );
@@ -1607,11 +1610,11 @@ void ECBackend::submit_transaction(
       }
     }
 
-    ECTransaction::WritePlanObj plan(inner_op,
+    ECTransaction::WritePlanObj plan(oid, inner_op,
       sinfo, old_object_size, oi, soi, std::move(hinfo), std::move(shinfo));
 
     if (plan.to_read) plans.want_read = true;
-    plans.plans.emplace(oid, std::move(plan));
+    plans.plans.emplace_back(std::move(plan));
   });
   ldpp_dout(get_parent()->get_dpp(), 20) << __func__
              << " plans=" << plans

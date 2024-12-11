@@ -23,5 +23,10 @@ struct ec_align_t {
                << rhs.size << ","
                << rhs.flags;
   }
+  ec_align_t(std::pair<uint64_t, uint64_t> p, uint32_t flags)
+    : offset(p.first), size(p.second), flags(flags) {}
+  ec_align_t(uint64_t offset, uint64_t size, uint32_t flags)
+    : offset(offset), size(size), flags(flags) {}
+  bool operator==(const ec_align_t &other) const;
 };
 

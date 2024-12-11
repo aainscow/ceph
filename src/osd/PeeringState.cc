@@ -7419,7 +7419,8 @@ PeeringState::GetMissing::GetMissing(my_context ctx)
       ps->peer_missing[*i].clear();
       continue;
     }
-
+    // BILL FIXME - Enable this once the incomplete logs are working.
+#if 0
     // Partial writes - if the peer log is only divergent because of partial writes then
     // roll forward the peer to cover writes it was not involved in.
     if (pi.last_update < ps->info.last_update) {
@@ -7455,6 +7456,7 @@ PeeringState::GetMissing::GetMissing(my_context ctx)
       }
       psdout(0) << "BILL_GET_MISSING: " << ps->info.last_complete << " " << pi.last_update << dendl;
     }
+#endif
 
     if (pi.last_update == pi.last_complete &&  // peer has no missing
 	pi.last_update == ps->info.last_update) {  // peer is up to date

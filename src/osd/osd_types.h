@@ -3466,6 +3466,8 @@ public:
     uint32_t new_crush_barrier,
     int32_t old_crush_member,
     int32_t new_crush_member,
+    bool old_allow_ec_optimizations,
+    bool new_allow_ec_optimizations,
     pg_t pgid
     );
 
@@ -4143,6 +4145,21 @@ public:
     encode(extents, bl);
     encode(object_size, bl);
     encode(shards, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  // Version for legacy EC (can be deleted when EC*L.cc is deleted.
+  void rollback_extents(
+   const version_t gen,
+   const std::vector<std::pair<uint64_t, uint64_t>> &extents) {
+    ceph_assert(can_local_rollback);
+    ceph_assert(!rollback_info_completed);
+    if (max_required_version < 2)
+      max_required_version = 2;
+    ENCODE_START(2, 2, bl);
+    append_id(ROLLBACK_EXTENTS);
+    encode(gen, bl);
+    encode(extents, bl);
     ENCODE_FINISH(bl);
   }
 
