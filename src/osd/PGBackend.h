@@ -536,6 +536,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      version_t gen,
      const std::vector<std::pair<uint64_t, uint64_t> > &extents,
      const hobject_t &hoid,
+     const uint64_t shard_size,
      ObjectStore::Transaction *t);
  public:
 
@@ -611,7 +612,8 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      coll_t coll,
      ObjectStore::CollectionHandle &ch,
      ObjectStore *store,
-     CephContext *cct);
+     CephContext *cct,
+     ECExtentCache::LRU &ec_extent_cache_lru);
 };
 
 #endif

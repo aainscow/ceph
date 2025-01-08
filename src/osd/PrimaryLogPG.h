@@ -1525,7 +1525,8 @@ public:
   PrimaryLogPG(OSDService *o, OSDMapRef curmap,
 	       const PGPool &_pool,
 	       const std::map<std::string,std::string>& ec_profile,
-	       spg_t p);
+	       spg_t p,
+               ECExtentCache::LRU &ec_extent_cache_lru);
   ~PrimaryLogPG() override;
 
   void do_command(
