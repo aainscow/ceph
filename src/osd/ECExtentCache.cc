@@ -9,7 +9,11 @@
 using namespace std;
 using namespace ECUtil;
 
+#define dout_context cct
+#define dout_subsys ceph_subsys_osd
+
 namespace ECExtentCache {
+
   void Object::request(OpRef &op)
   {
     uint64_t alignment = sinfo.get_chunk_size();
@@ -24,6 +28,7 @@ namespace ECExtentCache {
         else if (l.in_lru) pg.lru.lru.remove(l);
         l.in_lru = false;
         l.ref_count++;
+        op->lines.emplace_back(l);
       }
     }
 
@@ -31,9 +36,15 @@ namespace ECExtentCache {
     if (op->reads) {
       for (auto &&[shard, eset]: *(op->reads)) {
         extent_set request = eset;
-        if (cache.contains(shard))   request.subtract(cache.get_extent_set(shard));
-        if (reading.contains(shard)) request.subtract(reading.at(shard));
-        if (writing.contains(shard)) request.subtract(writing.at(shard));
+        if (cache.contains(shard)) {
+          request.subtract(cache.get_extent_set(shard));
+        }
+        if (reading.contains(shard)) {
+          request.subtract(reading.at(shard));
+        }
+        if (writing.contains(shard)) {
+          request.subtract(writing.at(shard));
+        }
 
         if (!request.empty()) {
           requesting[shard].insert(request);
@@ -45,7 +56,6 @@ namespace ECExtentCache {
     // We require that the overlapping reads and writes in the requested IO are either read
     // or were written by a previous IO.
     writing.insert(op->writes);
-    active_ios++;
 
     send_reads();
   }
@@ -76,27 +86,19 @@ namespace ECExtentCache {
     return cache.size() - old_size;
   }
 
-  void Object::unpin(OpRef &op) {
-    uint64_t alignment = sinfo.get_chunk_size();
-    extent_set eset = op->get_pin_eset(alignment);
-
-    for (auto &&[start, len]: eset ) {
-      for (uint64_t to_pin = start; to_pin < start + len; to_pin += alignment) {
-        Line &l = lines.at(to_pin);
-        ceph_assert(l.ref_count);
-        if (!--l.ref_count) {
-          if (pg.lru_enabled) {
-            l.in_lru = true;
-            pg.lru.lru.emplace_back(l);
-          } else {
-            erase_line(l);
-          }
+  void Object::unpin(Op &op) {
+    for ( auto &&l : op.lines) {
+      ceph_assert(l.ref_count);
+      if (!--l.ref_count) {
+        if (pg.lru_enabled) {
+          l.in_lru = true;
+          pg.lru.lru.emplace_back(l);
+        } else {
+          erase_line(l);
         }
       }
     }
 
-    ceph_assert(active_ios > 0);
-    active_ios--;
     delete_maybe();
   }
 
@@ -162,7 +164,7 @@ namespace ECExtentCache {
     op->reads = to_read;
     op->writes = write;
     op->object.projected_size = op->projected_size = projected_size;
-    if (op->object.active_ios == 0)
+    if (op->object.active_ios == 1)
       op->object.current_size = orig_size;
 
     unlock();
@@ -198,15 +200,18 @@ namespace ECExtentCache {
     return objects.contains(oid);
   }
 
-  void PG::complete(OpRef &op) {
-    lock();
-    op->object.unpin(op);
-    ceph_assert(active_ios > 0);
-    active_ios--;
-    if (lru_enabled) {
-      lru.free_maybe();
+  Op::~Op() {
+    object.pg.lock();
+    ceph_assert(object.active_ios > 0);
+    object.active_ios--;
+    ceph_assert(object.pg.active_ios > 0);
+    object.pg.active_ios--;
+
+    object.unpin(*this);
+    if (object.pg.lru_enabled) {
+      object.pg.lru.free_maybe();
     }
-    unlock();
+    object.pg.unlock();
   }
 
   void PG::on_change() {
@@ -217,21 +222,23 @@ namespace ECExtentCache {
       lru.mutex.unlock();
     }
 
+    for (auto && op :waiting_ops) {
+      op->cancel();
+    }
     waiting_ops.clear();
-    objects.clear();
-    active_ios = 0;
+    ceph_assert(objects.empty());
+    ceph_assert(active_ios == 0);
   }
 
   void PG::execute(OpRef op) {
     lock();
     op->object.request(op);
-    active_ios++;
     waiting_ops.emplace_back(op);
     counter++;
     cumm_size += op->writes.size();
     cache_maybe_ready();
     unlock();
-  };
+  }
 
   bool PG::idle() const
   {
@@ -247,7 +254,7 @@ namespace ECExtentCache {
 
   uint64_t PG::get_and_reset_cumm_size()
   {
-    int ret = cumm_size;
+    uint64_t ret = cumm_size;
     cumm_size = 0;
     return ret;
   }
@@ -285,5 +292,12 @@ namespace ECExtentCache {
     eset.align(alignment);
 
     return eset;
+  }
+
+  Op::Op(GenContextURef<OpRef &> &&cache_ready_cb, Object &object) :
+  object(object), cache_ready_cb(std::move(cache_ready_cb))
+  {
+    object.active_ios++;
+    object.pg.active_ios++;
   }
 } // ECExtentCache

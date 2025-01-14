@@ -27,6 +27,7 @@ namespace ECExtentCache {
   class PG
   {
     friend class Object;
+    friend class Op;
 
     std::map<hobject_t, Object> objects;
     BackendRead &backend_read;
@@ -38,6 +39,7 @@ namespace ECExtentCache {
     int counter = 0;
     uint64_t cumm_size = 0;
     int active_ios = 0;
+    CephContext* cct;
 
     OpRef prepare(GenContextURef<OpRef &> &&ctx,
       hobject_t const &oid,
@@ -52,16 +54,17 @@ namespace ECExtentCache {
 
   public:
     explicit PG(BackendRead &backend_read,
-      LRU &lru, const ECUtil::stripe_info_t &sinfo) :
+      LRU &lru, const ECUtil::stripe_info_t &sinfo,
+      CephContext *cct) :
       backend_read(backend_read),
       lru(lru),
       sinfo(sinfo),
-      lru_enabled(LRU_ENABLED) {}
+      lru_enabled(LRU_ENABLED),
+      cct(cct) {}
 
     // Insert some data into the cache.
     void read_done(hobject_t const& oid, ECUtil::shard_extent_map_t const&& update);
     void write_done(OpRef &op, ECUtil::shard_extent_map_t const&& update);
-    void complete(OpRef &read);
     void on_change();
     bool contains_object(hobject_t const &oid);
     uint64_t get_projected_size(hobject_t const &oid);
@@ -81,7 +84,7 @@ namespace ECExtentCache {
     }
 
     void execute(OpRef op);
-    bool idle() const;
+    [[nodiscard]] bool idle() const;
     int get_and_reset_counter();
     uint64_t get_and_reset_cumm_size();
   };
@@ -89,17 +92,16 @@ namespace ECExtentCache {
   class LRU {
     friend class PG;
     friend class Object;
+    friend class Op;
 
     std::list<Line> lru;
     uint64_t max_size = 0;
     uint64_t size = 0;
-    ceph::mutex mutex = ceph::make_mutex("ECExtentCache::LRU");;
+    ceph::mutex mutex = ceph::make_mutex("ECExtentCache::LRU");
 
     void free_maybe();
     void free_to_size(uint64_t target_size);
     void discard();
-    void pin(OpRef &op, uint64_t alignment, Object &object);
-    std::map<hobject_t, std::list<uint64_t>> unpin(OpRef &op, uint64_t alignment);
     void inc_size(uint64_t size);
     void dec_size(uint64_t size);
   public:
@@ -118,14 +120,16 @@ namespace ECExtentCache {
     ECUtil::shard_extent_set_t writes;
     std::optional<ECUtil::shard_extent_map_t> result;
     bool complete = false;
-    uint64_t projected_size;
+    uint64_t projected_size = 0;
     GenContextURef<OpRef &> cache_ready_cb;
+    std::list<Line> lines;
 
     extent_set get_pin_eset(uint64_t alignment);
 
   public:
-    explicit Op(GenContextURef<OpRef &> &&cache_ready_cb, Object &object) :
-      object(object), cache_ready_cb(std::move(cache_ready_cb)) {}
+    explicit Op(GenContextURef<OpRef &> &&cache_ready_cb, Object &object);
+    ~Op();
+    void cancel() { delete cache_ready_cb.release(); }
     std::optional<ECUtil::shard_extent_map_t> get_result() { return result; }
     ECUtil::shard_extent_set_t get_writes() { return writes; }
 
@@ -150,21 +154,19 @@ namespace ECExtentCache {
     int active_ios = 0;
     uint64_t projected_size = 0;
     uint64_t current_size = 0;
+    CephContext *cct;
 
     void request(OpRef &op);
     void send_reads();
     uint64_t read_done(ECUtil::shard_extent_map_t const &result);
-    uint64_t write_done(OpRef &op, ECUtil::shard_extent_map_t const &result);
-    void check_buffers_pinned(ECUtil::shard_extent_map_t const &buffers);
-    void check_cache_pinned();
     uint64_t insert(ECUtil::shard_extent_map_t const &buffers);
-    void unpin(OpRef &op);
+    void unpin(Op &op);
     void delete_maybe();
     uint64_t erase_line(Line &l);
 
   public:
     hobject_t oid;
-    Object(PG &pg, hobject_t oid) : pg(pg), sinfo(pg.sinfo), cache(&pg.sinfo), oid(oid) {}
+    Object(PG &pg, hobject_t oid) : pg(pg), sinfo(pg.sinfo), cache(&pg.sinfo), cct(pg.cct), oid(oid) {}
   };
 
 

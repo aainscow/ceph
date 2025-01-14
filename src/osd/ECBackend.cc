@@ -403,6 +403,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
   int r = op.returned_data->decode(ec_impl, missing);
   ceph_assert(r == 0);
   // We are never appending here, so we never need hinfo.
+  op.returned_data->insert_parity_buffers();
   r = op.returned_data->encode(ec_impl, NULL, 0);
   ceph_assert(r==0);
 
@@ -624,7 +625,7 @@ void ECBackend::RecoveryBackend::continue_recovery_op(
       dout(20) << __func__ << ": returned_data=" << op.returned_data << dendl;
       op.state = RecoveryOp::WRITING;
       ObjectRecoveryProgress after_progress = op.recovery_progress;
-      after_progress.data_recovered_to += op.returned_data->get_ro_end();
+      after_progress.data_recovered_to = op.returned_data->get_ro_end();
       after_progress.first = false;
       if (after_progress.data_recovered_to >= op.obc->obs.oi.size) {
 	after_progress.data_complete = true;
@@ -1221,7 +1222,6 @@ void ECBackend::handle_sub_read_reply(
 	op.errors[i->first] = -EIO;
         rop.debug_log.emplace_back(ECUtil::INJECT_EIO, op.from);
       }
-
     }
   }
   for (auto &&[hoid, offset_buffer_map] : op.buffers_read) {
@@ -1245,17 +1245,21 @@ void ECBackend::handle_sub_read_reply(
     rop.debug_log.emplace_back(ECUtil::READ_DONE, op.from, buffers_read);
   }
   for (auto &&[hoid, req] : rop.to_read) {
+    if (!rop.complete.contains(hoid)) {
+      rop.complete.emplace(hoid, &sinfo);
+    }
+    auto &complete = rop.complete.at(hoid);
     for (auto &&[shard, read] : req.shard_reads) {
-      if (!rop.complete.contains(hoid)) {
-        rop.complete.emplace(hoid, &sinfo);
-      }
-      rop.complete.at(hoid).processed_read_requests[shard.shard.id].insert(read.extents);
-      rop.complete.at(hoid).processed_read_requests[shard.shard.id].insert(read.zero_pad);
+
+      if (complete.errors.contains(shard)) continue;
+
+      complete.processed_read_requests[shard.shard.id].insert(read.extents);
+      complete.processed_read_requests[shard.shard.id].insert(read.zero_pad);
       if (read.zero_pad.empty())
         continue;
 
       if (!rop.complete.contains(hoid) ||
-        !rop.complete.at(hoid).buffers_read.contains(shard.shard.id)) {
+        !complete.buffers_read.contains(shard.shard.id)) {
 
         if (!read.extents.empty()) continue; // Complete the actual read first.
 
@@ -1267,7 +1271,7 @@ void ECBackend::handle_sub_read_reply(
       for (auto &&[off, len] : read.zero_pad) {
         bufferlist bl;
         bl.append_zero(len);
-        auto &buffers_read = rop.complete.at(hoid).buffers_read;
+        auto &buffers_read = complete.buffers_read;
         buffers_read.insert_in_shard(shard.shard.id, off, bl);
       }
       rop.debug_log.emplace_back(ECUtil::ZERO_DONE, shard, read.zero_pad);
@@ -1294,7 +1298,7 @@ void ECBackend::handle_sub_read_reply(
     complete.errors.emplace(from, err);
     rop.debug_log.emplace_back(ECUtil::ERROR, op.from, complete.buffers_read);
     complete.buffers_read.erase_shard(from.shard);
-    complete.processed_read_requests.erase(from.shard.id);
+    complete.processed_read_requests.erase(from.shard);
     dout(20) << __func__ << " shard=" << from << " error=" << err << dendl;
   }
 

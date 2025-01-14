@@ -51,7 +51,7 @@ using extent_map = interval_map<uint64_t, ceph::buffer::list, bl_split_merge>;
 
 // Setting to 1 turns on very large amounts of level 0 debug containing the
 // contents of buffers. Even on level 20 this is not really wanted.
-#define DEBUG_EC_BUFFERS 0
+#define DEBUG_EC_BUFFERS 1
 
 namespace ECUtil {
   class shard_extent_map_t;
@@ -191,7 +191,7 @@ public:
     uint64_t remainder = size % get_stripe_width();
     uint64_t shard_size = (size - remainder) / k;
     shard = chunk_mapping_reverse[shard];
-    if (shard > (int)get_data_chunk_count()) {
+    if (shard >= (int)get_data_chunk_count()) {
       // coding parity shards have same size as data shard 0
       shard = 0;
     }
@@ -379,6 +379,8 @@ public:
     ro_range_to_shards(ro_offset, ro_size, &shard_extent_set, &parity, NULL,
                         NULL);
 
+    if (parity.empty()) return;
+
     for (int shard : get_parity_shards()) {
       shard_extent_set[shard].insert(parity);
     }
@@ -427,7 +429,7 @@ public:
   HashInfo() {}
   explicit HashInfo(unsigned num_chunks) :
     cumulative_shard_hashes(num_chunks, -1) {}
-  void append(uint64_t old_size, std::map<int, ceph::buffer::list> &to_append);
+  void append(uint64_t old_size, std::map<int, bufferptr> &to_append);
   void clear() {
     total_chunk_size = 0;
     cumulative_shard_hashes = std::vector<uint32_t>(
@@ -464,11 +466,38 @@ class shard_extent_map_t
 {
   static const uint64_t invalid_offset = std::numeric_limits<uint64_t>::max();
 
+  class slice_iterator
+  {
+    uint64_t offset = (uint64_t)-1;
+    uint64_t length = (uint64_t)-1;
+    uint64_t start = (uint64_t)-1;
+    uint64_t end = (uint64_t)-1;
+    std::map<int, std::pair<extent_map::const_iterator, bufferlist::const_iterator>> iters;
+    std::map<int, bufferptr> slice;
+    shard_extent_map_t &sem;
+    void advance();
+  public:
+    slice_iterator(shard_extent_map_t &sem);
+    std::map<int, bufferptr> &get_bufferptrs() { return slice; }
+    uint64_t get_offset() { return offset; }
+    uint64_t get_length() { return length; }
+    bool is_end() { return slice.empty(); }
+    bool is_page_aligned();
+
+    slice_iterator& operator++() {
+      advance();
+      return *this;
+    }
+  };
+
+public:
   const stripe_info_t *sinfo;
   // The maximal range of all extents maps within rados object space.
   uint64_t ro_start;
   uint64_t ro_end;
   std::map<int, extent_map> extent_maps;
+
+  slice_iterator begin_slice_iterator();
 
   /* This caculates the ro offset for an offset into a particular shard */
   uint64_t calc_ro_offset(int raw_shard, int shard_offset) {
@@ -611,6 +640,7 @@ public:
   bool contains(int shard, extent_set other_eset) const;
   bool contains(std::optional<shard_extent_set_t> const &other) const;
   bool contains(shard_extent_set_t const &other) const;
+  void pad_and_rebuild_to_page_align();
   uint64_t size();
   void clear();
 

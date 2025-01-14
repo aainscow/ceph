@@ -563,8 +563,7 @@ struct ClientReadCompleter : ECCommon::ReadCompleter {
     dout(20) << __func__ << ": before decode: " << res.buffers_read.debug_string(2048, 8) << dendl;
 #endif
     /* Decode any missing buffers */
-    res.buffers_read.decode(read_pipeline.ec_impl, req.shard_want_to_read);
-
+    ceph_assert(0 == res.buffers_read.decode(read_pipeline.ec_impl, req.shard_want_to_read));
 
 #if DEBUG_EC_BUFFERS
     dout(20) << __func__ << ": after decode: " << res.buffers_read.debug_string(2048, 8) << dendl;
@@ -748,7 +747,7 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op)
       {
         op->cache_ready(op->hoid, cache_op->get_result());
       });
-    op->cache_ops.emplace(op->hoid, cache_op);
+    op->cache_ops.emplace(op->hoid, std::move(cache_op));
   }
   for (auto &&[_, cache_op] : op->cache_ops) {
     extent_cache.execute(cache_op);
@@ -806,7 +805,6 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
     oid_to_version[op.hoid] = op.version;
   }
   for (auto &&pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
-    op.pending_commits++;
     auto iter = trans.find(pg_shard.shard);
     ceph_assert(iter != trans.end());
     if (iter->second.empty()) {
@@ -827,7 +825,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
       dout(20) << " BILL: Skipping transaction for osd." << iter->first << dendl;
       continue;
     }
-    op.pending_commit.insert(pg_shard);
+    op.pending_commits++;
     bool should_send = get_parent()->should_send_op(pg_shard, op.hoid);
     const pg_stat_t &stats =
       (should_send || !backfill_shards.count(pg_shard)) ?
@@ -931,16 +929,13 @@ void ECCommon::RMWPipeline::finish_rmw(OpRef &op)
   if (op->version > committed_to)
     committed_to = op->version;
 
-  for (auto &&[_, c]: op->cache_ops) {
-    extent_cache.complete(c);
-  }
   op->cache_ops.clear();
 
   if (get_osdmap()->require_osd_release >= ceph_release_t::kraken && extent_cache.idle()) {
     if (op->version > get_parent()->get_log().get_can_rollback_to()) {
       int transactions_since_last_idle = extent_cache.get_and_reset_counter();
       uint64_t cumm_size = extent_cache.get_and_reset_cumm_size();
-      dout(20) << __func__ << " version=" << op->version << " ec_counter=" << transactions_since_last_idle << " size=" << cumm_size << dendl; dendl;
+      dout(20) << __func__ << " version=" << op->version << " ec_counter=" << transactions_since_last_idle << " size=" << cumm_size << dendl;
       // submit a dummy, transaction-empty op to kick the rollforward
       auto tid = get_parent()->get_tid();
       auto nop = std::make_shared<ECDummyOp>();
