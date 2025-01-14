@@ -102,16 +102,21 @@ template <OpType opType, int numIOs>
 std::string ceph::io_exerciser::ReadWriteOp<opType, numIOs>::to_string(
     uint64_t block_size) const {
   std::string offset_length_desc;
+  std::string length_desc;
   if (numIOs > 0) {
     offset_length_desc += fmt::format(
         "offset1={}", value_to_string(this->offset[0] * block_size));
-    offset_length_desc += fmt::format(
-        ",length1={}", value_to_string(this->length[0] * block_size));
+    length_desc += fmt::format(
+        "length1={}", value_to_string(this->length[0] * block_size));
+    offset_length_desc += "," + length_desc;
     for (int i = 1; i < numIOs; i++) {
+      std::string length;
       offset_length_desc += fmt::format(
           ",offset{}={}", i + 1, value_to_string(this->offset[i] * block_size));
-      offset_length_desc += fmt::format(
+      length += fmt::format(
           ",length{}={}", i + 1, value_to_string(this->length[i] * block_size));
+      length_desc += length;
+      offset_length_desc += length;
     }
   }
   switch (opType) {
