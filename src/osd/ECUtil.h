@@ -272,9 +272,6 @@ public:
   bool supports_partial_writes() const {
     return (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_PARTIAL_WRITE_OPTIMIZATION) != 0;
   }
-  bool logical_offset_is_stripe_aligned(uint64_t logical) const {
-    return (logical % stripe_width) == 0;
-  }
   uint64_t get_stripe_width() const {
     return stripe_width;
   }
@@ -308,49 +305,49 @@ public:
   int get_data_chunk_count() const {
     return k;
   }
-  uint64_t logical_to_prev_chunk_offset(uint64_t offset) const {
+  uint64_t ro_offset_to_prev_chunk_offset(uint64_t offset) const {
     return (offset / stripe_width) * chunk_size;
   }
-  uint64_t logical_to_next_chunk_offset(uint64_t offset) const {
+  uint64_t ro_offset_to_next_chunk_offset(uint64_t offset) const {
     return ((offset + stripe_width - 1)/ stripe_width) * chunk_size;
   }
-  uint64_t logical_to_prev_stripe_offset(uint64_t offset) const {
+  uint64_t ro_offset_to_prev_stripe_ro_offset(uint64_t offset) const {
     return offset - (offset % stripe_width);
   }
-  uint64_t logical_to_next_stripe_offset(uint64_t offset) const {
+  uint64_t ro_offset_to_next_stripe_ro_offset(uint64_t offset) const {
     return ((offset % stripe_width) ?
       (offset - (offset % stripe_width) + stripe_width) :
       offset);
   }
-  uint64_t aligned_logical_offset_to_chunk_offset(uint64_t offset) const {
+  uint64_t aligned_ro_offset_to_chunk_offset(uint64_t offset) const {
     ceph_assert(offset % stripe_width == 0);
     return (offset / stripe_width) * chunk_size;
   }
-  uint64_t chunk_aligned_logical_offset_to_chunk_offset(uint64_t offset) const {
+  uint64_t chunk_aligned_ro_offset_to_chunk_offset(uint64_t offset) const {
     [[maybe_unused]] const auto residue_in_stripe = offset % stripe_width;
     ceph_assert(residue_in_stripe % chunk_size == 0);
     ceph_assert(stripe_width % chunk_size == 0);
     // this rounds down
     return (offset / stripe_width) * chunk_size;
   }
-  uint64_t chunk_aligned_logical_size_to_chunk_size(uint64_t len) const {
+  uint64_t chunk_aligned_ro_length_to_shard_length(uint64_t len) const {
     // this rounds up
     return ((len + stripe_width - 1) / stripe_width) * chunk_size;
   }
-  uint64_t aligned_chunk_offset_to_logical_offset(uint64_t offset) const {
+  uint64_t chunk_aligned_shard_offset_to_ro_offset(uint64_t offset) const {
     ceph_assert(offset % chunk_size == 0);
     return (offset / chunk_size) * stripe_width;
   }
-  std::pair<uint64_t, uint64_t> chunk_aligned_offset_len_to_chunk(
+  std::pair<uint64_t, uint64_t> chunk_aligned_ro_range_to_shard_ro_range(
     uint64_t off, uint64_t len) const;
-  std::pair<uint64_t, uint64_t> offset_len_to_stripe_bounds(
+  std::pair<uint64_t, uint64_t> ro_offset_len_to_stripe_ro_offset_len(
     uint64_t _off, uint64_t _len) const {
-    uint64_t off = logical_to_prev_stripe_offset(_off);
-    uint64_t len = logical_to_next_stripe_offset(
+    uint64_t off = ro_offset_to_prev_stripe_ro_offset(_off);
+    uint64_t len = ro_offset_to_next_stripe_ro_offset(
       (_off - off) + _len);
     return std::make_pair(off, len);
   }
-  std::pair<uint64_t, uint64_t> offset_len_to_chunk_bounds(
+  std::pair<uint64_t, uint64_t> ro_range_to_chunk_ro_range(
     std::pair<uint64_t, uint64_t> in) const {
     uint64_t off = in.first - (in.first % chunk_size);
     uint64_t tmp_len = (in.first - off) + in.second;
@@ -359,36 +356,6 @@ public:
       tmp_len);
     return std::make_pair(off, len);
   }
-  std::pair<uint64_t, uint64_t> offset_len_to_page_bounds(
-  std::pair<uint64_t, uint64_t> in) const {
-    uint64_t off = in.first - (in.first % CEPH_PAGE_SIZE);
-    uint64_t tmp_len = (in.first - off) + in.second;
-    uint64_t len = ((tmp_len % CEPH_PAGE_SIZE) ?
-      (tmp_len - (tmp_len % CEPH_PAGE_SIZE) + CEPH_PAGE_SIZE) :
-      tmp_len);
-    return std::make_pair(off, len);
-  }
-  std::tuple<uint64_t, uint64_t, uint64_t, uint64_t> offset_length_to_data_chunk_extents(
-    uint64_t off, uint64_t len) const {
-    assert(chunk_size > 0);
-    const auto first_chunk_idx = (off / chunk_size);
-    const auto last_chunk_idx = (chunk_size - 1 + off + len) / chunk_size;
-    const auto first_chunk_offset =  first_chunk_idx * chunk_size;
-    const auto first_shard_offset = off - first_chunk_offset + first_chunk_offset/stripe_width;
-    const auto last_chunk_len = (len == 0) ? 0:off + len - (last_chunk_idx - 1) * chunk_size;
-    return {first_chunk_idx, last_chunk_idx, first_shard_offset, last_chunk_len};
-  }
-  bool offset_length_is_same_stripe(
-    uint64_t off, uint64_t len) const {
-    if (len == 0) {
-      return true;
-    }
-    assert(chunk_size > 0);
-    const auto first_stripe_idx = off / stripe_width;
-    const auto last_inc_stripe_idx = (off + len - 1) / stripe_width;
-    return first_stripe_idx == last_inc_stripe_idx;
-  }
-
   void ro_range_to_shard_extent_set(
     uint64_t ro_offset,
     uint64_t ro_size,

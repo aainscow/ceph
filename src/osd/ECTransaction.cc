@@ -491,15 +491,15 @@ void ECTransaction::generate_transactions(
       ceph_assert(op.omap_updates.empty());
 
       if (op.alloc_hint) {
-	/* logical_to_next_chunk_offset() scales down both aligned and
+	/* ro_offset_to_next_chunk_offset() scales down both aligned and
 	   * unaligned offsets
 	   
 	   * we don't bother to roll this back at this time for two reasons:
 	   * 1) it's advisory
 	   * 2) we don't track the old value */
-	uint64_t object_size = sinfo.logical_to_next_chunk_offset(
+	uint64_t object_size = sinfo.ro_offset_to_next_chunk_offset(
 	  op.alloc_hint->expected_object_size);
-	uint64_t write_size = sinfo.logical_to_next_chunk_offset(
+	uint64_t write_size = sinfo.ro_offset_to_next_chunk_offset(
 	  op.alloc_hint->expected_write_size);
 	
 	for (auto &&st : *transactions) {
@@ -530,11 +530,11 @@ void ECTransaction::generate_transactions(
         debug(oid, "truncate_erase", to_write, dpp);
 
 	if (entry && !op.is_fresh_object()) {
-	  uint64_t restore_from = sinfo.logical_to_prev_chunk_offset(
+	  uint64_t restore_from = sinfo.ro_offset_to_prev_chunk_offset(
 	    op.truncate->first);
-	  uint64_t restore_len = sinfo.aligned_logical_offset_to_chunk_offset(
+	  uint64_t restore_len = sinfo.aligned_ro_offset_to_chunk_offset(
 	    plan.orig_size -
-	    sinfo.logical_to_prev_stripe_offset(op.truncate->first));
+	    sinfo.ro_offset_to_prev_stripe_ro_offset(op.truncate->first));
 	  set<shard_id_t> all_shards;
 	  rollback_extents.emplace_back(make_pair(restore_from,restore_len));
 	  rollback_shards.emplace_back(all_shards);
@@ -727,7 +727,7 @@ void ECTransaction::generate_transactions(
         }
         if (plan.hinfo)
 	  plan.hinfo->set_total_chunk_size_clear_hash(
-	    sinfo.logical_to_next_stripe_offset(plan.projected_size));
+	    sinfo.ro_offset_to_next_stripe_ro_offset(plan.projected_size));
       }
 
       if (entry && plan.orig_size < plan.projected_size) {

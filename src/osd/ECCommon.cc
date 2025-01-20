@@ -528,7 +528,7 @@ void ECCommon::ReadPipeline::get_want_to_read_shards(
     int shard = sinfo.get_shard(raw_shard);
 
     for (auto &&read : to_read) {
-      auto offset_len = sinfo.chunk_aligned_offset_len_to_chunk(read.offset, read.size);
+      auto offset_len = sinfo.chunk_aligned_ro_range_to_shard_ro_range(read.offset, read.size);
       want_shard_reads[shard].insert(offset_len.first, offset_len.second);
     }
   }

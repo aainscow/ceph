@@ -33,135 +33,59 @@ TEST(ECUtil, stripe_info_t)
   ECUtil::stripe_info_t s(k, m, swidth);
   ASSERT_EQ(s.get_stripe_width(), swidth);
 
-  ASSERT_EQ(s.logical_to_next_chunk_offset(0), 0u);
-  ASSERT_EQ(s.logical_to_next_chunk_offset(1), s.get_chunk_size());
-  ASSERT_EQ(s.logical_to_next_chunk_offset(swidth - 1),
+  ASSERT_EQ(s.ro_offset_to_next_chunk_offset(0), 0u);
+  ASSERT_EQ(s.ro_offset_to_next_chunk_offset(1), s.get_chunk_size());
+  ASSERT_EQ(s.ro_offset_to_next_chunk_offset(swidth - 1),
 	    s.get_chunk_size());
 
-  ASSERT_EQ(s.logical_to_prev_chunk_offset(0), 0u);
-  ASSERT_EQ(s.logical_to_prev_chunk_offset(swidth), s.get_chunk_size());
-  ASSERT_EQ(s.logical_to_prev_chunk_offset((swidth * 2) - 1),
+  ASSERT_EQ(s.ro_offset_to_prev_chunk_offset(0), 0u);
+  ASSERT_EQ(s.ro_offset_to_prev_chunk_offset(swidth), s.get_chunk_size());
+  ASSERT_EQ(s.ro_offset_to_prev_chunk_offset((swidth * 2) - 1),
 	    s.get_chunk_size());
 
-  ASSERT_EQ(s.logical_to_next_stripe_offset(0), 0u);
-  ASSERT_EQ(s.logical_to_next_stripe_offset(swidth - 1),
+  ASSERT_EQ(s.ro_offset_to_next_stripe_ro_offset(0), 0u);
+  ASSERT_EQ(s.ro_offset_to_next_stripe_ro_offset(swidth - 1),
 	    s.get_stripe_width());
 
-  ASSERT_EQ(s.logical_to_prev_stripe_offset(swidth), s.get_stripe_width());
-  ASSERT_EQ(s.logical_to_prev_stripe_offset(swidth), s.get_stripe_width());
-  ASSERT_EQ(s.logical_to_prev_stripe_offset((swidth * 2) - 1),
+  ASSERT_EQ(s.ro_offset_to_prev_stripe_ro_offset(swidth), s.get_stripe_width());
+  ASSERT_EQ(s.ro_offset_to_prev_stripe_ro_offset(swidth), s.get_stripe_width());
+  ASSERT_EQ(s.ro_offset_to_prev_stripe_ro_offset((swidth * 2) - 1),
 	    s.get_stripe_width());
 
-  ASSERT_EQ(s.aligned_logical_offset_to_chunk_offset(2*swidth),
+  ASSERT_EQ(s.aligned_ro_offset_to_chunk_offset(2*swidth),
 	    2*s.get_chunk_size());
-  ASSERT_EQ(s.aligned_chunk_offset_to_logical_offset(2*s.get_chunk_size()),
+  ASSERT_EQ(s.chunk_aligned_shard_offset_to_ro_offset(2*s.get_chunk_size()),
 	    2*s.get_stripe_width());
 
   // Stripe 1 + 1 chunk for 10 stripes needs to read 11 stripes starting
   // from 1 because there is a partial stripe at the start and end
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(swidth+s.get_chunk_size(), 10*swidth),
+  ASSERT_EQ(s.chunk_aligned_ro_range_to_shard_ro_range(swidth+s.get_chunk_size(), 10*swidth),
 	    make_pair(s.get_chunk_size(), 11*s.get_chunk_size()));
 
   // Stripe 1 + 0 chunks for 10 stripes needs to read 10 stripes starting
   // from 1 because there are no partial stripes
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(swidth, 10*swidth),
+  ASSERT_EQ(s.chunk_aligned_ro_range_to_shard_ro_range(swidth, 10*swidth),
 	    make_pair(s.get_chunk_size(), 10*s.get_chunk_size()));
 
   // Stripe 0 + 1 chunk for 10 stripes needs to read 11 stripes starting
   // from 0 because there is a partial stripe at the start and end
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(s.get_chunk_size(), 10*swidth),
+  ASSERT_EQ(s.chunk_aligned_ro_range_to_shard_ro_range(s.get_chunk_size(), 10*swidth),
 	    make_pair<uint64_t>(0, 11*s.get_chunk_size()));
 
   // Stripe 0 + 1 chunk for (10 stripes + 1 chunk) needs to read 11 stripes
   // starting from 0 because there is a partial stripe at the start and end
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(s.get_chunk_size(),
+  ASSERT_EQ(s.chunk_aligned_ro_range_to_shard_ro_range(s.get_chunk_size(),
 							  10*swidth + s.get_chunk_size()),
 	    make_pair<uint64_t>(0, 11*s.get_chunk_size()));
 
   // Stripe 0 + 2 chunks for (10 stripes + 2 chunks) needs to read 11 stripes
   // starting from 0 because there is a partial stripe at the start
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(2*s.get_chunk_size(),
+  ASSERT_EQ(s.chunk_aligned_ro_range_to_shard_ro_range(2*s.get_chunk_size(),
     10*swidth + 2*s.get_chunk_size()),
     make_pair<uint64_t>(0, 11*s.get_chunk_size()));
 
-  ASSERT_EQ(s.offset_len_to_stripe_bounds(swidth-10, (uint64_t)20),
+  ASSERT_EQ(s.ro_offset_len_to_stripe_ro_offset_len(swidth-10, (uint64_t)20),
             make_pair((uint64_t)0, 2*swidth));
-}
-
-TEST(ECUtil, offset_length_is_same_stripe)
-{
-  const uint64_t swidth = 4096;
-  const uint64_t schunk = 1024;
-  const unsigned int k = 4;
-  const unsigned int m = 2;
-
-  ECUtil::stripe_info_t s(k, m, swidth);
-  ASSERT_EQ(s.get_stripe_width(), swidth);
-  ASSERT_EQ(s.get_chunk_size(), schunk);
-
-  // read nothing at the very beginning
-  //   +---+---+---+---+
-  //   |  0|   |   |   |
-  //   +---+---+---+---+
-  //   |   |   |   |   |
-  //   +---+---+---+---+
-  ASSERT_TRUE(s.offset_length_is_same_stripe(0, 0));
-
-  // read nothing at the stripe end
-  //   +---+---+---+---+
-  //   |   |   |   |  0|
-  //   +---+---+---+---+
-  //   |   |   |   |   |
-  //   +---+---+---+---+
-  ASSERT_TRUE(s.offset_length_is_same_stripe(swidth, 0));
-
-  // read single byte at the stripe end
-  //   +---+---+---+---+
-  //   |   |   |   | ~1|
-  //   +---+---+---+---+
-  //   |   |   |   |   |
-  //   +---+---+---+---+
-  ASSERT_TRUE(s.offset_length_is_same_stripe(swidth - 1, 1));
-
-  // read single stripe
-  //   +---+---+---+---+
-  //   | 1k| 1k| 1k| 1k|
-  //   +---+---+---+---+
-  //   |   |   |   |   |
-  //   +---+---+---+---+
-  ASSERT_TRUE(s.offset_length_is_same_stripe(0, swidth));
-
-  // read single chunk
-  //   +---+---+---+---+
-  //   | 1k|   |   |   |
-  //   +---+---+---+---+
-  //   |   |   |   |   |
-  //   +---+---+---+---+
-  ASSERT_TRUE(s.offset_length_is_same_stripe(0, schunk));
-
-  // read single stripe except its first chunk
-  //   +---+---+---+---+
-  //   |   | 1k| 1k| 1k|
-  //   +---+---+---+---+
-  //   |   |   |   |   |
-  //   +---+---+---+---+
-  ASSERT_TRUE(s.offset_length_is_same_stripe(schunk, swidth - schunk));
-
-  // read two stripes
-  //   +---+---+---+---+
-  //   | 1k| 1k| 1k| 1k|
-  //   +---+---+---+---+
-  //   | 1k| 1k| 1k| 1k|
-  //   +---+---+---+---+
-  ASSERT_FALSE(s.offset_length_is_same_stripe(0, 2*swidth));
-
-  // multistripe read: 1st stripe without 1st byte + 1st byte of 2nd stripe
-  //   +-----+---+---+---+
-  //   | 1k-1| 1k| 1k| 1k|
-  //   +-----+---+---+---+
-  //   |    1|   |   |   |
-  //   +-----+---+---+---+
-  ASSERT_FALSE(s.offset_length_is_same_stripe(1, swidth));
 }
 
 class ErasureCodeDummyImpl : public ErasureCodeInterface {

@@ -397,7 +397,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
 
   uint64_t ro_end = op.returned_data->get_ro_end();
   if (ro_end == op.recovery_info.size)
-  op.returned_data->append_zeros_to_ro_offset(sinfo.logical_to_next_stripe_offset(op.returned_data->get_ro_end()));
+  op.returned_data->append_zeros_to_ro_offset(sinfo.ro_offset_to_next_stripe_ro_offset(op.returned_data->get_ro_end()));
 
   uint64_t aligned_size = ECUtil::align_page_next(op.obc->obs.oi.size);
 
@@ -1647,7 +1647,7 @@ void ECBackend::objects_read_async(
   for (const auto& [read, ctx] : to_read) {
     pair<uint64_t, uint64_t> tmp;
     if (!cct->_conf->osd_ec_partial_reads || fast_read) {
-      tmp = sinfo.offset_len_to_stripe_bounds(read.offset, read.size);
+      tmp = sinfo.ro_offset_len_to_stripe_ro_offset_len(read.offset, read.size);
     } else {
       tmp.first = read.offset;
       tmp.second = read.size;

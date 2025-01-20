@@ -26,12 +26,12 @@ static ostream& _prefix(std::ostream* _dout)
   return *_dout << "ECUtil: ";
 }
 
-std::pair<uint64_t, uint64_t> ECUtil::stripe_info_t::chunk_aligned_offset_len_to_chunk(
+std::pair<uint64_t, uint64_t> ECUtil::stripe_info_t::chunk_aligned_ro_range_to_shard_ro_range(
   uint64_t _off, uint64_t _len) const {
-  auto [off, len] = offset_len_to_stripe_bounds(_off, _len);
+  auto [off, len] = ro_offset_len_to_stripe_ro_offset_len(_off, _len);
   return std::make_pair(
-    chunk_aligned_logical_offset_to_chunk_offset(off),
-    chunk_aligned_logical_size_to_chunk_size(len));
+    chunk_aligned_ro_offset_to_chunk_offset(off),
+    chunk_aligned_ro_length_to_shard_length(len));
 }
 
 /*
@@ -171,7 +171,7 @@ void ECUtil::stripe_info_t::trim_shard_extent_set_for_ro_offset (uint64_t ro_off
 void ECUtil::stripe_info_t::ro_size_to_stripe_aligned_read_mask(
   uint64_t ro_size,
   shard_extent_set_t &shard_extent_set) const {
-  ro_range_to_shard_extent_set_with_parity(0, logical_to_next_stripe_offset(ro_size), shard_extent_set);
+  ro_range_to_shard_extent_set_with_parity(0, ro_offset_to_next_stripe_ro_offset(ro_size), shard_extent_set);
   trim_shard_extent_set_for_ro_offset(ro_size, shard_extent_set);
 }
 
@@ -186,7 +186,7 @@ void ECUtil::stripe_info_t::ro_size_to_zero_mask(
   shard_extent_set_t &shard_extent_set) const {
   // There should never be any zero padding on the parity.
   ro_range_to_shard_extent_set(align_page_next(ro_size),
-    logical_to_next_stripe_offset(ro_size) - align_page_next(ro_size),
+    ro_offset_to_next_stripe_ro_offset(ro_size) - align_page_next(ro_size),
     shard_extent_set);
   trim_shard_extent_set_for_ro_offset(ro_size, shard_extent_set);
 }
@@ -834,7 +834,7 @@ namespace ECUtil {
     int data_chunk_count = sinfo->get_data_chunk_count();
 
     pair read_pair(ro_offset, ro_length);
-    auto chunk_aligned_read = sinfo->offset_len_to_chunk_bounds(read_pair);
+    auto chunk_aligned_read = sinfo->ro_range_to_chunk_ro_range(read_pair);
 
     int raw_shard = (ro_offset / chunk_size) % data_chunk_count;
 
