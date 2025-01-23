@@ -244,13 +244,7 @@ public:
     return 0;
   }
 
-  int encode_chunks(const set<int> &want_to_encode, std::map<int, bufferlist> *encoded) override {
-    return 0;
-  }
-
-  int encode_chunks_ptr(const std::set<int> &want_to_encode
-    , std::map<int, bufferptr> &encoded) override
-  {
+  int encode_chunks(const std::map<int, bufferptr> &in, std::map<int, bufferptr> &out) override {
     return 0;
   }
 

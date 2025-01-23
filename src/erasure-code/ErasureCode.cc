@@ -167,41 +167,41 @@ namespace ceph {
     return _minimum_to_decode(want_to_read, available_chunks, minimum);
   }
 
-  int ErasureCode::encode_prepare(const bufferlist &raw,
-                                  map<int, bufferlist> &encoded) const
-  {
-    unsigned int k = get_data_chunk_count();
-    unsigned int m = get_chunk_count() - k;
-    unsigned blocksize = get_chunk_size(raw.length());
-    unsigned padded_chunks = k - raw.length() / blocksize;
-    bufferlist prepared = raw;
+   int ErasureCode::encode_prepare(const bufferlist &raw,
+                                   map<int, bufferlist> &encoded) const
+   {
+     unsigned int k = get_data_chunk_count();
+     unsigned int m = get_chunk_count() - k;
+     unsigned blocksize = get_chunk_size(raw.length());
+     unsigned padded_chunks = k - raw.length() / blocksize;
+     bufferlist prepared = raw;
 
-    for (unsigned int i = 0; i < k - padded_chunks; i++) {
-      bufferlist &chunk = encoded[chunk_index(i)];
-      chunk.substr_of(prepared, i * blocksize, blocksize);
-      chunk.rebuild_aligned_size_and_memory(blocksize, SIMD_ALIGN);
-      ceph_assert(chunk.is_contiguous());
-    }
-    if (padded_chunks) {
-      unsigned remainder = raw.length() - (k - padded_chunks) * blocksize;
-      bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
+     for (unsigned int i = 0; i < k - padded_chunks; i++) {
+       bufferlist &chunk = encoded[chunk_index(i)];
+       chunk.substr_of(prepared, i * blocksize, blocksize);
+       chunk.rebuild_aligned_size_and_memory(blocksize, SIMD_ALIGN);
+       ceph_assert(chunk.is_contiguous());
+     }
+     if (padded_chunks) {
+       unsigned remainder = raw.length() - (k - padded_chunks) * blocksize;
+       bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
 
-      raw.begin((k - padded_chunks) * blocksize).copy(remainder, buf.c_str());
-      buf.zero(remainder, blocksize - remainder);
-      encoded[chunk_index(k-padded_chunks)].push_back(std::move(buf));
+       raw.begin((k - padded_chunks) * blocksize).copy(remainder, buf.c_str());
+       buf.zero(remainder, blocksize - remainder);
+       encoded[chunk_index(k-padded_chunks)].push_back(std::move(buf));
 
-      for (unsigned int i = k - padded_chunks + 1; i < k; i++) {
-        bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
-        buf.zero();
-        encoded[chunk_index(i)].push_back(std::move(buf));
-      }
-    }
-    for (unsigned int i = k; i < k + m; i++) {
-      bufferlist &chunk = encoded[chunk_index(i)];
-      chunk.push_back(buffer::create_aligned(blocksize, SIMD_ALIGN));
-    }
+       for (unsigned int i = k - padded_chunks + 1; i < k; i++) {
+         bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
+         buf.zero();
+         encoded[chunk_index(i)].push_back(std::move(buf));
+       }
+     }
+     for (unsigned int i = k; i < k + m; i++) {
+       bufferlist &chunk = encoded[chunk_index(i)];
+       chunk.push_back(buffer::create_aligned(blocksize, SIMD_ALIGN));
+     }
 
-    return 0;
+     return 0;
   }
 
   int ErasureCode::encode(const set<int> &want_to_encode,
@@ -210,42 +210,37 @@ namespace ceph {
   {
     unsigned int k = get_data_chunk_count();
     unsigned int m = get_chunk_count() - k;
-    bufferlist out;
+
+    if (!encoded || !encoded->empty()){
+      return -EINVAL;
+    }
+
     int err = encode_prepare(in, *encoded);
     if (err)
       return err;
-    encode_chunks(want_to_encode, encoded);
+
+    std::map<int, bufferptr> in_shards;
+    std::map<int, bufferptr> out_shards;
+    for (auto&& [shard, list] : *encoded) {
+      auto bp = list.begin().get_current_ptr();
+      if (shard < k) in_shards[shard] = bp;
+      else out_shards[shard] = bp;
+    }
+
+    encode_chunks(in_shards, out_shards);
+
     for (unsigned int i = 0; i < k + m; i++) {
       if (want_to_encode.count(i) == 0)
         encoded->erase(i);
     }
+
     return 0;
   }
 
-int ErasureCode::encode_chunks_ptr(const std::set<int> &want_to_encode,
-                      std::map<int, bufferptr> &encoded)
+// TODO: write this function! Although every plugin has its own version to override this one
+int ErasureCode::encode_chunks(const std::map<int, bufferptr> &in, 
+                               std::map<int, bufferptr> &out)
 {
-  unsigned int k = get_data_chunk_count();
-  unsigned int m = get_chunk_count() - k;
-
-  // This provides compatibility for plugins which do not support the newer
-  // interface.
-  map<int, bufferlist> encoded_bl;
-  uint64_t size = 0;
-  for (auto &&[shard, ptr] : encoded) {
-    if (size == 0) size = ptr.length();
-    else ceph_assert(size == ptr.length());
-    bufferlist bl;
-    bl.append(ptr);
-    encoded_bl.emplace(shard, std::move(bl));
-  }
-
-  for (int i = 0; i < k + m; i++) {
-    if (!encoded.contains(i)) encoded_bl[i].append_zero(size);
-  }
-
-  encode_chunks(want_to_encode, &encoded_bl);
-
   return 0;
 };
 

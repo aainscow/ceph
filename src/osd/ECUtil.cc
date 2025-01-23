@@ -5,6 +5,12 @@
 #include "global/global_context.h"
 #include "include/encoding.h"
 #include "ECUtil.h"
+#include "common/debug.h"
+
+#define dout_context g_ceph_context
+#define dout_subsys ceph_subsys_osd
+#undef dout_prefix
+#define dout_prefix _prefix(_dout)
 
 using namespace std;
 using ceph::bufferlist;
@@ -15,6 +21,10 @@ using ceph::Formatter;
 //        cannot be included here, for reasons I have not figured out yet.
 static const unsigned SIMD_ALIGN = 32;
 
+static ostream& _prefix(std::ostream* _dout)
+{
+  return *_dout << "ECUtil: ";
+}
 
 std::pair<uint64_t, uint64_t> ECUtil::stripe_info_t::chunk_aligned_offset_len_to_chunk(
   uint64_t _off, uint64_t _len) const {
@@ -547,13 +557,9 @@ namespace ECUtil {
    * erasure coding.  This generates all parity.
    */
   int shard_extent_map_t::encode(ErasureCodeInterfaceRef& ec_impl,
-    const HashInfoRef &hinfo,
-    uint64_t before_ro_size) {
-    std::set<int> shards;
-    for (int shard : sinfo->get_parity_shards()) {
-      shards.insert(shard);
-    }
-
+                                 const HashInfoRef &hinfo,
+                                 uint64_t before_ro_size) 
+  {
     bool rebuild_req = false;
 
     for (auto iter = begin_slice_iterator(); !iter.is_end(); ++iter) {
@@ -562,8 +568,20 @@ namespace ECUtil {
         break;
       }
 
-      int r = ec_impl->encode_chunks_ptr(shards, iter.get_bufferptrs());
-      if (r) return r;
+      std::map<int, bufferptr> all_shards = iter.get_bufferptrs();
+      std::map<int, bufferptr> in;
+      std::map<int, bufferptr> out;
+
+      auto in_start = all_shards.begin();
+      auto in_end = all_shards.lower_bound(ec_impl->get_data_chunk_count());
+      in.insert(in_start, in_end);
+
+      auto out_start = all_shards.lower_bound(ec_impl->get_data_chunk_count());
+      auto out_end = all_shards.lower_bound(ec_impl->get_data_chunk_count() + ec_impl->get_coding_chunk_count());
+      out.insert(out_start, out_end);      
+
+      int ret = ec_impl->encode_chunks(in, out);
+      if (ret) return ret;
     }
 
     if (rebuild_req) {
@@ -584,7 +602,6 @@ namespace ECUtil {
       }
     }
 
-
     return 0;
   }
 
@@ -595,7 +612,7 @@ namespace ECUtil {
     int r = 0;
     for (auto &&[shard, eset]: want) {
       /* We are assuming here that a shard that has been read does not need
-       * to be decoding. The ECBackend::handle_sub_read_reply code will erase
+       * to be decoded. The ECBackend::handle_sub_read_reply code will erase
        * buffers for any shards with missing reads, so this should be safe.
        */
       if (extent_maps.contains(shard))
