@@ -383,7 +383,7 @@ public:
     if (parity.empty()) return;
 
     for (int shard : get_parity_shards()) {
-      shard_extent_set[shard].insert(parity);
+      shard_extent_set[shard].union_of(parity);
     }
   }
 
