@@ -59,7 +59,7 @@ void ECExtentCache::Object::request(OpRef &op)
       }
 
       if (!request.empty()) {
-        requesting[shard].insert(request);
+        requesting[shard].union_of(request);
         read_required = true;
         requesting_ops.emplace_back(op);
       }

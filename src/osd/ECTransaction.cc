@@ -132,7 +132,7 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
   if (op.truncate &&
       op.truncate->first < projected_size) {
 
-    ro_writes.insert(ECUtil::align_page_prev(op.truncate->first),
+    ro_writes.union_insert(ECUtil::align_page_prev(op.truncate->first),
       ECUtil::align_page_next(projected_size));
   }
 
@@ -147,7 +147,7 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
     uint64_t start = extent.get_off();
     uint64_t end = start + extent.get_len();
 
-    ro_writes.insert(start, end - start);
+    ro_writes.union_insert(start, end - start);
   }
 
   extent_set outter_extent_superset;
@@ -194,10 +194,10 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
     if (!outter_extent_superset.empty()) {
       for (unsigned int raw_shard = 0; raw_shard < sinfo.get_k_plus_m(); raw_shard++) {
         int shard = sinfo.get_shard(raw_shard);
-        will_write[shard].insert(outter_extent_superset);
+        will_write[shard].union_of(outter_extent_superset);
         if (read_mask.contains(shard)) {
           extent_set _read;
-          _read.insert(outter_extent_superset);
+          _read.union_of(outter_extent_superset);
           _read.intersection_of(read_mask.at(shard));
           if (!_read.empty()) reads.emplace(shard, std::move(_read));
         }
@@ -235,7 +235,7 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
       if (raw_shard < sinfo.get_k()) {
 
         if (zero.contains(shard)) {
-          will_write[shard].insert(zero.at(shard));
+          will_write[shard].union_of(zero.at(shard));
         }
 
         if (!read_mask.contains(shard))
@@ -251,7 +251,7 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
           reads.emplace(shard, std::move(_to_read));
         }
       } else if (!outter_extent_superset.empty()) {
-        will_write[shard].insert(outter_extent_superset);
+        will_write[shard].union_of(outter_extent_superset);
       }
     }
   }

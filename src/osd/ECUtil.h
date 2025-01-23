@@ -90,7 +90,7 @@ namespace ECUtil {
       return lhs;
     }
     void get_extent_superset(extent_set &eset) const {
-      for (auto &&[_, e]: map) eset.insert(e);
+      for (auto &&[_, e]: map) eset.union_of(e);
     }
     extent_set get_extent_superset() const {
       extent_set eset;

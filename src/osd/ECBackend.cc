@@ -384,7 +384,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
   ECUtil::shard_extent_set_t shard_want_to_read;
   for (int raw_shard = 0; raw_shard < sinfo.get_k(); raw_shard++) {
     int shard = sinfo.get_shard(raw_shard);
-    shard_want_to_read[shard].insert(buffer_superset);
+    shard_want_to_read[shard].union_of(buffer_superset);
 
     //FIXME: decode needs to be improved to interpret missing buffers as zero.
     //       Once this happens, this code can be removed.
@@ -644,7 +644,7 @@ void ECBackend::RecoveryBackend::continue_recovery_op(
 		 << ", pop.data.length()=" << pop.data.length()
 		 << ", size=" << op.obc->obs.oi.size << dendl;
 	if (pop.data.length())
-	  pop.data_included.insert(
+	  pop.data_included.union_insert(
 	    op.returned_data->get_shard_first_offset(pg_shard.shard.id),
 	    pop.data.length()
 	    );
@@ -1253,8 +1253,8 @@ void ECBackend::handle_sub_read_reply(
 
       if (complete.errors.contains(shard)) continue;
 
-      complete.processed_read_requests[shard.shard.id].insert(read.extents);
-      complete.processed_read_requests[shard.shard.id].insert(read.zero_pad);
+      complete.processed_read_requests[shard.shard.id].union_of(read.extents);
+      complete.processed_read_requests[shard.shard.id].union_of(read.zero_pad);
       if (read.zero_pad.empty())
         continue;
 

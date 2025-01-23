@@ -120,11 +120,11 @@ void ECUtil::stripe_info_t::ro_range_to_shards(
     uint64_t off = start + start_adj;
     uint64_t len =  end + end_adj - start - start_adj;
     if (shard_extent_set) {
-      (*shard_extent_set)[shard].insert(off, len);
+      (*shard_extent_set)[shard].union_insert(off, len);
     }
 
     if (extent_superset) {
-      extent_superset->insert(off, len);
+      extent_superset->union_insert(off, len);
     }
 
     if (shard_extent_map) {
@@ -797,7 +797,7 @@ namespace ECUtil {
     if (emap.contains(offset, length)) return;
 
     extent_set required;
-    required.insert(offset, length);
+    required.union_insert(offset, length);
     required.subtract(emap.get_interval_set());
 
     for (auto [z_off, z_len] : required) {
@@ -938,7 +938,7 @@ namespace ECUtil {
 
   void shard_extent_set_t::insert(const shard_extent_set_t &other) {
     for (auto && [shard, eset] : other)
-      map[shard].insert(other.at(shard));
+      map[shard].union_of(other.at(shard));
   }
 
 }
