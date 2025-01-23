@@ -640,7 +640,10 @@ void ECTransaction::generate_transactions(
         uint64_t clone_end = 0;
 
         for (auto &&[shard, eset] : plan.will_write) {
-          entry->written_shards.insert(shard);
+
+          if (entry) {
+            entry->written_shards.insert(shard);
+          }
 
           // If no clonable range here, then ignore.
           if (!cloneable_range.contains(shard)) continue;
