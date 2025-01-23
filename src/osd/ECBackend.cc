@@ -1592,8 +1592,12 @@ void ECBackend::submit_transaction(
 
     hobject_t source;
     if (inner_op.has_source(&source)) {
-      shinfo = get_hinfo_from_disk(source);
-      soi = get_object_info_from_obc(obc_map.at(source));
+      if (!sinfo.supports_ec_overwrites()) {
+        shinfo = get_hinfo_from_disk(source);
+      }
+      if (!inner_op.is_rename()) {
+        soi = get_object_info_from_obc(obc_map.at(source));
+      }
     }
 
     uint64_t old_object_size = 0;
