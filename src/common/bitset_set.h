@@ -223,12 +223,17 @@ public:
 
   size_t max_size() { return MAX; }
 
-  void encode(ceph::buffer::list &bl) const {
+  void bound_encode(size_t& p) const {
+    for (size_t i = 0 ; i < WORDS; ++i) {
+      denc_varint(words[i], p);
+    }
+  }
+  void encode(ceph::buffer::list::contiguous_appender &bl) const {
     for (size_t i = 0 ; i < WORDS; ++i) {
       denc_varint(words[i], bl);
     }
   }
-  void decode(ceph::buffer::list::const_iterator &bl) {
+  void decode(ceph::buffer::ptr::const_iterator &bl) {
     for (size_t i = 0 ; i < WORDS; ++i) {
       denc_varint(words[i], bl);
     }

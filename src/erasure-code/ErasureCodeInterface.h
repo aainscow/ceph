@@ -482,6 +482,9 @@ namespace ceph {
                              shard_id_map<bufferptr> &out) = 0;
 
     /**
+     * N.B This function is not used when EC optimizations are
+     * turned on for the pool.
+     *
      * Decode the **chunks** and store at least **want_to_read**
      * chunks in **decoded**.
      *
@@ -521,9 +524,34 @@ namespace ceph {
     virtual int decode(const std::set<int> &want_to_read,
                        const std::map<int, bufferlist> &chunks,
                        std::map<int, bufferlist> *decoded, int chunk_size) = 0;
+
+    /**
+     * Decode the **in** map and store at least **want_to_read**
+     * shards in the **out** map.
+     *
+     * There must be enough shards in the **in** map( as returned by
+     * **minimum_to_decode** or **minimum_to_decode_with_cost** ) to
+     * perform a successful decoding of all shards listed in
+     * **want_to_read**.
+     *
+     * All buffers pointed to by **in** must have the same size.
+     * **out** must contain empty buffers that are the same size as the
+     * **in*** buffers.
+     *
+     * On success, the **out** map may contain more shards than
+     * required by **want_to_read** and they can safely be used by the
+     * caller.
+     *
+     * Returns 0 on success.
+     *
+     * @param [in] want_to_read shard indexes to be decoded
+     * @param [in] in map of available shard indexes to shard data
+     * @param [out] out map of shard indexes that nede to be decoded to empty buffers
+     * @return **0** on success or a negative errno on error.
+     */
     virtual int decode_chunks(const shard_id_set &want_to_read,
-                        const shard_id_map<bufferlist> &chunks,
-                        shard_id_map<bufferlist> *decoded) = 0;
+                              shard_id_map<bufferptr> &in,
+                              shard_id_map<bufferptr> &out) = 0;
 
     /**
      * Return the ordered list of chunks or an empty vector

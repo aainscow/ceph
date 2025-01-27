@@ -102,7 +102,7 @@ unsigned int ErasureCodeJerasure::get_chunk_size(unsigned int stripe_width) cons
   }
 }
 
-int ErasureCodeJerasure::encode_chunks(const shard_id_map<bufferptr> &in, 
+int ErasureCodeJerasure::encode_chunks(const shard_id_map<bufferptr> &in,
                                        shard_id_map<bufferptr> &out)
 {
   char *chunks[k + m]; //TODO don't use variable length arrays
@@ -142,28 +142,42 @@ int ErasureCodeJerasure::encode_chunks(const shard_id_map<bufferptr> &in,
 }
 
 int ErasureCodeJerasure::decode_chunks(const shard_id_set &want_to_read,
-				       const shard_id_map<bufferlist> &chunks,
-				       shard_id_map<bufferlist> *decoded)
+                                       shard_id_map<bufferptr> &in,
+				       shard_id_map<bufferptr> &out)
 {
-  unsigned blocksize = (*chunks.begin()).second.length();
+  unsigned int size = 0;
   int erasures[k + m + 1];
   int erasures_count = 0;
   char *data[k];
   char *coding[m];
-  for (int i =  0; i < k + m; i++) {
-    if (chunks.find(i) == chunks.end()) {
-      erasures[erasures_count] = i;
-      erasures_count++;
-    }
-    if (i < k)
-      data[i] = (*decoded)[i].c_str();
-    else
-      coding[i - k] = (*decoded)[i].c_str();
-  }
-  erasures[erasures_count] = -1;
 
+  for (auto &&[shard, ptr] : in) {
+    if (size == 0) size = ptr.length();
+    else ceph_assert(size == ptr.length());
+    if (shard < k) {
+      data[shard] = const_cast<char*>(ptr.c_str());
+    }
+    else {
+      coding[shard - k] = const_cast<char*>(ptr.c_str());
+    }
+  }
+
+  for (auto &&[shard, ptr] : out) {
+    if (size == 0) size = ptr.length();
+    else ceph_assert(size == ptr.length());
+    if (shard < k) {
+      data[shard] = const_cast<char*>(ptr.c_str());
+    }
+    else {
+      coding[shard - k] = const_cast<char*>(ptr.c_str());
+    }
+    erasures[erasures_count] = shard;
+    erasures_count++;
+  }
+
+  erasures[erasures_count] = -1;
   ceph_assert(erasures_count > 0);
-  return jerasure_decode(erasures, data, coding, blocksize);
+  return jerasure_decode(erasures, data, coding, size);
 }
 
 void ErasureCodeJerasure::encode_delta(const bufferptr &old_data,

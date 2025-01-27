@@ -50,9 +50,9 @@ public:
                     shard_id_map<bufferptr> &out) override {
     return 0;
   }
-  int decode_chunks(const shard_id_set  &want_to_read,
-                    const shard_id_map<bufferlist> &chunks,
-                   shard_id_map<bufferlist> *decoded) override {
+  int decode_chunks(const set<int> &want_to_read,
+                    shard_id_map<bufferptr> &in,
+                    shard_id_map<bufferptr> &out) override {
     ceph_abort_msg("ErasureCode::decode_chunks not implemented");
   }
   void encode_delta(const bufferptr &old_data,

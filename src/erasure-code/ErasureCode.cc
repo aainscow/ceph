@@ -181,41 +181,41 @@ namespace ceph {
     return _minimum_to_decode(want_to_read, available_chunks, minimum);
   }
 
-   int ErasureCode::encode_prepare(const bufferlist &raw,
-                                   shard_id_map<bufferlist> &encoded) const
-   {
+  int ErasureCode::encode_prepare(const bufferlist &raw,
+                                  shard_id_map<bufferlist> &encoded) const
+  {
      unsigned int k = get_data_chunk_count();
      unsigned int m = get_chunk_count() - k;
      unsigned blocksize = get_chunk_size(raw.length());
      unsigned padded_chunks = k - raw.length() / blocksize;
      bufferlist prepared = raw;
 
-     for (unsigned int i = 0; i < k - padded_chunks; i++) {
-       bufferlist &chunk = encoded[chunk_index(i)];
-       chunk.substr_of(prepared, i * blocksize, blocksize);
-       chunk.rebuild_aligned_size_and_memory(blocksize, SIMD_ALIGN);
-       ceph_assert(chunk.is_contiguous());
-     }
-     if (padded_chunks) {
-       unsigned remainder = raw.length() - (k - padded_chunks) * blocksize;
-       bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
+    for (unsigned int i = 0; i < k - padded_chunks; i++) {
+      bufferlist &chunk = encoded[chunk_index(i)];
+      chunk.substr_of(prepared, i * blocksize, blocksize);
+      chunk.rebuild_aligned_size_and_memory(blocksize, SIMD_ALIGN);
+      ceph_assert(chunk.is_contiguous());
+    }
+    if (padded_chunks) {
+      unsigned remainder = raw.length() - (k - padded_chunks) * blocksize;
+      bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
 
-       raw.begin((k - padded_chunks) * blocksize).copy(remainder, buf.c_str());
-       buf.zero(remainder, blocksize - remainder);
-       encoded[chunk_index(k-padded_chunks)].push_back(std::move(buf));
+      raw.begin((k - padded_chunks) * blocksize).copy(remainder, buf.c_str());
+      buf.zero(remainder, blocksize - remainder);
+      encoded[chunk_index(k-padded_chunks)].push_back(std::move(buf));
 
-       for (unsigned int i = k - padded_chunks + 1; i < k; i++) {
-         bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
-         buf.zero();
-         encoded[chunk_index(i)].push_back(std::move(buf));
-       }
-     }
-     for (unsigned int i = k; i < k + m; i++) {
-       bufferlist &chunk = encoded[chunk_index(i)];
-       chunk.push_back(buffer::create_aligned(blocksize, SIMD_ALIGN));
-     }
+      for (unsigned int i = k - padded_chunks + 1; i < k; i++) {
+        bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
+        buf.zero();
+        encoded[chunk_index(i)].push_back(std::move(buf));
+      }
+    }
+    for (unsigned int i = k; i < k + m; i++) {
+      bufferlist &chunk = encoded[chunk_index(i)];
+      chunk.push_back(buffer::create_aligned(blocksize, SIMD_ALIGN));
+    }
 
-     return 0;
+    return 0;
   }
 
   int ErasureCode::encode(const shard_id_set &want_to_encode,
@@ -271,7 +271,7 @@ namespace ceph {
   }
 
 // TODO: write this function! Although every plugin has its own version to override this one
-int ErasureCode::encode_chunks(const shard_id_map<bufferptr> &in, 
+int ErasureCode::encode_chunks(const shard_id_map<bufferptr> &in,
                                shard_id_map<bufferptr> &out)
 {
   return 0;
@@ -282,6 +282,14 @@ int ErasureCode::_decode(const shard_id_set &want_to_read,
 			 shard_id_map<bufferlist> *decoded)
 {
   vector<int> have;
+
+  if (!decoded || !decoded->empty()){
+    return -EINVAL;
+  }
+  if (!want_to_read.empty() && chunks.empty()) {
+    return -1;
+  }
+
   have.reserve(chunks.size());
   for (shard_id_map<bufferlist>::const_iterator i = chunks.begin();
        i != chunks.end();
@@ -300,19 +308,28 @@ int ErasureCode::_decode(const shard_id_set &want_to_read,
   unsigned int k = get_data_chunk_count();
   unsigned int m = get_chunk_count() - k;
   unsigned blocksize = (*chunks.begin()).second.length();
-  for (unsigned int i =  0; i < k + m; i++) {
+  shard_id_set erasures;
+  for (unsigned int i = 0; i < k + m; i++) {
     if (chunks.find(i) == chunks.end()) {
       bufferlist tmp;
       bufferptr ptr(buffer::create_aligned(blocksize, SIMD_ALIGN));
       tmp.push_back(ptr);
       tmp.claim_append((*decoded)[i]);
       (*decoded)[i].swap(tmp);
+      erasures.insert(i);
     } else {
       (*decoded)[i] = chunks.find(i)->second;
       (*decoded)[i].rebuild_aligned(SIMD_ALIGN);
     }
   }
-  return decode_chunks(want_to_read, chunks, decoded);
+  shard_id_map<bufferptr> in(get_chunk_count());
+  shard_id_map<bufferptr> out(get_chunk_count());
+  for (auto&& [shard, list] : *decoded) {
+    auto bp = list.begin().get_current_ptr();
+    if (erasures.find(shard) == erasures.end()) in[shard] = bp;
+    else out[shard] = bp;
+  }
+  return decode_chunks(want_to_read, in, out);
 }
 
 int ErasureCode::decode(const shard_id_set &want_to_read,

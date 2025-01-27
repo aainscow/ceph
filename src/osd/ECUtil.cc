@@ -642,21 +642,27 @@ namespace ECUtil {
           bl.rebuild_aligned_size_and_memory(sinfo->get_chunk_size(), SIMD_ALIGN);
         }
 
-        /* Call the decode function.  This is not particularly efficient, as it
-         * creates buffers for every shard, even if they are not needed.
-         *
-         * Currently, some plugins rely on this behaviour.
-         *
-         * The chunk size passed in is only used in the clay encoding. It is
-         * NOT the size of the decode.
-         */
-        int r_i = ec_impl->decode(want_to_read, s, &decoded, sinfo->get_chunk_size());
+        shard_id_map<bufferptr> in(sinfo->get_k_plus_m());
+        shard_id_map<bufferptr> out(sinfo->get_k_plus_m());
+        for (auto&& [shard, list] : s) {
+          in[shard] = list.begin().get_current_ptr();
+        }
+        for (int i = 0; i < (ec_impl->get_data_chunk_count() + ec_impl->get_coding_chunk_count()); i++) {
+          if (in.find(i) == in.end()) {
+            bufferptr ptr(buffer::create_aligned(length, SIMD_ALIGN));
+            out[i] = ptr;
+          }
+        }
+        int r_i = ec_impl->decode_chunks(want_to_read, in, out);
         if (r_i) {
           r = r_i;
           break;
         }
 
-        ceph_assert(decoded[shard].length() == length);
+        ceph_assert(out[shard].length() == length);
+        bufferlist bl;
+        bl.append(out[shard]);
+        decoded[shard] = bl;
         insert_in_shard(shard, offset, decoded[shard], ro_start, ro_end);
       }
     }

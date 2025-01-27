@@ -94,8 +94,8 @@ public:
                     shard_id_map<ceph::bufferptr> &out) override;
 
   int decode_chunks(const shard_id_set &want_to_read,
-                    const shard_id_map<ceph::bufferlist> &chunks,
-                    shard_id_map<ceph::bufferlist> *decoded) override;
+                    shard_id_map<ceph::bufferptr> &in,
+                    shard_id_map<ceph::bufferptr> &out) override;
 
   void encode_delta(const ceph::bufferptr &old_data,
                     const ceph::bufferptr &new_data,

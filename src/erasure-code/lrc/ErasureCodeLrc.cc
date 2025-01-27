@@ -721,7 +721,7 @@ int ErasureCodeLrc::_minimum_to_decode(const shard_id_set &want_to_read,
   return -EIO;
 }
 
-int ErasureCodeLrc::encode_chunks(const shard_id_map<bufferptr> &in, 
+int ErasureCodeLrc::encode_chunks(const shard_id_map<bufferptr> &in,
                                   shard_id_map<bufferptr> &out)
 {
   unsigned int k = get_data_chunk_count();
@@ -777,16 +777,24 @@ int ErasureCodeLrc::encode_chunks(const shard_id_map<bufferptr> &in,
 }
 
 int ErasureCodeLrc::decode_chunks(const shard_id_set &want_to_read,
-				  const shard_id_map<bufferlist> &chunks,
-				  shard_id_map<bufferlist> *decoded)
+                                  shard_id_map<bufferptr> &in,
+                                  shard_id_map<bufferptr> &out)
 {
   shard_id_set available_chunks;
   shard_id_set erasures;
-  for (unsigned int i = 0; i < get_chunk_count(); ++i) {
-    if (chunks.count(i) != 0)
-      available_chunks.insert(i);
-    else
-      erasures.insert(i);
+  unsigned int chunk_size = 0;
+  unsigned int k = get_data_chunk_count();
+
+  for (const auto& [shard, ptr] : in) {
+    if (chunk_size == 0) chunk_size = ptr.length();
+    else ceph_assert(chunk_size == ptr.length());
+    available_chunks.insert(shard);
+  }
+
+  for (const auto& [shard, ptr] : out) {
+    if (chunk_size == 0) chunk_size = ptr.length();
+    else ceph_assert(chunk_size == ptr.length());
+    erasures.insert(shard);
   }
 
   shard_id_set want_to_read_erasures;
@@ -803,40 +811,34 @@ int ErasureCodeLrc::decode_chunks(const shard_id_set &want_to_read,
       // skip because all chunks are already available
     } else {
       shard_id_set layer_want_to_read;
-      shard_id_map<bufferlist> layer_chunks(get_chunk_count());
-      shard_id_map<bufferlist> layer_decoded(get_chunk_count());
+      shard_id_map<bufferptr> layer_in(get_chunk_count());
+      shard_id_map<bufferptr> layer_out(get_chunk_count());
       int j = 0;
       for (vector<int>::const_iterator c = layer->chunks.begin();
 	   c != layer->chunks.end();
-	   ++c) {
-	//
-	// Pick chunks from *decoded* instead of *chunks* to re-use
-	// chunks recovered by previous layers. In other words
-	// *chunks* does not change but *decoded* gradually improves
-	// as more layers recover from erasures.
-	//
-	if (erasures.count(*c) == 0)
-	  layer_chunks[j] = (*decoded)[*c];
-	if (want_to_read.count(*c) != 0)
-	  layer_want_to_read.insert(j);
-	layer_decoded[j] = (*decoded)[*c];
-	++j;
+	   ++c)
+      {
+        if (erasures.count(*c) == 0) {
+          if (in.find(*c) != in.end()) layer_in[j] = in[*c];
+          else layer_in[j] = out[*c];
+        }
+        else {
+          layer_out[j] = out[*c];
+        }
+        ++j;
       }
-      int err = layer->erasure_code->decode_chunks(layer_want_to_read,
-						   layer_chunks,
-						   &layer_decoded);
+      int err = layer->erasure_code->decode_chunks(layer_want_to_read, layer_in, layer_out);
       if (err) {
 	derr << __func__ << " layer " << layer->chunks_map
 	     << " failed with " << err << " trying to decode "
 	     << layer_want_to_read << " with " << available_chunks << dendl;
 	return err;
       }
-      j = 0;
+
       for (vector<int>::const_iterator c = layer->chunks.begin();
 	   c != layer->chunks.end();
-	   ++c) {
-	(*decoded)[*c] = layer_decoded[j];
-	++j;
+	   ++c)
+      {
 	erasures.erase(*c);
       }
       want_to_read_erasures = shard_id_set::intersection(erasures, want_to_read);

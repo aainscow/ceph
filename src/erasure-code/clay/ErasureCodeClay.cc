@@ -167,23 +167,36 @@ int ErasureCodeClay::encode_chunks(const shard_id_map<bufferptr> &in,
 }
 
 int ErasureCodeClay::decode_chunks(const shard_id_set &want_to_read,
-				   const shard_id_map<bufferlist> &chunks,
-				   shard_id_map<bufferlist> *decoded)
+                                   shard_id_map<bufferptr> &in,
+                                   shard_id_map<bufferptr> &out)
 {
+  unsigned int size = 0;
   shard_id_set erasures;
   shard_id_map<bufferlist> coded_chunks(q * t);
 
-  for (int i = 0; i < k + m; i++) {
-    if (chunks.count(i) == 0) {
-      erasures.insert(i < k ? i : i+nu);
-    }
-    ceph_assert(decoded->count(i) > 0);
-    coded_chunks[i < k ? i : i+nu] = (*decoded)[i];
+  ceph_assert(out.size() > 0);
+
+  for (auto &&[shard, ptr] : in) {
+    if (size == 0) size = ptr.length();
+    else ceph_assert(size == ptr.length());
+    if (shard < k)
+      coded_chunks[shard].append(in[shard]);
+    else
+      coded_chunks[shard+nu].append(in[shard]);
   }
-  int chunk_size = coded_chunks[0].length();
+
+  for (auto &&[shard, ptr] : out) {
+    if (size == 0) size = ptr.length();
+    else ceph_assert(size == ptr.length());
+    erasures.insert(shard < k ? shard : shard_id_t(shard + nu));
+    if (shard < k)
+      coded_chunks[shard].append(out[shard]);
+    else
+      coded_chunks[shard+nu].append(out[shard]);
+  }
 
   for (int i = k; i < k+nu; i++) {
-    bufferptr buf(buffer::create_aligned(chunk_size, SIMD_ALIGN));
+    bufferptr buf(buffer::create_aligned(size, SIMD_ALIGN));
     buf.zero();
     coded_chunks[i].push_back(std::move(buf));
   }
@@ -592,7 +605,14 @@ int ErasureCodeClay::repair_one_lost_chunk(shard_id_map<bufferlist> &recovered_d
 	      for (int i=0; i<3; i++) {
 		pftsubchunks[i].rebuild_aligned(SIMD_ALIGN);
 	      }
-	      pft.erasure_code->decode_chunks(pft_erasures, known_subchunks, &pftsubchunks);
+              shard_id_map<bufferptr> in(get_chunk_count());
+              shard_id_map<bufferptr> out(get_chunk_count());
+              for (auto&& [shard, list] : pftsubchunks) {
+                auto bp = list.begin().get_current_ptr();
+                if (shard == i2) out[shard] = bp;
+                else in[shard] = bp;
+              }
+              pft.erasure_code->decode_chunks(pft_erasures, in, out);
 	    } else {
 	      ceph_assert(helper_data.count(node_sw) > 0);
 	      ceph_assert(repair_plane_to_ind.count(z) > 0);
@@ -608,7 +628,14 @@ int ErasureCodeClay::repair_one_lost_chunk(shard_id_map<bufferlist> &recovered_d
 		for (int i=0; i<3; i++) {
 		  pftsubchunks[i].rebuild_aligned(SIMD_ALIGN);
 		}
-		pft.erasure_code->decode_chunks(pft_erasures, known_subchunks, &pftsubchunks);
+	        shard_id_map<bufferptr> in(get_chunk_count());
+	        shard_id_map<bufferptr> out(get_chunk_count());
+                for (auto&& [shard, list] : pftsubchunks) {
+                  auto bp = list.begin().get_current_ptr();
+                  if (shard == i2) out[shard] = bp;
+                  else in[shard] = bp;
+                }
+                pft.erasure_code->decode_chunks(pft_erasures, in, out);
 	      } else {
 		char* uncoupled_chunk = (*U_buf)[node_xy].c_str();
 		char* coupled_chunk = helper_data[node_xy].c_str();
@@ -661,7 +688,14 @@ int ErasureCodeClay::repair_one_lost_chunk(shard_id_map<bufferlist> &recovered_d
 	    for (int i=0; i<3; i++) {
 	      pftsubchunks[i].rebuild_aligned(SIMD_ALIGN);
 	    }
-	    pft.erasure_code->decode_chunks(pft_erasures, known_subchunks, &pftsubchunks);
+	    shard_id_map<bufferptr> in(q * t);
+	    shard_id_map<bufferptr> out(q * t);
+            for (auto&& [shard, list] : pftsubchunks) {
+              auto bp = list.begin().get_current_ptr();
+              if (shard == i1) out[shard] = bp;
+              else in[shard] = bp;
+            }
+            pft.erasure_code->decode_chunks(pft_erasures, in, out);
 	  }
 	}
       } // recover all erasures
@@ -784,7 +818,14 @@ int ErasureCodeClay::decode_uncoupled(const shard_id_set& erased_chunks, int z, 
     assert(all_subchunks[i].is_contiguous());
   }
 
-  mds.erasure_code->decode_chunks(erased_chunks, known_subchunks, &all_subchunks);
+  shard_id_map<bufferptr> in(q * t);
+  shard_id_map<bufferptr> out(q * t);
+  for (auto&& [shard, list] : all_subchunks) {
+    auto bp = list.begin().get_current_ptr();
+    if (erased_chunks.count(shard) == 0) in[shard] = bp;
+    else out[shard] = bp;
+  }
+  mds.erasure_code->decode_chunks(erased_chunks, in, out);
   return 0;
 }
 
@@ -836,7 +877,14 @@ void ErasureCodeClay::recover_type1_erasure(shard_id_map<bufferlist>* chunks,
     pftsubchunks[i].rebuild_aligned_size_and_memory(sc_size, SIMD_ALIGN);
   }
 
-  pft.erasure_code->decode_chunks(erased_chunks, known_subchunks, &pftsubchunks);
+  shard_id_map<bufferptr> in(q * t);
+  shard_id_map<bufferptr> out(q * t);
+  for (auto&& [shard, list] : pftsubchunks) {
+    auto bp = list.begin().get_current_ptr();
+    if (shard == i0) out[shard] = bp;
+    else in[shard] = bp;
+  }
+  pft.erasure_code->decode_chunks(erased_chunks, in, out);
 }
 
 void ErasureCodeClay::get_coupled_from_uncoupled(shard_id_map<bufferlist>* chunks,
@@ -864,7 +912,14 @@ void ErasureCodeClay::get_coupled_from_uncoupled(shard_id_map<bufferlist>* chunk
   for (int i=0; i<3; i++) {
     pftsubchunks[i].rebuild_aligned_size_and_memory(sc_size, SIMD_ALIGN);
   }
-  pft.erasure_code->decode_chunks(erased_chunks, uncoupled_subchunks, &pftsubchunks);
+  shard_id_map<bufferptr> in(q * t);
+  shard_id_map<bufferptr> out(q * t);
+  for (auto&& [shard, list] : pftsubchunks) {
+    auto bp = list.begin().get_current_ptr();
+    if (shard <= 1) out[shard] = bp;
+    else in[shard] = bp;
+  }
+  pft.erasure_code->decode_chunks(erased_chunks, in, out);
 }
 
 void ErasureCodeClay::get_uncoupled_from_coupled(shard_id_map<bufferlist>* chunks,
@@ -897,7 +952,14 @@ void ErasureCodeClay::get_uncoupled_from_coupled(shard_id_map<bufferlist>* chunk
   for (int i=0; i<3; i++) {
     pftsubchunks[i].rebuild_aligned_size_and_memory(sc_size, SIMD_ALIGN);
   }
-  pft.erasure_code->decode_chunks(erased_chunks, coupled_subchunks, &pftsubchunks);
+  shard_id_map<bufferptr> in(q * t);
+  shard_id_map<bufferptr> out(q * t);
+  for (auto&& [shard, list] : pftsubchunks) {
+    auto bp = list.begin().get_current_ptr();
+    if (shard <= 1) in[shard] = bp;
+    else out[shard] = bp;
+  }
+  pft.erasure_code->decode_chunks(erased_chunks, in, out);
 }
 
 int ErasureCodeClay::get_max_iscore(shard_id_set& erased_chunks)

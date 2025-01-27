@@ -86,15 +86,12 @@ public:
 				  const shard_id_map<int> &available,
 				  shard_id_set *minimum) override;
 
-  int encode_chunks(const shard_id_map<bufferptr> &in, 
+  int encode_chunks(const shard_id_map<bufferptr> &in,
                     shard_id_map<bufferptr> &out) override;
 
-  int _decode(const shard_id_set &want_to_read,
-	      const shard_id_map<ceph::buffer::list> &chunks,
-	      shard_id_map<ceph::buffer::list> *decoded) override;
   int decode_chunks(const shard_id_set &want_to_read,
-		    const shard_id_map<ceph::buffer::list> &chunks,
-		    shard_id_map<ceph::buffer::list> *decoded) override;
+                    shard_id_map<bufferptr> &in,
+                    shard_id_map<bufferptr> &out) override;
 
   int init(ceph::ErasureCodeProfile &profile, std::ostream *ss) override;
   virtual void shec_encode(char **data,

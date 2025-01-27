@@ -91,8 +91,8 @@ public:
                     shard_id_map<bufferptr> &out) override;
 
   int decode_chunks(const shard_id_set &want_to_read,
-                    const shard_id_map<ceph::buffer::list> &chunks,
-                    shard_id_map<ceph::buffer::list> *decoded) override;
+                    shard_id_map<bufferptr> &in,
+                    shard_id_map<bufferptr> &out) override;
 
   int init(ceph::ErasureCodeProfile &profile, std::ostream *ss) override;
 

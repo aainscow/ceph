@@ -198,8 +198,8 @@ public:
   }
 
   int decode_chunks(const shard_id_set &want_to_read,
-			    const shard_id_map<bufferlist> &chunks,
-			    shard_id_map<bufferlist> *decoded) override {
+                    shard_id_map<bufferptr> &in,
+                    shard_id_map<bufferptr> &out) override {
     ceph_abort();
     return 0;
   }
