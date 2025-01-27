@@ -417,10 +417,10 @@ inline uint64_t page_mask() {
   return page_mask;
 }
 inline uint64_t align_page_next(uint64_t val) {
-  return (val + page_mask()) & ~page_mask();
+  return p2roundup(val, (uint64_t)CEPH_PAGE_SIZE);
 }
 inline uint64_t align_page_prev(uint64_t val) {
-  return val & ~page_mask();
+  return p2align(val, (uint64_t)CEPH_PAGE_SIZE);
 }
 
 class HashInfo {
