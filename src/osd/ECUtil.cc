@@ -198,7 +198,7 @@ namespace ECUtil {
     if (ro_offset >= ro_end)
       return;
 
-    shard_extent_set_t ro_to_erase;
+    shard_extent_set_t ro_to_erase(sinfo->get_k_plus_m());
     sinfo->ro_range_to_shard_extent_set(ro_offset, ro_end - ro_start,
                               ro_to_erase);
     for (auto && [shard, eset] : ro_to_erase) {
@@ -229,7 +229,7 @@ namespace ECUtil {
       return shard_extent_map_t(sinfo);
     }
 
-    shard_extent_set_t ro_to_intersect;
+    shard_extent_set_t ro_to_intersect(sinfo->get_k_plus_m());
     sinfo->ro_range_to_shard_extent_set(ro_offset, ro_length, ro_to_intersect);
 
     return intersect(ro_to_intersect);
@@ -442,15 +442,15 @@ namespace ECUtil {
             continue;
         }
         std::set<int> shards;
-        std::map<int, buffer::list> chunk_buffers;
         bufferlist bl;
-        bl.push_back(buffer::create_aligned(length, SIMD_ALIGN));
+        bl.push_back(buffer::create_aligned(length, CEPH_PAGE_SIZE));
         extent_maps[shard].insert(offset, length, bl);
       }
     }
   }
 
-  shard_extent_map_t::slice_iterator::slice_iterator(shard_extent_map_t &sem) : sem(sem)
+  shard_extent_map_t::slice_iterator::slice_iterator(shard_extent_map_t &sem) :
+    sem(sem), iters(sem.sinfo->get_k_plus_m())
   {
     for (auto &&[shard, emap] : sem.extent_maps) {
       auto emap_iter = emap.begin();
@@ -809,7 +809,7 @@ namespace ECUtil {
 
   ECUtil::shard_extent_set_t shard_extent_map_t::get_extent_set()
   {
-    shard_extent_set_t shard_eset;
+    shard_extent_set_t shard_eset(sinfo->get_k_plus_m());
     for (auto &&[shard, emap] : extent_maps) {
       shard_eset.emplace(shard, emap.get_interval_set());
     }

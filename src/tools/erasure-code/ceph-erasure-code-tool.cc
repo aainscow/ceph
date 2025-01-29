@@ -269,7 +269,7 @@ int do_decode(const std::vector<const char*> &args) {
     encoded_data.insert_in_shard(shard, 0, bl);
   }
 
-  ECUtil::shard_extent_set_t wanted;
+  ECUtil::shard_extent_set_t wanted(sinfo->get_k_plus_m());
   sinfo->ro_range_to_shard_extent_set(encoded_data.get_ro_start(),
     encoded_data.get_ro_end() - encoded_data.get_ro_start(), wanted);
 

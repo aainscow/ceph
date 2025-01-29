@@ -106,6 +106,21 @@ struct Client : public ECExtentCache::BackendRead
   }
 };
 
+TEST(ECExtentCache, double_write_done)
+{
+  Client cl(32, 2, 1, 64);
+
+  auto to_write = iset_from_vector({{{0, 10}}, {{0, 10}}});
+
+  optional op = cl.cache.prepare(cl.oid, nullopt, to_write, 10, 10, false,
+  [&cl](ECExtentCache::OpRef &op)
+  {
+    cl.cache_ready(op->get_hoid(), op->get_result());
+  });
+  cl.cache_execute(*op);
+  cl.complete_write(*op);
+}
+
 TEST(ECExtentCache, simple_write)
 {
   Client cl(32, 2, 1, 64);
@@ -245,7 +260,7 @@ TEST(ECExtentCache, multiple_writes)
 
   // Perform another request, this to check that reads are coalesced.
   auto to_read3 = iset_from_vector( {{{32, 6}}});
-  auto to_write3 = iset_from_vector({{}, {{40, 0}}});
+  auto to_write3 = iset_from_vector({});
   optional op3 = cl.cache.prepare(cl.oid, to_read3, to_write3, 10, 10, false,
    [&cl](ECExtentCache::OpRef &op)
    {

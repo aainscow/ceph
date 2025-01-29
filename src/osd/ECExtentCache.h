@@ -172,10 +172,11 @@ private:
     Object(ECExtentCache &pg, hobject_t const &oid, uint64_t size) :
       pg(pg),
       sinfo(pg.sinfo),
+      requesting(sinfo.get_k_plus_m()),
+      do_not_read(sinfo.get_k_plus_m()),
       current_size(size),
       projected_size(size),
-    cct(pg.cct),
-
+      cct(pg.cct),
       oid(oid)
     {
       line_size = std::max(MIN_LINE_SIZE, pg.sinfo.get_chunk_size());

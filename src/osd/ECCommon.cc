@@ -301,8 +301,8 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   }
 
   extent_set extra_extents;
-  ECUtil::shard_extent_set_t read_mask;
-  ECUtil::shard_extent_set_t zero_mask;
+  ECUtil::shard_extent_set_t read_mask(sinfo.get_k_plus_m());
+  ECUtil::shard_extent_set_t zero_mask(sinfo.get_k_plus_m());
 
   sinfo.ro_size_to_read_mask(read_request.object_size, read_mask);
   sinfo.ro_size_to_zero_mask(read_request.object_size, zero_mask);
@@ -600,7 +600,7 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct(
 
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&[hoid, to_read]: reads) {
-    ECUtil::shard_extent_set_t want_shard_reads;
+    ECUtil::shard_extent_set_t want_shard_reads(sinfo.get_k_plus_m());
     get_want_to_read_shards(to_read, want_shard_reads);
 
     read_request_t read_request(to_read, want_shard_reads, false, object_size);

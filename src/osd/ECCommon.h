@@ -144,7 +144,8 @@ struct ECCommon {
     std::optional<std::map<std::string, ceph::buffer::list, std::less<>> > attrs;
     ECUtil::shard_extent_map_t buffers_read;
     ECUtil::shard_extent_set_t processed_read_requests;
-    read_result_t(const ECUtil::stripe_info_t *sinfo) : r(0), buffers_read(sinfo) {}
+    read_result_t(const ECUtil::stripe_info_t *sinfo) :
+      r(0), buffers_read(sinfo), processed_read_requests(sinfo->get_k_plus_m()) {}
   };
 
   struct ReadCompleter {

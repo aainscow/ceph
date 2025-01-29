@@ -113,7 +113,8 @@ ECTransaction::WritePlanObj::WritePlanObj(
 hoid(hoid),
 hinfo(hinfo),
 shinfo(shinfo),
-orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
+orig_size(orig_size), // On-disk object sizes are rounded up to the next page.
+will_write(sinfo.get_k_plus_m())
 {
   extent_set ro_writes;
 
@@ -181,10 +182,10 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
 
   /* Construct the to read on the stack, to avoid having to insert and
    * erase into maps */
-  ECUtil::shard_extent_set_t reads;
+  ECUtil::shard_extent_set_t reads(sinfo.get_k_plus_m());
   if (!sinfo.supports_partial_writes())
   {
-    ECUtil::shard_extent_set_t read_mask;
+    ECUtil::shard_extent_set_t read_mask(sinfo.get_k_plus_m());
     sinfo.ro_size_to_stripe_aligned_read_mask(orig_size, read_mask);
 
     /* We are not yet attempting to optimise this path and we are instead opting to maintain the old behaviour, where
@@ -205,8 +206,8 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
     }
   } else {
     ECUtil::shard_extent_set_t &small_set = inner?*inner:will_write;
-    ECUtil::shard_extent_set_t zero;
-    ECUtil::shard_extent_set_t read_mask;
+    ECUtil::shard_extent_set_t zero(sinfo.get_k_plus_m());
+    ECUtil::shard_extent_set_t read_mask(sinfo.get_k_plus_m());
 
     sinfo.ro_size_to_read_mask(orig_size, read_mask);
 
@@ -592,11 +593,11 @@ void ECTransaction::generate_transactions(
       } else if (op.truncate && op.truncate->first < clone_max) {
         clone_max = ECUtil::align_page_next(op.truncate->first);
       }
-      ECUtil::shard_extent_set_t cloneable_range;
+      ECUtil::shard_extent_set_t cloneable_range(sinfo.get_k_plus_m());
       sinfo.ro_size_to_read_mask (clone_max, cloneable_range);
 
       if (plan.orig_size < plan.projected_size) {
-        ECUtil::shard_extent_set_t projected_cloneable_range;
+        ECUtil::shard_extent_set_t projected_cloneable_range(sinfo.get_k_plus_m());
         sinfo.ro_size_to_read_mask( plan.projected_size, projected_cloneable_range);
 
         for (auto &&[shard, eset] : projected_cloneable_range) {

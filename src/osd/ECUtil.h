@@ -23,6 +23,8 @@
 #include "include/encoding.h"
 #include "common/interval_map.h"
 #include "common/Formatter.h"
+#include "common/mini_flat_map.h"
+
 #include "osd_types.h"
 
 /// If someone wants these types, but not ExtentCache, move to another file
@@ -46,8 +48,8 @@ struct bl_split_merge {
   uint64_t length(const ceph::buffer::list &b) const { return b.length(); }
 };
 
-using extent_set = interval_set<uint64_t>;
-using extent_map = interval_map<uint64_t, ceph::buffer::list, bl_split_merge>;
+using extent_set = interval_set<uint64_t, boost::container::flat_map>;
+using extent_map = interval_map<uint64_t, ceph::buffer::list, bl_split_merge, boost::container::flat_map>;
 
 // Setting to 1 turns on very large amounts of level 0 debug containing the
 // contents of buffers. Even on level 20 this is not really wanted.
@@ -59,13 +61,16 @@ namespace ECUtil {
   struct shard_extent_set_t
   {
     // The following boilerplate is just to make this look like a map.
-    std::map<int, extent_set> map;
+    mini_flat_map<int, extent_set> map;
+
+    shard_extent_set_t(short max_shards) : map(max_shards) {}
+
     bool contains(int shard) const { return map.contains(shard); }
     bool empty() const { return map.empty(); }
     void swap(shard_extent_set_t &other) { map.swap(other.map); }
     void clear() { map.clear(); }
     auto erase(int shard) { return map.erase(shard); }
-    auto erase(std::map<int, extent_set>::iterator &iter) { return map.erase(iter);}
+    auto erase(mini_flat_map<int, extent_set>::iterator &iter) { return map.erase(iter);}
     void erase_stripe(uint64_t offset, uint64_t length) {
       for (auto it = map.begin(); it != map.end();) {
         it->second.erase(offset, length);
@@ -73,9 +78,10 @@ namespace ECUtil {
         else ++it;
       }
     }
-    auto begin() const { return map.begin(); }
+    auto begin() const { return map.cbegin(); }
     auto begin() { return map.begin(); }
-    auto end() const { return map.end(); }
+    auto end() const { return map.cend(); }
+    auto end() { return map.end(); }
     void emplace(int shard, extent_set &&set) { map.emplace(shard, std::move(set)); }
     int shard_count() { return map.size(); }
     extent_set &at(int shard) { return map.at(shard); }
@@ -473,7 +479,7 @@ class shard_extent_map_t
     uint64_t length = (uint64_t)-1;
     uint64_t start = (uint64_t)-1;
     uint64_t end = (uint64_t)-1;
-    std::map<int, std::pair<extent_map::const_iterator, bufferlist::const_iterator>> iters;
+    mini_flat_map<int, std::pair<extent_map::const_iterator, bufferlist::const_iterator>> iters;
     std::map<int, bufferptr> slice;
     shard_extent_map_t &sem;
     void advance();
@@ -498,7 +504,7 @@ public:
   uint64_t ro_end;
   uint64_t start_offset;
   uint64_t end_offset;
-  std::map<int, extent_map> extent_maps;
+  mini_flat_map<int, extent_map> extent_maps;
 
   slice_iterator begin_slice_iterator();
 
@@ -553,10 +559,11 @@ public:
     ro_start(invalid_offset),
     ro_end(invalid_offset),
     start_offset(invalid_offset),
-    end_offset(invalid_offset)
+    end_offset(invalid_offset),
+    extent_maps(sinfo->get_k_plus_m())
   {}
 
-  shard_extent_map_t(const stripe_info_t *sinfo, std::map<int, extent_map> &&extent_maps) :
+  shard_extent_map_t(const stripe_info_t *sinfo, mini_flat_map<int, extent_map> &&extent_maps) :
     sinfo(sinfo),
     extent_maps(std::move(extent_maps))
   {
@@ -591,7 +598,7 @@ public:
    *  - Empty extent maps on shards
    *  - getting the offset/length out of sync.
    */
-  const std::map<int, extent_map> &get_extent_maps() const {
+  const auto &get_extent_maps() const {
     return extent_maps;
   }
 
@@ -611,7 +618,7 @@ public:
   }
 
   shard_extent_set_t get_shard_extent_set() const {
-    shard_extent_set_t ret;
+    shard_extent_set_t ret(sinfo->get_k_plus_m());
     for (auto &&[shard, emap] : extent_maps) {
       ret.emplace(shard, emap.get_interval_set());
     }

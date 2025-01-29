@@ -378,10 +378,10 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
   op.returned_data.emplace(std::move(buffers_read));
   extent_set buffer_superset = op.returned_data->get_extent_superset();
 
-  ECUtil::shard_extent_set_t zero_mask;
+  ECUtil::shard_extent_set_t zero_mask(sinfo.get_k_plus_m());
   sinfo.ro_size_to_zero_mask(op.recovery_info.size, zero_mask);
 
-  ECUtil::shard_extent_set_t shard_want_to_read;
+  ECUtil::shard_extent_set_t shard_want_to_read(sinfo.get_k_plus_m());
   for (int raw_shard = 0; raw_shard < sinfo.get_k(); raw_shard++) {
     int shard = sinfo.get_shard(raw_shard);
     shard_want_to_read[shard].union_of(buffer_superset);
@@ -560,7 +560,7 @@ void ECBackend::RecoveryBackend::continue_recovery_op(
     switch (op.state) {
     case RecoveryOp::IDLE: {
       ceph_assert(!op.recovery_progress.data_complete);
-      ECUtil::shard_extent_set_t want;
+      ECUtil::shard_extent_set_t want(sinfo.get_k_plus_m());
 
       op.state = RecoveryOp::READING;
 
