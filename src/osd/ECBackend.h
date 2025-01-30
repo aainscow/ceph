@@ -14,17 +14,19 @@
 
 #pragma once
 
-#include <boost/intrusive/set.hpp>
 #include <boost/intrusive/list.hpp>
+#include <boost/intrusive/set.hpp>
 
 #include "ECCommon.h"
-#include "OSD.h"
-#include "PGBackend.h"
-#include "erasure-code/ErasureCodeInterface.h"
-#include "ECUtil.h"
 #include "ECExtentCache.h"
 #include "ECListener.h"
 #include "ECTypes.h"
+#include "ECUtil.h"
+#include "OSD.h"
+#include "PGBackend.h"
+#include "erasure-code/ErasureCodeInterface.h"
+#include "include/buffer.h"
+#include "osd/scrubber/scrub_backend.h"
 
 //forward declaration
 struct ECSubWrite;
@@ -450,7 +452,11 @@ public:
     ScrubMapBuilder &pos,
       ScrubMap::object &o);
 
-    uint64_t be_get_ondisk_size(uint64_t logical_size) const {
-    return sinfo.logical_to_next_chunk_offset(logical_size);
+  uint64_t be_get_ondisk_size(uint64_t logical_size, int8_t shard_id) const {
+    uint64_t ondisk_size = object_size_to_shard_size(logical_size, shard_id);
+    return ondisk_size = ondisk_size % CEPH_PAGE_SIZE
+                             ? ondisk_size + CEPH_PAGE_SIZE -
+                                   (ondisk_size % CEPH_PAGE_SIZE)
+                             : ondisk_size;
   }
 };

@@ -458,7 +458,8 @@ private:
     ScrubMapBuilder &pos,
     ScrubMap::object &o) override;
 
-  uint64_t be_get_ondisk_size(uint64_t logical_size) const final {
+  uint64_t be_get_ondisk_size(uint64_t logical_size,
+                              int8_t shard_id) const final {
     return logical_size;
   }
 };
