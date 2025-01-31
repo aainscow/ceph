@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <memory>
 #include <include/ceph_assert.h>
+#include <common/bitset_set.h>
 
 template <typename Key, typename T>
 struct mini_flat_map
@@ -149,6 +150,11 @@ struct mini_flat_map
       return *value;
     }
 
+    const std::pair<const Key&, T&>* operator->()
+    {
+      return value.operator->();
+    }
+
     const_iterator& operator=(const const_iterator &other) {
       if (this != &other) {
         key = other.key;
@@ -169,11 +175,17 @@ struct mini_flat_map
   {
     for (auto &&_ : *this) _size++;
   };
-  mini_flat_map(const mini_flat_map &other) noexcept : data(other.data.size()) , _end(this, data.size()), _const_end(this, data.size()), _size(0)
+  template<class InputIt>
+  mini_flat_map( size_t max_size, const InputIt first, const InputIt last ) : mini_flat_map(max_size)
   {
-    for (auto &&[k, t] : other) {
-      emplace(k, t);
+    for (InputIt it = first; it != last; ++it) {
+      const Key &k(it->first);
+      auto &args = it->second;
+      emplace(k, args);
     }
+  }
+  mini_flat_map(const mini_flat_map &other) noexcept : mini_flat_map(other.data.size(), other.begin(), other.end())
+  {
     ceph_assert(_size == other._size);
   };
   mini_flat_map(size_t max_size, const std::map<Key, T> &&other) :  data(max_size), _end(this, max_size), _const_end(this, max_size), _size(0)
@@ -181,6 +193,11 @@ struct mini_flat_map
     for (auto &&[k, t] : other) {
       emplace(k, std::move(t));
     }
+    ceph_assert(_size == other.size());
+  }
+  // For compatibility with older code.
+  mini_flat_map(size_t max_size, const std::map<int, T> &other) :  mini_flat_map(max_size, other.begin(), other.end())
+  {
     ceph_assert(_size == other.size());
   }
   bool contains(Key const &key) const
@@ -284,11 +301,23 @@ struct mini_flat_map
   }
 
   template< class... Args >
-  bool emplace(Key k, Args&&... args)
+  bool emplace(const Key &k, Args&&... args)
   {
+    ceph_assert(k < max_size());
     if (!data[k]) {
       _size++;
       vector_type t = std::make_unique<T>(std::forward<Args>(args)...);
+      data[k] = std::move(t);
+      return true;
+    }
+    return false;
+  }
+
+  bool insert(const Key &k, const T &value)
+  {
+    if (!data[k]) {
+      _size++;
+      vector_type t = std::make_unique<T>(value);
       data[k] = std::move(t);
       return true;
     }
@@ -318,6 +347,15 @@ struct mini_flat_map
     return const_iterator(this, key);
   }
 
+  bitset_set<128, Key> get_bitset_set()
+  {
+    bitset_set<128, Key> set;
+    for (auto &&[k, _] : *this) {
+      set.insert(k);
+    }
+    return set;
+  }
+
   friend std::ostream& operator<<(std::ostream& lhs, const mini_flat_map<Key,T>& rhs)
   {
     int c = 0;
@@ -330,5 +368,4 @@ struct mini_flat_map
     lhs << "}";
     return lhs;
   }
-
 };
