@@ -89,8 +89,9 @@ TEST(ECUtil, stripe_info_t)
             make_pair((uint64_t)0, 2*swidth));
 }
 
-class ErasureCodeDummyImpl : public ErasureCode {
+class ErasureCodeDummyImpl : public ErasureCodeInterface {
 public:
+
   uint64_t get_supported_optimizations() const override {
     return FLAG_EC_PLUGIN_PARTIAL_READ_OPTIMIZATION |
           FLAG_EC_PLUGIN_PARTIAL_WRITE_OPTIMIZATION |
@@ -160,6 +161,21 @@ public:
     return 0;
   }
 
+  int minimum_to_decode(const std::set<int> &want_to_read,
+    const std::set<int> &available,
+    std::map<int, std::vector<std::pair<int, int>>> *minimum) override
+  {
+    const shard_id_set _want_to_read(want_to_read);
+    const shard_id_set _available(available);
+    shard_id_map<vector<pair<int, int>>> _minimum(get_chunk_count());
+    int r = minimum_to_decode(_want_to_read, _available, &_minimum);
+
+    for (auto &&it : _minimum) {
+      minimum->emplace(std::move(it));
+    }
+    return r;
+  }
+
   int minimum_to_decode_with_cost(const shard_id_set &want_to_read, const shard_id_map<int> &available,
 				  shard_id_set *minimum) override {
     return 0;
@@ -169,12 +185,24 @@ public:
     return 0;
   }
 
+  int encode(const std::set<int> &want_to_encode, const bufferlist &in
+    , std::map<int, bufferlist> *encoded) override
+  {
+    return 0;
+  }
+
   int encode_chunks(const shard_id_map<bufferptr> &in, shard_id_map<bufferptr> &out) override {
     return 0;
   }
 
   int decode(const shard_id_set &want_to_read, const shard_id_map<bufferlist> &chunks, shard_id_map<bufferlist> *decoded,
 	     int chunk_size) override {
+    return 0;
+  }
+
+  int decode(const std::set<int> &want_to_read, const std::map<int, bufferlist> &chunks,
+    std::map<int, bufferlist> *decoded, int chunk_size) override
+  {
     return 0;
   }
 
@@ -191,6 +219,11 @@ public:
   }
 
   int decode_concat(const shard_id_map<bufferlist> &chunks, bufferlist *decoded) override {
+    return 0;
+  }
+
+  int decode_concat(const shard_id_set &want_to_read, const std::map<int, bufferlist> &chunks, bufferlist *decoded) override
+  {
     return 0;
   }
 
