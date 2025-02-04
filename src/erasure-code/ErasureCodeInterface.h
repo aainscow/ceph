@@ -301,6 +301,11 @@ namespace ceph {
                                   shard_id_map<std::vector<std::pair<int, int>>>
                                   *minimum) = 0;
 
+    // Interface for legacy EC.
+    virtual int minimum_to_decode(const std::set<int> &want_to_read,
+                                  const std::set<int> &available,
+                                  std::map<int, std::vector<std::pair<int, int>>>
+                                  *minimum) = 0;
     /**
      * Compute the smallest subset of **available** chunks that needs
      * to be retrieved in order to successfully decode
@@ -381,6 +386,9 @@ namespace ceph {
      virtual int encode(const shard_id_set &want_to_encode,
                         const bufferlist &in,
                         shard_id_map<bufferlist> *encoded) = 0;
+     virtual int encode(const std::set<int> &want_to_encode,
+                        const bufferlist &in,
+                        std::map<int, bufferlist> *encoded) = 0;
 
     /**
      * Note: The encode_chunks function is used by the older EC code path
@@ -510,10 +518,12 @@ namespace ceph {
     virtual int decode(const shard_id_set &want_to_read,
                        const shard_id_map<bufferlist> &chunks,
                        shard_id_map<bufferlist> *decoded, int chunk_size) = 0;
-
+    virtual int decode(const std::set<int> &want_to_read,
+                       const std::map<int, bufferlist> &chunks,
+                       std::map<int, bufferlist> *decoded, int chunk_size) = 0;
     virtual int decode_chunks(const shard_id_set &want_to_read,
-                              const shard_id_map<bufferlist> &chunks,
-                              shard_id_map<bufferlist> *decoded) = 0;
+                        const shard_id_map<bufferlist> &chunks,
+                        shard_id_map<bufferlist> *decoded) = 0;
 
     /**
      * Return the ordered list of chunks or an empty vector
@@ -567,6 +577,9 @@ namespace ceph {
     virtual int decode_concat(const shard_id_set& want_to_read,
 			      const shard_id_map<bufferlist> &chunks,
 			      bufferlist *decoded) = 0;
+    virtual int decode_concat(const shard_id_set& want_to_read,
+                          const std::map<int, bufferlist> &chunks,
+                          bufferlist *decoded) = 0;
     virtual int decode_concat(const shard_id_map<bufferlist> &chunks,
 			      bufferlist *decoded) = 0;
     /**

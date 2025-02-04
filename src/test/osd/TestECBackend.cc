@@ -21,6 +21,7 @@
 #include "gtest/gtest.h"
 #include "osd/osd_types.h"
 #include "common/ceph_argparse.h"
+#include "erasure-code/ErasureCode.h"
 
 using namespace std;
 
@@ -88,7 +89,7 @@ TEST(ECUtil, stripe_info_t)
             make_pair((uint64_t)0, 2*swidth));
 }
 
-class ErasureCodeDummyImpl : public ErasureCodeInterface {
+class ErasureCodeDummyImpl : public ErasureCode {
 public:
   uint64_t get_supported_optimizations() const override {
     return FLAG_EC_PLUGIN_PARTIAL_READ_OPTIMIZATION |
