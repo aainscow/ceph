@@ -52,6 +52,7 @@
 #include "compressor/Compressor.h"
 #include "osd_perf_counters.h"
 #include "pg_features.h"
+#include "ECTypes.h"
 
 #define CEPH_OSD_ONDISK_MAGIC "ceph osd volume v026"
 
@@ -4463,7 +4464,7 @@ struct pg_log_entry_t {
   bool invalid_pool; // only when decoding pool-less hobject based entries
   ObjectCleanRegions clean_regions;
 
-  std::set<int> written_shards; // EC partial writes do not update every shard
+  shard_id_set written_shards; // EC partial writes do not update every shard
 
   pg_log_entry_t()
    : user_version(0), return_code(0), op(0),
