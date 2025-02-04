@@ -32,11 +32,12 @@ TEST(ErasureCodePlugin, factory)
   {
     ErasureCodeInterfaceRef erasure_code;
     EXPECT_FALSE(erasure_code);
-    EXPECT_EQ(-ENOENT, instance.factory("jerasure",
+    // Defaults will be loaded, so this should work.
+    EXPECT_EQ(0, instance.factory("jerasure",
 					g_conf().get_val<std::string>("erasure_code_dir"),
 					profile,
                                         &erasure_code, &cerr));
-    EXPECT_FALSE(erasure_code);
+    EXPECT_TRUE(erasure_code); // should load defaults!
   }
   {
     ErasureCodeInterfaceRef erasure_code;
