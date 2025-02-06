@@ -293,7 +293,7 @@ public:
   }
 
   uint64_t be_get_ondisk_size(uint64_t logical_size,
-                              int8_t shard_id) const final {
+                              shard_id_t shard_id) const final {
     if (is_optimized())
      {
       return optimized.be_get_ondisk_size(logical_size, shard_id);
