@@ -761,8 +761,8 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
     op.delta_stats);
 
   shard_id_map<ObjectStore::Transaction> trans(sinfo.get_k_plus_m());
-  for (auto &&pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
-    trans[pg_shard.shard];
+  for (auto &&shard : get_parent()->get_acting_recovery_backfill_shard_id_set()) {
+    trans[shard];
   }
 
   op.trace.event("start ec write");
@@ -789,14 +789,12 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
     }
   }
 
-  op.remote_shard_extent_map.clear();
-
   ObjectStore::Transaction empty;
   bool should_write_local = false;
   ECSubWrite local_write_op;
   std::vector<std::pair<int, Message*>> messages;
   messages.reserve(get_parent()->get_acting_recovery_backfill_shards().size());
-  set<pg_shard_t> backfill_shards = get_parent()->get_backfill_shards();
+  shard_id_set backfill_shards = get_parent()->get_backfill_shard_id_set();
 
   if (op.version.version != 0) {
     if (oid_to_version.contains(op.hoid)) {
@@ -805,30 +803,30 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
     oid_to_version[op.hoid] = op.version;
   }
   for (auto &&pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
-    auto iter = trans.find(pg_shard.shard);
-    ceph_assert(iter != trans.end());
-    if (iter->second.empty()) {
-      dout(20) << " BILL: Transaction for osd." << pg_shard.osd << " shard " << iter->first << " is empty" << dendl;
+    ObjectStore::Transaction &transaction = trans.at(pg_shard.shard);
+    shard_id_t shard = pg_shard.shard;
+    if (transaction.empty()) {
+      dout(20) << " BILL: Transaction for osd." << pg_shard.osd << " shard " << shard << " is empty" << dendl;
     } else {
-      dout(20) << " BILL: Transaction for osd." << pg_shard.osd << " shard " << iter->first << " contents ";
+      dout(20) << " BILL: Transaction for osd." << pg_shard.osd << " shard " << shard << " contents ";
       Formatter *f = Formatter::create("json");
       f->open_object_section("t");
-      iter->second.dump(f);
+      transaction.dump(f);
       f->close_section();
       f->flush(*_dout);
       delete f;
       *_dout << dendl;
     }
-    if (op.skip_transaction(pending_roll_forward, iter->first, iter->second)) {
+    if (op.skip_transaction(pending_roll_forward, shard, transaction)) {
       // Must be an empty transaction
-      ceph_assert(iter->second.empty());
-      dout(20) << " BILL: Skipping transaction for osd." << iter->first << dendl;
+      ceph_assert(transaction.empty());
+      dout(20) << " BILL: Skipping transaction for osd." << shard << dendl;
       continue;
     }
     op.pending_commits++;
     bool should_send = get_parent()->should_send_op(pg_shard, op.hoid);
     const pg_stat_t &stats =
-      (should_send || !backfill_shards.count(pg_shard)) ?
+      (should_send || !backfill_shards.contains(shard)) ?
       get_info().stats :
       get_parent()->get_shard_info().find(pg_shard)->second.stats;
 
@@ -838,7 +836,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
       op.reqid,
       op.hoid,
       stats,
-      should_send ? iter->second : empty,
+      should_send ? transaction : empty,
       op.version,
       op.trim_to,
       op.pg_committed_to,

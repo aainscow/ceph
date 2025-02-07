@@ -240,11 +240,13 @@ class ECListenerStub : public ECListener {
   OSDMapRef osd_map_ref;
   pg_info_t pg_info;
   set<pg_shard_t> backfill_shards;
+  shard_id_set backfill_shard_id_set;
   map<hobject_t, set<pg_shard_t>> missing_loc_shards;
   map<pg_shard_t, pg_missing_t> shard_missing;
   pg_missing_set<false> shard_not_missing_const;
   pg_pool_t pg_pool;
   set<pg_shard_t> acting_recovery_backfill_shards;
+  shard_id_set acting_recovery_backfill_shard_id_set;
   map<pg_shard_t, pg_info_t> shard_info;
   PGLog pg_log;
   pg_info_t shard_pg_info;
@@ -367,6 +369,10 @@ public:
     return backfill_shards;
   }
 
+  const shard_id_set &get_backfill_shard_id_set() const override {
+    return backfill_shard_id_set;
+  }
+
   const map<hobject_t, std::set<pg_shard_t>> &get_missing_loc_shards() const override {
     return missing_loc_shards;
   }
@@ -410,6 +416,10 @@ public:
 
   const set<pg_shard_t> &get_acting_recovery_backfill_shards() const override {
     return acting_recovery_backfill_shards;
+  }
+
+  const shard_id_set &get_acting_recovery_backfill_shard_id_set() const override {
+    return acting_recovery_backfill_shard_id_set;
   }
 
   bool should_send_op(pg_shard_t peer, const hobject_t &hoid) override {
