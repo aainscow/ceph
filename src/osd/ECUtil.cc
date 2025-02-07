@@ -637,10 +637,6 @@ namespace ECUtil {
         want_to_read.insert(shard);
         auto s = slice(offset, length);
 
-        for (auto &&[_, bl] : s) {
-          bl.rebuild_aligned_size_and_memory(sinfo->get_chunk_size(), SIMD_ALIGN);
-        }
-
         shard_id_map<bufferptr> in(sinfo->get_k_plus_m());
         shard_id_map<bufferptr> out(sinfo->get_k_plus_m());
         for (auto&& [shard, list] : s) {
