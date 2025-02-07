@@ -121,7 +121,10 @@ namespace ECUtil {
 
       return size;
     }
-
+    void populate_shard_id_set(shard_id_set &set) const
+    {
+      map.populate_bitset_set(set);
+    }
   };
 
   inline uint64_t page_mask() {

@@ -1304,16 +1304,12 @@ void ECBackend::handle_sub_read_reply(
   if (rop.do_redundant_reads || rop.in_progress.empty()) {
     for ( auto &&[oid, read_result]: rop.complete) {
       shard_id_set have;
-      for ( auto&& [shard, _] : read_result.processed_read_requests) {
-        have.insert(shard);
-        dout(20) << __func__ << " have shard=" << shard << dendl;
-      }
+      read_result.processed_read_requests.populate_shard_id_set(have);
       shard_id_map<vector<pair<int, int>>> dummy_minimum(sinfo.get_k_plus_m());
-      int err;
       shard_id_set want_to_read;
-      for (auto &&[shard, _]:rop.to_read.at(oid).shard_want_to_read) {
-        want_to_read.insert(shard);
-      }
+      rop.to_read.at(oid).shard_want_to_read.populate_shard_id_set(want_to_read);
+
+      int err;
       if ((err = ec_impl->minimum_to_decode(want_to_read, have, &dummy_minimum)) < 0) {
 	dout(20) << __func__ << " minimum_to_decode failed" << dendl;
         if (rop.in_progress.empty()) {

@@ -228,8 +228,8 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
       if (error_shards && error_shards->contains(pg_shard))
 	continue;
       const shard_id_t &shard = pg_shard.shard;
-      if (have.count(shard)) {
-	ceph_assert(shards.count(shard));
+      if (have.contains(shard)) {
+	ceph_assert(shards.contains(shard));
 	continue;
       }
       dout(10) << __func__ << ": checking backfill " << pg_shard << dendl;
@@ -282,9 +282,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   shard_id_map<vector<pair<int, int>>> need(sinfo.get_k_plus_m());
   shard_id_set want;
 
-  for (auto &&[shard, _] : read_request.shard_want_to_read) {
-    want.insert(shard);
-  }
+  read_request.shard_want_to_read.populate_shard_id_set(want);
 
   int r = ec_impl->minimum_to_decode(want, have, &need);
   if (r < 0) {
@@ -644,8 +642,6 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct_for_rmw(
     kick_reads();
     return;
   }
-
-  map<hobject_t, shard_id_set> obj_want_to_read;
 
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&[hoid, read_request]: to_read) {
