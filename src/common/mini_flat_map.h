@@ -502,7 +502,9 @@ struct mini_flat_map
   void populate_bitset_set( bitset_set<N, Key> &set ) const
   {
     for (int i=0; i < data.size(); i++) {
-      set.insert(Key(i));
+      if (data[i]) {
+        set.insert(Key(i));
+      }
     }
   }
 
