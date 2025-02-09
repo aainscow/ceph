@@ -56,10 +56,12 @@ public:
       // the corner case of m = 1
       return FLAG_EC_PLUGIN_PARTIAL_READ_OPTIMIZATION |
         FLAG_EC_PLUGIN_PARTIAL_WRITE_OPTIMIZATION |
-        FLAG_EC_PLUGIN_ZERO_INPUT_ZERO_OUTPUT_OPTIMIZATION;
+        FLAG_EC_PLUGIN_ZERO_INPUT_ZERO_OUTPUT_OPTIMIZATION |
+        FLAG_EC_PLUGIN_REQUIRE_SUB_CHUNKS;
     }
     return FLAG_EC_PLUGIN_PARTIAL_READ_OPTIMIZATION |
-      FLAG_EC_PLUGIN_ZERO_INPUT_ZERO_OUTPUT_OPTIMIZATION;
+      FLAG_EC_PLUGIN_ZERO_INPUT_ZERO_OUTPUT_OPTIMIZATION |
+      FLAG_EC_PLUGIN_REQUIRE_SUB_CHUNKS;
   }
 
   unsigned int get_chunk_count() const override
@@ -83,6 +85,7 @@ public:
 
   int minimum_to_decode(const shard_id_set &want_to_read,
                         const shard_id_set &available,
+                        shard_id_set &minimum_set,
                         shard_id_map<std::vector<std::pair<int, int>>> *
                         minimum) override;
 

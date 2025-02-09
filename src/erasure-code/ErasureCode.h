@@ -70,7 +70,8 @@ namespace ceph {
 
     int minimum_to_decode(const shard_id_set &want_to_read,
 			  const shard_id_set &available,
-			  mini_flat_map<shard_id_t, std::vector<std::pair<int, int>>> *minimum) override;
+			  shard_id_set &minimum_set,
+			  mini_flat_map<shard_id_t, std::vector<std::pair<int, int>>> *minimum_sub_chunks) override;
 
     int minimum_to_decode(const std::set<int> &want_to_read,
                           const std::set<int> &available,

@@ -279,23 +279,27 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
 
   get_all_avail_shards(hoid, have, shards, for_recovery, error_shards);
 
-  shard_id_map<vector<pair<int, int>>> need(sinfo.get_k_plus_m());
+  std::unique_ptr<shard_id_map<vector<pair<int, int>>>> need_sub_chunks = nullptr;
+  if (sinfo.supports_sub_chunks()) {
+    need_sub_chunks = std::make_unique<shard_id_map<vector<pair<int, int>>>>(sinfo.get_k_plus_m());
+  }
+  shard_id_set need_set;
   shard_id_set want;
 
   read_request.shard_want_to_read.populate_shard_id_set(want);
 
-  int r = ec_impl->minimum_to_decode(want, have, &need);
+  int r = ec_impl->minimum_to_decode(want, have, need_set, need_sub_chunks.get());
   if (r < 0) {
     dout(20) << "minimum_to_decode_failed r: " << r <<"want: " << want
-      << " have: " << have << " need: " << need << dendl;
+      << " have: " << have << " need: " << need_set << dendl;
     return r;
   }
 
-  if (do_redundant_reads) {
+  if (do_redundant_reads && need_sub_chunks) {
     vector<pair<int, int>> subchunks_list;
     subchunks_list.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
     for (auto &&i: have) {
-      need[i] = subchunks_list;
+      (*need_sub_chunks)[i] = subchunks_list;
     }
   }
 
@@ -318,14 +322,16 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     }
   }
 
-  for (auto &&[shard, subchunk] : need) {
+  for (auto &shard : need_set) {
     if (!have.contains(shard)) {
       continue;
     }
     shard_id_t shard_id(shard);
     extent_set extents = extra_extents;
     shard_read_t shard_read;
-    shard_read.subchunk = subchunk;
+    if (need_sub_chunks) {
+      shard_read.subchunk = need_sub_chunks->at(shard_id);
+    }
     shard_read.pg_shard = shards[shard_id];;
 
     if (read_request.shard_want_to_read.contains(shard)) {
@@ -457,7 +463,12 @@ void ECCommon::ReadPipeline::do_read_op(ReadOp &op)
 	messages[shard_read.pg_shard].attrs_to_read.insert(hoid);
 	need_attrs = false;
       }
-      messages[shard_read.pg_shard].subchunks[hoid] = shard_read.subchunk;
+      if (shard_read.subchunk) {
+        messages[shard_read.pg_shard].subchunks[hoid] = *shard_read.subchunk;
+      } else {
+        static const std::vector default_sub_chunk = {make_pair(0, 1)};
+        messages[shard_read.pg_shard].subchunks[hoid] = default_sub_chunk;
+      }
       op.obj_to_source[hoid].insert(shard_read.pg_shard);
       op.source_to_obj[shard_read.pg_shard].insert(hoid);
     }

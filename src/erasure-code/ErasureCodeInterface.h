@@ -297,9 +297,10 @@ namespace ceph {
      * @return **0** on success or a negative errno on error.
      */
     virtual int minimum_to_decode(const shard_id_set &want_to_read,
-                                  const shard_id_set &available,
-                                  shard_id_map<std::vector<std::pair<int, int>>>
-                                  *minimum) = 0;
+                          const shard_id_set &available,
+                          shard_id_set &minimum_set,
+                          mini_flat_map<shard_id_t, std::vector<std::pair<int, int>>>
+                          *minimum_sub_chunks) = 0;
 
     // Interface for legacy EC.
     virtual int minimum_to_decode(const std::set<int> &want_to_read,
@@ -648,6 +649,10 @@ namespace ceph {
        * data chunk and the coding parity chunks.
        */
       FLAG_EC_PLUGIN_PARITY_DELTA_OPTIMIZATION = 1<<4,
+      /* This plugin requires sub-chunks (at the time of writint this was only
+       * clay). Other plugins will not process the overhead of stub sub-chunks.
+       */
+      FLAG_EC_PLUGIN_REQUIRE_SUB_CHUNKS = 1<<5,
     };
 
     static const char *get_optimization_flag_name(const uint64_t flag) {

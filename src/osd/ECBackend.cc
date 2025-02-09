@@ -1002,22 +1002,18 @@ void ECBackend::handle_sub_read(
 {
   trace.event("handle sub read");
   shard_id_t shard = get_parent()->whoami_shard().shard;
-  for(auto i = op.to_read.begin();
-      i != op.to_read.end();
-      ++i) {
+  for (auto && [hoid, to_read] : op.to_read) {
     int r = 0;
-    for (auto j = i->second.begin(); j != i->second.end(); ++j) {
+    for (auto &&[offset, len, flags] : to_read) {
       bufferlist bl;
-      if ((op.subchunks.find(i->first)->second.size() == 1) && 
-          (op.subchunks.find(i->first)->second.front().second == 
-                                            ec_impl->get_sub_chunk_count())) {
+      auto &subchunks = op.subchunks.at(hoid);
+      if ((subchunks.size() == 1) &&
+          (subchunks.front().second == ec_impl->get_sub_chunk_count())) {
         dout(20) << __func__ << " case1: reading the complete chunk/shard." << dendl;
         r = switcher->store->read(
 	  switcher->ch,
-	  ghobject_t(i->first, ghobject_t::NO_GEN, shard),
-	  j->get<0>(),
-	  j->get<1>(),
-	  bl, j->get<2>()); // Allow EIO return
+	  ghobject_t(hoid, ghobject_t::NO_GEN, shard),
+	  offset, len, bl, flags); // Allow EIO return
       } else {
         int subchunk_size =
           sinfo.get_chunk_size() / ec_impl->get_sub_chunk_count();
@@ -1025,16 +1021,16 @@ void ECBackend::handle_sub_read(
 		 << " subchunk_size=" << subchunk_size
 		 << " chunk_size=" << sinfo.get_chunk_size() << dendl;
         bool error = false;
-        for (int m = 0; m < (int)j->get<1>() && !error;
+        for (int m = 0; m < (int)len && !error;
              m += sinfo.get_chunk_size()) {
-          for (auto &&k:op.subchunks.find(i->first)->second) {
+          for (auto &&k : subchunks) {
             bufferlist bl0;
             r = switcher->store->read(
                 switcher->ch,
-                ghobject_t(i->first, ghobject_t::NO_GEN, shard),
-                j->get<0>() + m + (k.first)*subchunk_size,
-                (k.second)*subchunk_size,
-                bl0, j->get<2>());
+                ghobject_t(hoid, ghobject_t::NO_GEN, shard),
+                offset + m + (k.first)*subchunk_size,
+                (k.second) * subchunk_size,
+                bl0, flags);
             if (r < 0) {
               error = true;
               break;
@@ -1050,23 +1046,19 @@ void ECBackend::handle_sub_read(
 	// ENOENT.  Suppress the message to the cluster log in that case.
 	if (r == -ENOENT && get_parent()->get_pool().fast_read) {
 	  dout(5) << __func__ << ": Error " << r
-		  << " reading " << i->first << ", fast read, probably ok"
+		  << " reading " << hoid << ", fast read, probably ok"
 		  << dendl;
 	} else {
 	  get_parent()->clog_error() << "Error " << r
 				     << " reading object "
-				     << i->first;
+				     << hoid;
 	  dout(5) << __func__ << ": Error " << r
-		  << " reading " << i->first << dendl;
+		  << " reading " << hoid << dendl;
 	}
 	goto error;
       } else {
-        dout(20) << __func__ << " read request=" << j->get<1>() << " r=" << r << " len=" << bl.length() << dendl;
-	reply->buffers_read[i->first].push_back(
-	  make_pair(
-	    j->get<0>(),
-	    bl)
-	  );
+        dout(20) << __func__ << " read request=" << len << " r=" << r << " len=" << bl.length() << dendl;
+	reply->buffers_read[hoid].push_back(make_pair(offset, bl));
       }
 
       if (!sinfo.supports_ec_overwrites()) {
@@ -1077,35 +1069,35 @@ void ECBackend::handle_sub_read(
         ECUtil::HashInfoRef hinfo;
         map<string, bufferlist, less<>> attrs;
 	struct stat st;
-	int r = object_stat(i->first, &st);
+	int r = object_stat(hoid, &st);
         if (r >= 0) {
 	  dout(10) << __func__ << ": found on disk, size " << st.st_size << dendl;
-	  r = switcher->objects_get_attrs_with_hinfo(i->first, &attrs);
+	  r = switcher->objects_get_attrs_with_hinfo(hoid, &attrs);
 	}
 	if (r >= 0) {
-	  hinfo = unstable_hashinfo_registry.get_hash_info(i->first, false, attrs, st.st_size);
+	  hinfo = unstable_hashinfo_registry.get_hash_info(hoid, false, attrs, st.st_size);
 	} else {
-	  derr << __func__ << ": access (attrs) on " << i->first << " failed: "
+	  derr << __func__ << ": access (attrs) on " << hoid << " failed: "
 	       << cpp_strerror(r) << dendl;
 	}
         if (!hinfo) {
           r = -EIO;
           get_parent()->clog_error() << "Corruption detected: object "
-                                     << i->first
+                                     << hoid
                                      << " is missing hash_info";
-          dout(5) << __func__ << ": No hinfo for " << i->first << dendl;
+          dout(5) << __func__ << ": No hinfo for " << hoid << dendl;
           goto error;
         }
 	ceph_assert(hinfo->has_chunk_hash());
 	if ((bl.length() == hinfo->get_total_chunk_size()) &&
-	    (j->get<0>() == 0)) {
-	  dout(20) << __func__ << ": Checking hash of " << i->first << dendl;
+	    (offset == 0)) {
+	  dout(20) << __func__ << ": Checking hash of " << hoid << dendl;
 	  bufferhash h(-1);
 	  h << bl;
 	  if (h.digest() != hinfo->get_chunk_hash(shard)) {
-	    get_parent()->clog_error() << "Bad hash for " << i->first << " digest 0x"
+	    get_parent()->clog_error() << "Bad hash for " << hoid << " digest 0x"
 				       << hex << h.digest() << " expected 0x" << hinfo->get_chunk_hash(shard) << dec;
-	    dout(5) << __func__ << ": Bad hash for " << i->first << " digest 0x"
+	    dout(5) << __func__ << ": Bad hash for " << hoid << " digest 0x"
 		    << hex << h.digest() << " expected 0x" << hinfo->get_chunk_hash(shard) << dec << dendl;
 	    r = -EIO;
 	    goto error;
@@ -1117,15 +1109,15 @@ void ECBackend::handle_sub_read(
 error:
     // Do NOT check osd_read_eio_on_bad_digest here.  We need to report
     // the state of our chunk in case other chunks could substitute.
-    reply->buffers_read.erase(i->first);
-    reply->errors[i->first] = r;
+    reply->buffers_read.erase(hoid);
+    reply->errors[hoid] = r;
   }
   for (set<hobject_t>::iterator i = op.attrs_to_read.begin();
        i != op.attrs_to_read.end();
        ++i) {
     dout(10) << __func__ << ": fulfilling attr request on "
 	     << *i << dendl;
-    if (reply->errors.count(*i))
+    if (reply->errors.contains(*i))
       continue;
     int r = switcher->store->getattrs(
       switcher->ch,
@@ -1305,12 +1297,12 @@ void ECBackend::handle_sub_read_reply(
     for ( auto &&[oid, read_result]: rop.complete) {
       shard_id_set have;
       read_result.processed_read_requests.populate_shard_id_set(have);
-      shard_id_map<vector<pair<int, int>>> dummy_minimum(sinfo.get_k_plus_m());
+      shard_id_set dummy_minimum;
       shard_id_set want_to_read;
       rop.to_read.at(oid).shard_want_to_read.populate_shard_id_set(want_to_read);
 
       int err;
-      if ((err = ec_impl->minimum_to_decode(want_to_read, have, &dummy_minimum)) < 0) {
+      if ((err = ec_impl->minimum_to_decode(want_to_read, have, dummy_minimum, nullptr)) < 0) {
 	dout(20) << __func__ << " minimum_to_decode failed" << dendl;
         if (rop.in_progress.empty()) {
 	  // If we don't have enough copies, try other pg_shard_ts if available.
@@ -1645,10 +1637,8 @@ void ECBackend::objects_read_async(
 
   if (!es.empty()) {
     auto &offsets = reads[hoid];
-    for (auto j = es.begin();
-	 j != es.end();
-	 ++j) {
-      offsets.emplace_back(ec_align_t{j.get_start(), j.get_len(), flags});
+    for (auto [off, len] : es) {
+      offsets.emplace_back(ec_align_t{off, len, flags});
     }
   }
 
@@ -1673,25 +1663,23 @@ void ECBackend::objects_read_async(
       auto dpp = ec->get_parent()->get_dpp();
       ldpp_dout(dpp, 20) << "objects_read_async_cb: got: " << results
 			 << dendl;
-      // FIXME
-    //   ldpp_dout(dpp, 20) << "objects_read_async_cb: cache: " << ec->rmw_pipeline.extent_cache
-			 // << dendl;
 
       auto &got = results.at(hoid);
 
       int r = 0;
-      for (auto &&read: to_read) {
+      for (auto &&[read, result]: to_read) {
+        auto &&[bufs, ctx] = result;
 	if (got.err < 0) {
 	  // error handling
-	  if (read.second.second) {
-	    read.second.second->complete(got.err);
+	  if (ctx) {
+	    ctx->complete(got.err);
 	  }
 	  if (r == 0)
 	    r = got.err;
 	} else {
-	  ceph_assert(read.second.first);
-	  uint64_t offset = read.first.offset;
-	  uint64_t length = read.first.size;
+	  ceph_assert(bufs);
+	  uint64_t offset = read.offset;
+	  uint64_t length = read.size;
 	  auto range = got.emap.get_containing_range(offset, length);
 	  uint64_t range_offset = range.first.get_off();
 	  uint64_t range_length = range.first.get_len();
@@ -1701,16 +1689,14 @@ void ECBackend::objects_read_async(
           ldpp_dout(dpp, 20) << "range offset: " << range_offset << dendl;
           ldpp_dout(dpp, 20) << "length: " << length << dendl;
           ldpp_dout(dpp, 20) << "range length: " << range_length << dendl;
-	  ceph_assert(
-	    (offset + length) <=
-	    (range_offset + range_length));
-	  read.second.first->substr_of(
+	  ceph_assert((offset + length) <= (range_offset + range_length));
+	  bufs->substr_of(
 	    range.first.get_val(),
 	    offset - range_offset,
 	    length);
-	  if (read.second.second) {
-	    read.second.second->complete(length);
-	    read.second.second = nullptr;
+	  if (ctx) {
+	    ctx->complete(length);
+	    ctx = nullptr;
 	  }
 	}
       }

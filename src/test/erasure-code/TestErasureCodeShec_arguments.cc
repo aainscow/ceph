@@ -237,10 +237,10 @@ TEST(ParameterTest, combination_all)
             }
           }
 
-	  shard_id_map<vector<pair<int,int>>> minimum_chunks(shec->get_chunk_count());
+	  shard_id_set minimum_chunks;
 	  shard_id_map<bufferlist> decoded(shec->get_chunk_count());
           result = shec->minimum_to_decode(want_to_read, available_chunks,
-				           &minimum_chunks);
+				           minimum_chunks, nullptr);
           int dresult = shec->decode(want_to_read, inchunks, &decoded,
 				     shec->get_chunk_size(kObjectSize));
           ++count_num;

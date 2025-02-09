@@ -102,13 +102,15 @@ unsigned int ErasureCodeClay::get_minimum_granularity()
 
 int ErasureCodeClay::minimum_to_decode(const shard_id_set &want_to_read,
 				       const shard_id_set &available,
+				       shard_id_set &minimum_set,
 				       shard_id_map<vector<pair<int, int>>> *minimum)
 {
   if (is_repair(want_to_read, available)) {
-    return minimum_to_repair(want_to_read, available, minimum);
-  } else {
-    return ErasureCode::minimum_to_decode(want_to_read, available, minimum);
+    int r = minimum_to_repair(want_to_read, available, minimum);
+    minimum->populate_bitset_set(minimum_set);
+    return r;
   }
+  return ErasureCode::minimum_to_decode(want_to_read, available, minimum_set, minimum);
 }
 
 int ErasureCodeClay::decode(const shard_id_set &want_to_read,

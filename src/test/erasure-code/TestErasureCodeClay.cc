@@ -112,8 +112,9 @@ TEST(ErasureCodeClay, DISABLED_encode_decode)
     want_to_read.insert(i);
     shard_id_set available(avail, avail+4);
     available.erase(i);
+    shard_id_set minimum_set;
     shard_id_map<vector<pair<int,int>>> minimum(clay.get_chunk_count());
-    EXPECT_EQ(0, clay.minimum_to_decode(want_to_read, available, &minimum));
+    EXPECT_EQ(0, clay.minimum_to_decode(want_to_read, available, minimum_set, &minimum));
     shard_id_map<bufferlist> helper(clay.get_chunk_count());
     for (shard_id_map<vector<pair<int,int>>>::iterator h=minimum.begin(); h!= minimum.end(); ++h) {
       for(vector<pair<int,int>>::iterator ind=h->second.begin(); ind != h->second.end(); ++ind) {
@@ -218,12 +219,13 @@ TEST(ErasureCodeClay, DISABLED_encode_decode_aloof_nodes)
   int avail[] = {0,1,2,3,4,5};
   for (shard_id_t i(0); i < 6; ++i) {
     vector<pair<int,int>> repair_subchunks;
+    shard_id_set minimum_set;
     shard_id_map<vector<pair<int,int>>> minimum(clay.get_chunk_count());
     shard_id_set want_to_read;
     want_to_read.insert(i);
     shard_id_set available(avail, avail+6);
     available.erase(i);
-    clay.minimum_to_decode(want_to_read, available, &minimum);
+    clay.minimum_to_decode(want_to_read, available, minimum_set, &minimum);
     shard_id_map<bufferlist> helper(clay.get_chunk_count());
     for (shard_id_map<vector<pair<int,int>>>::iterator h=minimum.begin(); h!= minimum.end(); ++h) {
       for(vector<pair<int,int>>::iterator ind=h->second.begin(); ind != h->second.end(); ++ind) {
@@ -336,12 +338,13 @@ TEST(ErasureCodeClay, DISABLED_encode_decode_shortening_case)
   int avail[] = {0,1,2,3,4,5,6};
   for (shard_id_t i(0); i < 7; ++i) {
     vector<pair<int,int>> repair_subchunks;
+    shard_id_set minimum_set;
     shard_id_map<vector<pair<int,int>>> minimum(clay.get_chunk_count());
     shard_id_set want_to_read;
     want_to_read.insert(i);
     shard_id_set available(avail, avail+7);
     available.erase(i);
-    clay.minimum_to_decode(want_to_read, available, &minimum);
+    clay.minimum_to_decode(want_to_read, available, minimum_set, &minimum);
     shard_id_map<bufferlist> helper(clay.get_chunk_count());
     for (shard_id_map<vector<pair<int,int>>>::iterator h=minimum.begin(); h!= minimum.end(); ++h) {
       for(vector<pair<int,int>>::iterator ind=h->second.begin(); ind != h->second.end(); ++ind) {

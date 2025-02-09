@@ -139,19 +139,20 @@ public:
   }
 
   int minimum_to_decode(const shard_id_set &want_to_read, const shard_id_set &available,
-			shard_id_map<std::vector<std::pair<int, int>>> *minimum) override {
+                        shard_id_set &minimum_set,
+			shard_id_map<std::vector<std::pair<int, int>>> *minimum_sub_chunks) override {
     shard_id_t parity_shard_index(data_chunk_count);
     for (shard_id_t shard : want_to_read) {
       if (available.contains(shard)) {
-	(*minimum)[shard] = default_sub_chunk;
+        minimum_set.insert(shard);
       } else {
         // Shard is missing.  Recover with every other shard and one parity
         // for each missing shard.
         for (shard_id_t i; i<data_chunk_count; ++i) {
-          if (available.contains(i))
-            (*minimum)[i] = default_sub_chunk;
-          else {
-            (*minimum)[parity_shard_index] = default_sub_chunk;
+          if (available.contains(i)) {
+            minimum_set.insert(i);
+          } else {
+            minimum_set.insert(parity_shard_index);
             ++parity_shard_index;
           }
 
@@ -169,11 +170,11 @@ public:
   {
     const shard_id_set _want_to_read(want_to_read);
     const shard_id_set _available(available);
-    shard_id_map<vector<pair<int, int>>> _minimum(get_chunk_count());
-    int r = minimum_to_decode(_want_to_read, _available, &_minimum);
+    shard_id_set _minimum;
+    int r = minimum_to_decode(_want_to_read, _available, _minimum, nullptr);
 
-    for (auto &&it : _minimum) {
-      minimum->emplace(std::move(it));
+    for (auto &&shard : _minimum) {
+      minimum->emplace(int(shard), default_sub_chunk);
     }
     return r;
   }

@@ -285,6 +285,9 @@ public:
   bool supports_ec_overwrites() const {
     return pool->allows_ecoverwrites();
   }
+  bool supports_sub_chunks() const {
+    return (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_REQUIRE_SUB_CHUNKS) != 0;
+  }
   bool require_hinfo() const {
     return !supports_ec_overwrites();
   }

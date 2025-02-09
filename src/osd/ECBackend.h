@@ -359,26 +359,32 @@ public:
   /**
    * ECRecPred
    *
-   * Determines the whether _have is sufficient to recover an object
+   * Determines whether _have is sufficient to recover an object
    */
   class ECRecPred : public IsPGRecoverablePredicate {
     shard_id_set want;
+    const ECUtil::stripe_info_t *sinfo;
     ceph::ErasureCodeInterfaceRef ec_impl;
   public:
-    explicit ECRecPred(ceph::ErasureCodeInterfaceRef ec_impl) : ec_impl(ec_impl) {
-      want.insert_range(shard_id_t(0), ec_impl->get_chunk_count());
+    explicit ECRecPred(const ECUtil::stripe_info_t *sinfo, ceph::ErasureCodeInterfaceRef ec_impl) :
+      sinfo(sinfo), ec_impl(ec_impl) {
+      want.insert_range(shard_id_t(0), sinfo->get_k_plus_m());
     }
     bool operator()(const std::set<pg_shard_t> &_have) const override {
       shard_id_set have;
       for (pg_shard_t p : _have) {
 	have.insert(p.shard);
       }
-      mini_flat_map<shard_id_t, std::vector<std::pair<int, int>>> min(ec_impl->get_chunk_count());
-      return ec_impl->minimum_to_decode(want, have, &min) == 0;
+      std::unique_ptr<shard_id_map<std::vector<std::pair<int, int>>>> min_sub_chunks = nullptr;
+      if (sinfo->supports_sub_chunks()) {
+        min_sub_chunks = std::make_unique<shard_id_map<std::vector<std::pair<int, int>>>>(sinfo->get_k_plus_m());
+      }
+      shard_id_set min;
+      return ec_impl->minimum_to_decode(want, have, min, min_sub_chunks.get()) == 0;
     }
   };
-    std::unique_ptr<ECRecPred> get_is_recoverable_predicate() const {
-    return std::make_unique<ECRecPred>(ec_impl);
+  std::unique_ptr<ECRecPred> get_is_recoverable_predicate() const {
+    return std::make_unique<ECRecPred>(&sinfo, ec_impl);
   }
 
     unsigned get_ec_data_chunk_count() const {
@@ -402,16 +408,17 @@ public:
   public:
     ECReadPred(
       pg_shard_t whoami,
-      ceph::ErasureCodeInterfaceRef ec_impl) : whoami(whoami), rec_pred(ec_impl) {}
+      const ECUtil::stripe_info_t *sinfo,
+      ceph::ErasureCodeInterfaceRef ec_impl) : whoami(whoami), rec_pred(sinfo, ec_impl) {}
     bool operator()(const std::set<pg_shard_t> &_have) const override {
       return _have.count(whoami) && rec_pred(_have);
     }
   };
     std::unique_ptr<ECReadPred>get_is_readable_predicate(pg_shard_t whoami) const {
-      return std::make_unique<ECReadPred>(whoami, ec_impl);
+      return std::make_unique<ECReadPred>(whoami, &sinfo, ec_impl);
   }
 
-    const ECUtil::stripe_info_t sinfo;
+  const ECUtil::stripe_info_t sinfo;
 
   ECCommon::UnstableHashInfoRegistry unstable_hashinfo_registry;
 
