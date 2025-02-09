@@ -485,15 +485,18 @@ class shard_extent_map_t
     uint64_t start = (uint64_t)-1;
     uint64_t end = (uint64_t)-1;
     shard_id_map<std::pair<extent_map::const_iterator, bufferlist::const_iterator>> iters;
-    shard_id_map<bufferptr> slice;
+    shard_id_map<bufferptr> in;
+    shard_id_map<bufferptr> out;
     shard_extent_map_t &sem;
+    const shard_id_set &out_set;
     void advance();
   public:
-    slice_iterator(shard_extent_map_t &sem);
-    shard_id_map<bufferptr> &get_bufferptrs() { return slice; }
+    slice_iterator(shard_extent_map_t &sem, const shard_id_set &out_set);
+    shard_id_map<bufferptr> &get_in_bufferptrs() { return in; }
+    shard_id_map<bufferptr> &get_out_bufferptrs() { return out; }
     uint64_t get_offset() { return offset; }
     uint64_t get_length() { return length; }
-    bool is_end() { return slice.empty(); }
+    bool is_end() { return in.empty() && out.empty(); }
     bool is_page_aligned();
 
     slice_iterator& operator++() {
@@ -511,7 +514,7 @@ public:
   uint64_t end_offset;
   shard_id_map<extent_map> extent_maps;
 
-  slice_iterator begin_slice_iterator();
+  slice_iterator begin_slice_iterator(shard_id_set &out_set);
 
   /* This caculates the ro offset for an offset into a particular shard */
   uint64_t calc_ro_offset(raw_shard_id_t raw_shard, int shard_offset) const {

@@ -453,8 +453,11 @@ namespace ECUtil {
     }
   }
 
-  shard_extent_map_t::slice_iterator::slice_iterator(shard_extent_map_t &sem) :
-    iters(sem.sinfo->get_k_plus_m()), slice(sem.sinfo->get_k_plus_m()), sem(sem)
+  shard_extent_map_t::slice_iterator::slice_iterator(shard_extent_map_t &sem, const shard_id_set &out_set) :
+    iters(sem.sinfo->get_k_plus_m()),
+    in(sem.sinfo->get_k_plus_m()),
+    out(sem.sinfo->get_k_plus_m()),
+    sem(sem), out_set(out_set)
   {
     for (auto &&[shard, emap] : sem.extent_maps) {
       auto emap_iter = emap.begin();
@@ -472,7 +475,8 @@ namespace ECUtil {
 
   void shard_extent_map_t::slice_iterator::advance()
   {
-    slice.clear();
+    in.clear();
+    out.clear();
     offset = start;
     end =  (uint64_t)-1;
 
@@ -508,8 +512,13 @@ namespace ECUtil {
 
         // Create a new buffer pointer for the result. We don't want the client
         // manipulating the ptr.
-        slice.emplace(
-          shard, bufferptr(bl_iter.get_current_ptr(), 0,end - start));
+        if (out_set.contains(shard)) {
+          out.emplace(
+            shard, bufferptr(bl_iter.get_current_ptr(), 0,end - start));
+        } else {
+          in.emplace(
+            shard, bufferptr(bl_iter.get_current_ptr(), 0,end - start));
+        }
 
         // Now we need to move on the iterators.
         bl_iter += end - start;
@@ -535,19 +544,25 @@ namespace ECUtil {
 
     // The above can sometimes create an empty buffer out of a gap. This is
     // not desirable, so we run again in such an occasion.
-    if (slice.empty()) {
+    if (in.empty() && out.empty()) {
       advance();
     }
   }
 
-  shard_extent_map_t::slice_iterator shard_extent_map_t::begin_slice_iterator()
+  shard_extent_map_t::slice_iterator shard_extent_map_t::begin_slice_iterator(shard_id_set &out)
   {
-    return slice_iterator(*this);
+    return slice_iterator(*this, out);
   }
 
   bool shard_extent_map_t::slice_iterator::is_page_aligned()
   {
-    for (auto &&[_, ptr] : slice) {
+    for (auto &&[_, ptr] : in) {
+      uintptr_t p = (uintptr_t)ptr.c_str();
+      if (p & ~CEPH_PAGE_MASK) return false;
+      if ((p + ptr.length()) & ~CEPH_PAGE_MASK) return false;
+    }
+
+    for (auto &&[_, ptr] : out) {
       uintptr_t p = (uintptr_t)ptr.c_str();
       if (p & ~CEPH_PAGE_MASK) return false;
       if ((p + ptr.length()) & ~CEPH_PAGE_MASK) return false;
@@ -565,21 +580,17 @@ namespace ECUtil {
                                  uint64_t before_ro_size) 
   {
     bool rebuild_req = false;
+    shard_id_set out_set;
+    out_set.insert_range(shard_id_t(sinfo->get_k()), sinfo->get_m());
 
-    for (auto iter = begin_slice_iterator(); !iter.is_end(); ++iter) {
+    for (auto iter = begin_slice_iterator(out_set); !iter.is_end(); ++iter) {
       if (!iter.is_page_aligned()) {
         rebuild_req = true;
         break;
       }
 
-      const shard_id_map<bufferptr>& all_shards = iter.get_bufferptrs();
-      shard_id_map<bufferptr> in(sinfo->get_k_plus_m());
-      shard_id_map<bufferptr> out(sinfo->get_k_plus_m());
-
-      for (auto &&[shard, bp] : all_shards) {
-        if (shard < sinfo->get_k()) in.emplace(shard, bp);
-        else out.emplace(shard, bp);
-      }
+      shard_id_map<bufferptr> &in = iter.get_in_bufferptrs();
+      shard_id_map<bufferptr> &out = iter.get_in_bufferptrs();
 
       int ret = ec_impl->encode_chunks(in, out);
       if (ret) return ret;
@@ -595,11 +606,12 @@ namespace ECUtil {
        *                 currently considering ALL the buffers, including the
        *                 parity buffers.  Is this really right?
        *                 Also, does this really belong here? Its convenient
-       *                 because have just built the buf§fer list...
+       *                 because have just built the buffer list...
        */
-      for (auto iter = begin_slice_iterator(); !iter.is_end(); ++iter) {
+      shard_id_set empty_set;
+      for (auto iter = begin_slice_iterator(empty_set); !iter.is_end(); ++iter) {
         ceph_assert(ro_start == before_ro_size);
-        hinfo->append(iter.get_offset(),  iter.get_bufferptrs());
+        hinfo->append(iter.get_offset(), iter.get_in_bufferptrs());
       }
     }
 
@@ -609,60 +621,36 @@ namespace ECUtil {
   int shard_extent_map_t::decode(ErasureCodeInterfaceRef& ec_impl,
     shard_extent_set_t want)
   {
-    bool did_decode = false;
     int r = 0;
-    for (auto &&[shard, eset]: want) {
-      /* We are assuming here that a shard that has been read does not need
-       * to be decoded. The ECBackend::handle_sub_read_reply code will erase
-       * buffers for any shards with missing reads, so this should be safe.
-       */
-      if (extent_maps.contains(shard))
-        continue;
+    shard_id_set want_set;
+    shard_id_set have_set;
+    want.populate_shard_id_set(want_set);
+    extent_maps.populate_bitset_set(have_set);
 
-      /* Use encode to encode the parity */
-      if (sinfo->get_raw_shard(shard) >= sinfo->get_k())
-        continue;
+    shard_id_set need_set = want_set.difference(want_set, have_set);
 
-      did_decode = true;
+    /* Optimise the no-op */
+    if (need_set.empty()) {
+      return 0;
+    }
 
-      for (auto [offset, length]: eset) {
-        /* Here we recover each missing shard independently. There may be
-         * multiple missing shards and we could collect together all the
-         * recoveries at one time. There may be some performance gains in
-         * * that scenario if found necessary.
-         */
-        shard_id_set want_to_read;
-        shard_id_map<bufferlist> decoded(sinfo->get_k_plus_m());
-
-        want_to_read.insert(shard);
-        auto s = slice(offset, length);
-
-        shard_id_map<bufferptr> in(sinfo->get_k_plus_m());
-        shard_id_map<bufferptr> out(sinfo->get_k_plus_m());
-        for (auto&& [shard, list] : s) {
-          in[shard] = list.begin().get_current_ptr();
-        }
-        for (shard_id_t i; i < sinfo->get_k_plus_m(); ++i) {
-          if (!in.contains(i)) {
-            bufferptr ptr(buffer::create_aligned(length, CEPH_PAGE_SIZE));
-            out[i] = ptr;
-          }
-        }
-        int r_i = ec_impl->decode_chunks(want_to_read, in, out);
-        if (r_i) {
-          r = r_i;
-          break;
-        }
-
-        ceph_assert(out[shard].length() == length);
+    for (auto &shard : need_set) {
+      for (auto &[off, length] : want[shard]) {
         bufferlist bl;
-        bl.append(out[shard]);
-        decoded[shard] = bl;
-        insert_in_shard(shard, offset, decoded[shard], ro_start, ro_end);
+        bl.push_back(buffer::create_aligned(length, CEPH_PAGE_SIZE));
+        insert_in_shard(shard, off, bl);
       }
     }
 
-    if (did_decode) compute_ro_range();
+    for (auto iter = begin_slice_iterator(need_set); !iter.is_end(); ++iter) {
+      shard_id_map<bufferptr> &in = iter.get_in_bufferptrs();
+      shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();
+
+      int ret = ec_impl->decode_chunks(want_set, in, out);
+      if (ret) return ret;
+    }
+
+    compute_ro_range();
 
     return r;
   }
