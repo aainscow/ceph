@@ -542,9 +542,12 @@ namespace ECUtil {
     length = end - start;
     start = end;
 
-    // The above can sometimes create an empty buffer out of a gap. This is
-    // not desirable, so we run again in such an occasion.
-    if (in.empty() && out.empty()) {
+    /* This can arise in two ways:
+     * 1. We can generate an empty buffer out of a gap, so just skip over.
+     * 2. Only the inputs contain any interesting data.  We don't need
+     *    to perform a decode/encode on a slice in that case.
+     */
+    if (out.empty()) {
       advance();
     }
   }
@@ -590,7 +593,7 @@ namespace ECUtil {
       }
 
       shard_id_map<bufferptr> &in = iter.get_in_bufferptrs();
-      shard_id_map<bufferptr> &out = iter.get_in_bufferptrs();
+      shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();
 
       int ret = ec_impl->encode_chunks(in, out);
       if (ret) return ret;
@@ -608,8 +611,9 @@ namespace ECUtil {
        *                 Also, does this really belong here? Its convenient
        *                 because have just built the buffer list...
        */
-      shard_id_set empty_set;
-      for (auto iter = begin_slice_iterator(empty_set); !iter.is_end(); ++iter) {
+      shard_id_set full_set;
+      full_set.insert_range(shard_id_t(0), sinfo->get_k_plus_m());
+      for (auto iter = begin_slice_iterator(full_set); !iter.is_end(); ++iter) {
         ceph_assert(ro_start == before_ro_size);
         hinfo->append(iter.get_offset(), iter.get_in_bufferptrs());
       }
@@ -627,7 +631,7 @@ namespace ECUtil {
     want.populate_shard_id_set(want_set);
     extent_maps.populate_bitset_set(have_set);
 
-    shard_id_set need_set = want_set.difference(want_set, have_set);
+    shard_id_set need_set = shard_id_set::difference(want_set, have_set);
 
     /* Optimise the no-op */
     if (need_set.empty()) {

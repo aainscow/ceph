@@ -347,7 +347,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     }
 
     ceph_assert(!shard_read.zero_pad.empty() || !shard_read.extents.empty());
-    read_request.shard_reads[shard_id] = shard_read;
+    read_request.shard_reads[shard_id] = std::move(shard_read);
   }
 
   dout(20) << __func__ << " for_recovery: " << for_recovery
