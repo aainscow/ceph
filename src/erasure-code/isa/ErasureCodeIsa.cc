@@ -124,10 +124,15 @@ int ErasureCodeIsa::decode_chunks(const shard_id_set &want_to_read,
 				  shard_id_map<bufferptr> &out)
 {
   unsigned int size = 0;
+  shard_id_set erasures_set;
+  shard_id_set to_free;
+  erasures_set.insert_range(shard_id_t(0), k + m);
   int erasures[k + m + 1];
   int erasures_count = 0;
   char *data[k];
   char *coding[m];
+  memset(data, 0, sizeof(char*) * k);
+  memset(coding, 0, sizeof(char*) * m);
 
   for (auto &&[shard, ptr] : in) {
     if (size == 0) size = ptr.length();
@@ -138,6 +143,7 @@ int ErasureCodeIsa::decode_chunks(const shard_id_set &want_to_read,
     else {
       coding[int(shard) - k] = const_cast<char*>(ptr.c_str());
     }
+    erasures_set.erase(shard);
   }
 
   for (auto &&[shard, ptr] : out) {
@@ -149,13 +155,31 @@ int ErasureCodeIsa::decode_chunks(const shard_id_set &want_to_read,
     else {
       coding[int(shard) - k] = const_cast<char*>(ptr.c_str());
     }
-    erasures[erasures_count] = int(shard);
-    erasures_count++;
   }
+
+  for (int i = 0; i < k + m; i++) {
+    char **buf = i < k ? &data[i] : &coding[i - k];
+    if (*buf == nullptr) {
+      *buf = (char *)malloc(size);
+      to_free.insert(shard_id_t(i));
+    }
+  }
+
+  for (auto && shard : erasures_set) {
+    erasures[erasures_count++] = int(shard);
+  }
+
 
   erasures[erasures_count] = -1;
   ceph_assert(erasures_count > 0);
-  return isa_decode(erasures, data, coding, size);
+  int r = isa_decode(erasures, data, coding, size);
+  for (auto & shard : to_free) {
+    int i = int(shard);
+    char **buf = i < k ? &data[i] : &coding[i - k];
+    free(*buf);
+    *buf = nullptr;
+  }
+  return r;
 }
 
 // -----------------------------------------------------------------------------
