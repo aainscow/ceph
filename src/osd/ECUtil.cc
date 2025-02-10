@@ -552,7 +552,7 @@ namespace ECUtil {
     }
   }
 
-  shard_extent_map_t::slice_iterator shard_extent_map_t::begin_slice_iterator(shard_id_set &out)
+  shard_extent_map_t::slice_iterator shard_extent_map_t::begin_slice_iterator(const shard_id_set &out)
   {
     return slice_iterator(*this, out);
   }
@@ -625,7 +625,6 @@ namespace ECUtil {
   int shard_extent_map_t::decode(ErasureCodeInterfaceRef& ec_impl,
     shard_extent_set_t want)
   {
-    int r = 0;
     shard_id_set want_set;
     shard_id_set have_set;
     want.populate_shard_id_set(want_set);
@@ -646,7 +645,22 @@ namespace ECUtil {
       }
     }
 
+    int r = _decode(ec_impl, want_set, need_set);
+
+    compute_ro_range();
+
+    return r;
+  }
+
+  int shard_extent_map_t::_decode(ErasureCodeInterfaceRef& ec_impl,
+                                  const shard_id_set &want_set,
+                                  const shard_id_set &need_set) {
+    bool rebuild_req = false;
     for (auto iter = begin_slice_iterator(need_set); !iter.is_end(); ++iter) {
+      if (!iter.is_page_aligned()) {
+        rebuild_req = true;
+        break;
+      }
       shard_id_map<bufferptr> &in = iter.get_in_bufferptrs();
       shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();
 
@@ -654,9 +668,14 @@ namespace ECUtil {
       if (ret) return ret;
     }
 
+    if (rebuild_req) {
+      pad_and_rebuild_to_page_align();
+      return _decode(ec_impl, want_set, need_set);
+    }
+
     compute_ro_range();
 
-    return r;
+    return 0;
   }
 
   void shard_extent_map_t::pad_and_rebuild_to_page_align()

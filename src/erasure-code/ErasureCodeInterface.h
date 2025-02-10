@@ -649,7 +649,7 @@ namespace ceph {
        * data chunk and the coding parity chunks.
        */
       FLAG_EC_PLUGIN_PARITY_DELTA_OPTIMIZATION = 1<<4,
-      /* This plugin requires sub-chunks (at the time of writint this was only
+      /* This plugin requires sub-chunks (at the time of writing this was only
        * clay). Other plugins will not process the overhead of stub sub-chunks.
        */
       FLAG_EC_PLUGIN_REQUIRE_SUB_CHUNKS = 1<<5,

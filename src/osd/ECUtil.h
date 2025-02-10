@@ -517,7 +517,7 @@ public:
   uint64_t end_offset;
   shard_id_map<extent_map> extent_maps;
 
-  slice_iterator begin_slice_iterator(shard_id_set &out_set);
+  slice_iterator begin_slice_iterator(const shard_id_set &out_set);
 
   /* This caculates the ro offset for an offset into a particular shard */
   uint64_t calc_ro_offset(raw_shard_id_t raw_shard, int shard_offset) const {
@@ -653,6 +653,7 @@ public:
   extent_set get_extent_superset() const;
   int encode(ErasureCodeInterfaceRef& ec_impl, const HashInfoRef &hinfo, uint64_t before_ro_size);
   int decode(ErasureCodeInterfaceRef& ec_impl, ECUtil::shard_extent_set_t want);
+  int _decode(ErasureCodeInterfaceRef& ec_impl, const shard_id_set &want_set, const shard_id_set &need_set);
   void get_buffer(shard_id_t shard, uint64_t offset, uint64_t length, buffer::list &append_to) const;
   void get_shard_first_buffer(shard_id_t shard, buffer::list &append_to) const;
   uint64_t get_shard_first_offset(shard_id_t shard) const;

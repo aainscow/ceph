@@ -295,11 +295,16 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     return r;
   }
 
-  if (do_redundant_reads && need_sub_chunks) {
-    vector<pair<int, int>> subchunks_list;
-    subchunks_list.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
+  if (do_redundant_reads) {
+    if (need_sub_chunks) {
+      vector<pair<int, int>> subchunks_list;
+      subchunks_list.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
+      for (auto &&i: have) {
+        (*need_sub_chunks)[i] = subchunks_list;
+      }
+    }
     for (auto &&i: have) {
-      (*need_sub_chunks)[i] = subchunks_list;
+      need_set.insert(i);
     }
   }
 

@@ -161,6 +161,10 @@ public:
         }
       }
     }
+
+    for (auto &&shard : minimum_set) {
+      minimum_sub_chunks->emplace(shard, default_sub_chunk);
+    }
     return 0;
   }
 
