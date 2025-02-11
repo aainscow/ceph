@@ -20,6 +20,8 @@
 struct Value {
   int value;
 
+  explicit Value (int value) : value(value) {}
+
   friend std::ostream& operator<<(std::ostream& lhs, const Value& rhs)
   {
     return lhs << rhs.value;
