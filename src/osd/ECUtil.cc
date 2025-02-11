@@ -6,10 +6,6 @@
 #include "include/encoding.h"
 #include "ECUtil.h"
 
-#include <googletest/googlemock/include/gmock/gmock-matchers.h>
-
-#include "common/debug.h"
-
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_osd
 #undef dout_prefix
@@ -453,127 +449,10 @@ namespace ECUtil {
     }
   }
 
-  shard_extent_map_t::slice_iterator::slice_iterator(shard_extent_map_t &sem, const shard_id_set &out_set) :
-    iters(sem.sinfo->get_k_plus_m()),
-    in(sem.sinfo->get_k_plus_m()),
-    out(sem.sinfo->get_k_plus_m()),
-    sem(sem), out_set(out_set)
+  slice_iterator<shard_id_t, extent_map> shard_extent_map_t::begin_slice_iterator(const shard_id_set &out)
   {
-    for (auto &&[shard, emap] : sem.extent_maps) {
-      auto emap_iter = emap.begin();
-      auto bl_iter = emap_iter.get_val().begin();
-      auto p = make_pair(std::move(emap_iter), std::move(bl_iter));
-      iters.emplace(shard, std::move(p));
-
-      if (emap_iter.get_off() < start) {
-        start = emap_iter.get_off();
-      }
-    }
-
-    advance();
+    return slice_iterator(extent_maps, out);
   }
-
-  void shard_extent_map_t::slice_iterator::advance()
-  {
-    in.clear();
-    out.clear();
-    offset = start;
-    end =  (uint64_t)-1;
-
-    if (iters.empty()) return;
-
-    // First we find the last buffer in the list
-    for (auto &&[shard, iters] : iters) {
-      auto &&[emap_iter, bl_iter] = iters;
-      uint64_t iter_offset = emap_iter.get_off() + bl_iter.get_off();
-      ceph_assert(iter_offset >= start);
-      // If this iterator is after the current offset, then we will ignore
-      // it for this buffer ptr. The end must move to or before this point.
-      if (iter_offset > start && iter_offset < end) {
-        end = iter_offset;
-        continue;
-      }
-
-      uint64_t iter_end = iter_offset + bl_iter.get_current_ptr().length();
-      if (iter_end < end) {
-        end = iter_end;
-      }
-    }
-
-    for (auto &&iter = iters.begin(); iter != iters.end();) {
-      auto shard = iter->first;
-      auto &&[emap_iter, bl_iter] = iter->second;
-      uint64_t iter_offset = emap_iter.get_off() + bl_iter.get_off();
-      bool erase = false;
-
-      // Ignore any blank buffers.
-      if (iter_offset == start) {
-        ceph_assert(iter_offset == start);
-
-        // Create a new buffer pointer for the result. We don't want the client
-        // manipulating the ptr.
-        if (out_set.contains(shard)) {
-          out.emplace(
-            shard, bufferptr(bl_iter.get_current_ptr(), 0,end - start));
-        } else {
-          in.emplace(
-            shard, bufferptr(bl_iter.get_current_ptr(), 0,end - start));
-        }
-
-        // Now we need to move on the iterators.
-        bl_iter += end - start;
-
-        // If we have reached the end of the extent, we need to move that on too.
-        if (bl_iter == emap_iter.get_val().end()) {
-          ++emap_iter;
-          if (emap_iter == sem.get_extent_map(shard).end()) {
-            erase = true;
-          } else {
-            iters.at(shard).second = emap_iter.get_val().begin();
-          }
-        }
-      } else ceph_assert(iter_offset > start);
-
-      if (erase) iter = iters.erase(iter);
-      else ++iter;
-    }
-
-    // We can now move the offset on.
-    length = end - start;
-    start = end;
-
-    /* This can arise in two ways:
-     * 1. We can generate an empty buffer out of a gap, so just skip over.
-     * 2. Only the inputs contain any interesting data.  We don't need
-     *    to perform a decode/encode on a slice in that case.
-     */
-    if (out.empty()) {
-      advance();
-    }
-  }
-
-  shard_extent_map_t::slice_iterator shard_extent_map_t::begin_slice_iterator(const shard_id_set &out)
-  {
-    return slice_iterator(*this, out);
-  }
-
-  bool shard_extent_map_t::slice_iterator::is_page_aligned()
-  {
-    for (auto &&[_, ptr] : in) {
-      uintptr_t p = (uintptr_t)ptr.c_str();
-      if (p & ~CEPH_PAGE_MASK) return false;
-      if ((p + ptr.length()) & ~CEPH_PAGE_MASK) return false;
-    }
-
-    for (auto &&[_, ptr] : out) {
-      uintptr_t p = (uintptr_t)ptr.c_str();
-      if (p & ~CEPH_PAGE_MASK) return false;
-      if ((p + ptr.length()) & ~CEPH_PAGE_MASK) return false;
-    }
-
-    return true;
-  }
-
 
   /* Encode parity chunks, using the encode_chunks interface into the
    * erasure coding.  This generates all parity.

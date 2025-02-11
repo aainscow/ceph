@@ -51,6 +51,151 @@ struct bl_split_merge {
 using extent_set = interval_set<uint64_t, boost::container::flat_map>;
 using extent_map = interval_map<uint64_t, ceph::buffer::list, bl_split_merge, boost::container::flat_map>;
 
+/* Slice iterator.  This looks for contiguous buffers which are common
+ * across all shards in the out_set.
+ *
+ * It is a template, but essentially:
+ * K must a key suitable for a mini_flat_map.
+ * T must be either an extent map or a reference to an extent map.
+ */
+template<typename K, typename T>
+class slice_iterator
+{
+  mini_flat_map<K, T> &input;
+  uint64_t offset = (uint64_t)-1;
+  uint64_t length = (uint64_t)-1;
+  uint64_t start = (uint64_t)-1;
+  uint64_t end = (uint64_t)-1;
+  shard_id_map<std::pair<extent_map::const_iterator, bufferlist::const_iterator>> iters;
+  shard_id_map<bufferptr> in;
+  shard_id_map<bufferptr> out;
+  const shard_id_set &out_set;
+  void advance() {
+    in.clear();
+    out.clear();
+    offset = start;
+    end = (uint64_t)-1;
+
+    if (iters.empty()) return;
+
+    // First we find the last buffer in the list
+    for (auto &&[shard, iters] : iters) {
+      auto &&[emap_iter, bl_iter] = iters;
+      uint64_t iter_offset = emap_iter.get_off() + bl_iter.get_off();
+      ceph_assert(iter_offset >= start);
+      // If this iterator is after the current offset, then we will ignore
+      // it for this buffer ptr. The end must move to or before this point.
+      if (iter_offset > start && iter_offset < end) {
+        end = iter_offset;
+        continue;
+      }
+
+      uint64_t iter_end = iter_offset + bl_iter.get_current_ptr().length();
+      if (iter_end < end) {
+        end = iter_end;
+      }
+    }
+
+    for (auto &&iter = iters.begin(); iter != iters.end();) {
+      auto shard = iter->first;
+      auto &&[emap_iter, bl_iter] = iter->second;
+      uint64_t iter_offset = emap_iter.get_off() + bl_iter.get_off();
+      bool erase = false;
+
+      // Ignore any blank buffers.
+      if (iter_offset == start) {
+        ceph_assert(iter_offset == start);
+
+        // Create a new buffer pointer for the result. We don't want the client
+        // manipulating the ptr.
+        if (out_set.contains(shard)) {
+          out.emplace(
+            shard, bufferptr(bl_iter.get_current_ptr(), 0,end - start));
+        } else {
+          in.emplace(
+            shard, bufferptr(bl_iter.get_current_ptr(), 0,end - start));
+        }
+
+        // Now we need to move on the iterators.
+        bl_iter += end - start;
+
+        // If we have reached the end of the extent, we need to move that on too.
+        if (bl_iter == emap_iter.get_val().end()) {
+          ++emap_iter;
+          if (emap_iter == input[shard].end()) {
+            erase = true;
+          } else {
+            iters.at(shard).second = emap_iter.get_val().begin();
+          }
+        }
+      } else ceph_assert(iter_offset > start);
+
+      if (erase) iter = iters.erase(iter);
+      else ++iter;
+    }
+
+    // We can now move the offset on.
+    length = end - start;
+    start = end;
+
+    /* This can arise in two ways:
+     * 1. We can generate an empty buffer out of a gap, so just skip over.
+     * 2. Only the inputs contain any interesting data.  We don't need
+     *    to perform a decode/encode on a slice in that case.
+     */
+    if (out.empty()) {
+      advance();
+    }
+  }
+
+public:
+  slice_iterator(mini_flat_map<K, T> &_input, const shard_id_set &out_set) :
+    input(_input),
+    iters(input.max_size()),
+    in(input.max_size()),
+    out(input.max_size()),
+    out_set(out_set)
+  {
+    for (auto &&[shard, emap] : input) {
+      auto emap_iter = emap.begin();
+      auto bl_iter = emap_iter.get_val().begin();
+      auto p = std::make_pair(std::move(emap_iter), std::move(bl_iter));
+      iters.emplace(shard, std::move(p));
+
+      if (emap_iter.get_off() < start) {
+        start = emap_iter.get_off();
+      }
+    }
+
+    advance();
+  }
+  shard_id_map<bufferptr> &get_in_bufferptrs() { return in; }
+  shard_id_map<bufferptr> &get_out_bufferptrs() { return out; }
+  uint64_t get_offset() { return offset; }
+  uint64_t get_length() { return length; }
+  bool is_end() { return in.empty() && out.empty(); }
+  bool is_page_aligned()  {
+    for (auto &&[_, ptr] : in) {
+      uintptr_t p = (uintptr_t)ptr.c_str();
+      if (p & ~CEPH_PAGE_MASK) return false;
+      if ((p + ptr.length()) & ~CEPH_PAGE_MASK) return false;
+    }
+
+    for (auto &&[_, ptr] : out) {
+      uintptr_t p = (uintptr_t)ptr.c_str();
+      if (p & ~CEPH_PAGE_MASK) return false;
+      if ((p + ptr.length()) & ~CEPH_PAGE_MASK) return false;
+    }
+
+    return true;
+  }
+
+  slice_iterator& operator++() {
+    advance();
+    return *this;
+  }
+};
+
 // Setting to 1 turns on very large amounts of level 0 debug containing the
 // contents of buffers. Even on level 20 this is not really wanted.
 #define DEBUG_EC_BUFFERS 1
@@ -481,33 +626,6 @@ class shard_extent_map_t
 {
   static const uint64_t invalid_offset = std::numeric_limits<uint64_t>::max();
 
-  class slice_iterator
-  {
-    uint64_t offset = (uint64_t)-1;
-    uint64_t length = (uint64_t)-1;
-    uint64_t start = (uint64_t)-1;
-    uint64_t end = (uint64_t)-1;
-    shard_id_map<std::pair<extent_map::const_iterator, bufferlist::const_iterator>> iters;
-    shard_id_map<bufferptr> in;
-    shard_id_map<bufferptr> out;
-    shard_extent_map_t &sem;
-    const shard_id_set &out_set;
-    void advance();
-  public:
-    slice_iterator(shard_extent_map_t &sem, const shard_id_set &out_set);
-    shard_id_map<bufferptr> &get_in_bufferptrs() { return in; }
-    shard_id_map<bufferptr> &get_out_bufferptrs() { return out; }
-    uint64_t get_offset() { return offset; }
-    uint64_t get_length() { return length; }
-    bool is_end() { return in.empty() && out.empty(); }
-    bool is_page_aligned();
-
-    slice_iterator& operator++() {
-      advance();
-      return *this;
-    }
-  };
-
 public:
   const stripe_info_t *sinfo;
   // The maximal range of all extents maps within rados object space.
@@ -517,7 +635,7 @@ public:
   uint64_t end_offset;
   shard_id_map<extent_map> extent_maps;
 
-  slice_iterator begin_slice_iterator(const shard_id_set &out_set);
+  slice_iterator<shard_id_t, extent_map> begin_slice_iterator(const shard_id_set &out_set);
 
   /* This caculates the ro offset for an offset into a particular shard */
   uint64_t calc_ro_offset(raw_shard_id_t raw_shard, int shard_offset) const {
