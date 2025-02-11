@@ -31,7 +31,10 @@ template <typename _key, typename _can_merge, template<typename, typename, typen
 struct bufferlist_test_type {
   using key = _key;
   using value = bufferlist;
-  static _can_merge can_merge;
+
+  static constexpr bool can_merge()  {
+    return _can_merge::value;
+  }
 
   struct make_splitter {
     template <typename merge_t>

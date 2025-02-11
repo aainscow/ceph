@@ -1000,7 +1000,7 @@ void check_alignment_transaction2(ObjectStore::Transaction& t)
   unsigned int longest_misaligned = 0;
   unsigned int quantity_aligned = 0;
   unsigned int quantity_misaligned = 0;
-  for (int pos = 0; i.have_op(); ++pos) {
+  while (i.have_op()) {
     ObjectStore::Transaction::Op *op = i.decode_op();
     ASSERT_TRUE(op->op == ObjectStore::Transaction::OP_WRITE);
     bufferlist bl;
