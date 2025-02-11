@@ -244,7 +244,7 @@ void ECCommonL::ReadPipeline::get_all_avail_shards(
 	 ++i) {
       if (error_shards.find(*i) != error_shards.end())
 	continue;
-        if (have.count(int(i->shard))) {
+      if (have.count(int(i->shard))) {
 	ceph_assert(shards.count(i->shard));
 	continue;
       }
@@ -272,7 +272,7 @@ void ECCommonL::ReadPipeline::get_all_avail_shards(
 	}
 	if (error_shards.find(*i) != error_shards.end())
 	  continue;
-          have.insert(int(i->shard));
+        have.insert(int(i->shard));
 	shards.insert(make_pair(i->shard, *i));
       }
     }

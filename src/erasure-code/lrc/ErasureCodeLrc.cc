@@ -724,7 +724,6 @@ int ErasureCodeLrc::_minimum_to_decode(const shard_id_set &want_to_read,
 int ErasureCodeLrc::encode_chunks(const shard_id_map<bufferptr> &in,
                                   shard_id_map<bufferptr> &out)
 {
-  unsigned int k = get_data_chunk_count();
   unsigned int chunk_size = 0;
   shard_id_set all_shards;
   auto& nonconst_in = const_cast<shard_id_map<bufferptr>&>(in);
@@ -783,7 +782,6 @@ int ErasureCodeLrc::decode_chunks(const shard_id_set &want_to_read,
   shard_id_set available_chunks;
   shard_id_set erasures;
   unsigned int chunk_size = 0;
-  unsigned int k = get_data_chunk_count();
 
   for (const auto& [shard, ptr] : in) {
     if (chunk_size == 0) chunk_size = ptr.length();

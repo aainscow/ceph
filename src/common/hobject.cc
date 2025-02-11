@@ -553,9 +553,11 @@ bool ghobject_t::parse(const string& s)
   if (!*p && *p != '#')
     return false;
   if (p > start) {
-    int r = sscanf(s.c_str(), "%x", &sh);
+    unsigned int sh_i;
+    int r = sscanf(s.c_str(), "%x", &sh_i);
     if (r < 1)
       return false;
+    sh = sh_i;
     start = p + 1;
   } else {
     ++start;
