@@ -86,7 +86,7 @@ public:
   private:
     const ECSwitch *switcher;
     std::unique_ptr<ECLegacy::ECBackendL::ECRecPred> legacy;
-    std::unique_ptr<ECLegacy::ECBackendL::ECRecPred> optimized;
+    std::unique_ptr<ECBackend::ECRecPred> optimized;
   };
 
   class ECReadPred : public IsPGReadablePredicate
@@ -113,7 +113,7 @@ public:
   private:
     const ECSwitch *switcher;
     std::unique_ptr<ECLegacy::ECBackendL::ECReadPred> legacy;
-    std::unique_ptr<ECLegacy::ECBackendL::ECReadPred> optimized;
+    std::unique_ptr<ECBackend::ECReadPred> optimized;
   };
 
   RecoveryHandle *open_recovery_op() override

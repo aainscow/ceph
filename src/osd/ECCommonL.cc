@@ -230,8 +230,8 @@ void ECCommonL::ReadPipeline::get_all_avail_shards(
       continue;
     }
     if (!missing.is_missing(hoid)) {
-      ceph_assert(!have.count(i->shard));
-      have.insert(i->shard);
+      ceph_assert(!have.count(int(i->shard)));
+      have.insert(int(i->shard));
       ceph_assert(!shards.count(i->shard));
       shards.insert(make_pair(i->shard, *i));
     }
@@ -244,7 +244,7 @@ void ECCommonL::ReadPipeline::get_all_avail_shards(
 	 ++i) {
       if (error_shards.find(*i) != error_shards.end())
 	continue;
-      if (have.count(i->shard)) {
+        if (have.count(int(i->shard))) {
 	ceph_assert(shards.count(i->shard));
 	continue;
       }
@@ -254,7 +254,7 @@ void ECCommonL::ReadPipeline::get_all_avail_shards(
       const pg_missing_t &missing = get_parent()->get_shard_missing(*i);
       if (hoid < info.last_backfill &&
 	  !missing.is_missing(hoid)) {
-	have.insert(i->shard);
+          have.insert(int(i->shard));
 	shards.insert(make_pair(i->shard, *i));
       }
     }
@@ -272,7 +272,7 @@ void ECCommonL::ReadPipeline::get_all_avail_shards(
 	}
 	if (error_shards.find(*i) != error_shards.end())
 	  continue;
-	have.insert(i->shard);
+          have.insert(int(i->shard));
 	shards.insert(make_pair(i->shard, *i));
       }
     }
@@ -330,8 +330,8 @@ void ECCommonL::ReadPipeline::get_min_want_to_read_shards(
   const auto distance =
     std::min(right_chunk_index - left_chunk_index, (uint64_t)sinfo.get_k());
   for(uint64_t i = 0; i < distance; i++) {
-    auto raw_shard = (left_chunk_index + i) % sinfo.get_k();
-    want_to_read->insert(sinfo.get_shard(raw_shard));
+      raw_shard_id_t raw_shard((left_chunk_index + i) % sinfo.get_k());
+      want_to_read->insert(int(sinfo.get_shard(raw_shard)));
   }
 }
 
@@ -498,8 +498,9 @@ void ECCommonL::ReadPipeline::do_read_op(ReadOp &op)
 void ECCommonL::ReadPipeline::get_want_to_read_shards(
   std::set<int> *want_to_read) const
 {
-  for (int i = 0; i < (int)sinfo.get_k(); ++i) {
-    want_to_read->insert(sinfo.get_shard(i));
+
+    for (raw_shard_id_t i; i < sinfo.get_k(); ++i) {
+      want_to_read->insert(int(sinfo.get_shard(i)));
   }
 }
 
@@ -535,7 +536,7 @@ struct ClientReadCompleter : ECCommonL::ReadCompleter {
 	     res.returned.front().get<2>().begin();
 	   j != res.returned.front().get<2>().end();
 	   ++j) {
-	to_decode[j->first.shard] = std::move(j->second);
+        to_decode[int(j->first.shard)] = std::move(j->second);
       }
       dout(20) << __func__ << " going to decode: "
                << " wanted_to_read=" << wanted_to_read
@@ -561,8 +562,8 @@ struct ClientReadCompleter : ECCommonL::ReadCompleter {
 	read_pipeline.sinfo.logical_to_prev_stripe_offset(aligned.first);
       uint64_t chunk_size = read_pipeline.sinfo.get_chunk_size();
       uint64_t trim_offset = 0;
-      for (auto shard : wanted_to_read) {
-	if (read_pipeline.sinfo.get_raw_shard(shard) * chunk_size <
+      for (int shard : wanted_to_read) {
+	if (uint64_t(read_pipeline.sinfo.get_raw_shard(shard_id_t(shard))) * chunk_size <
 	    aligned_offset_in_stripe) {
 	  trim_offset += chunk_size;
 	} else {
@@ -669,7 +670,7 @@ int ECCommonL::ReadPipeline::send_all_remaining_reads(
   set<int> already_read;
   const set<pg_shard_t>& ots = rop.obj_to_source[hoid];
   for (set<pg_shard_t>::iterator i = ots.begin(); i != ots.end(); ++i)
-    already_read.insert(i->shard);
+      already_read.insert(int(i->shard));
   dout(10) << __func__ << " have/error shards=" << already_read << dendl;
   map<pg_shard_t, vector<pair<int, int>>> shards;
   int r = get_remaining_shards(hoid, already_read, rop.want_to_read[hoid],

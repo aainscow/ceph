@@ -366,7 +366,7 @@ public:
       for (std::set<pg_shard_t>::const_iterator i = _have.begin();
 	   i != _have.end();
 	   ++i) {
-	have.insert(i->shard);
+          have.insert(int(i->shard));
       }
       std::map<int, std::vector<std::pair<int, int>>> min;
       return ec_impl->minimum_to_decode(want, have, &min) == 0;
@@ -383,6 +383,8 @@ public:
     return sinfo.get_chunk_size();
   }
   uint64_t object_size_to_shard_size(const uint64_t size) const {
+      if (size == 0xFFFFFFFFFFFFFFFFUL)
+        return size;
     return sinfo.logical_to_next_chunk_offset(size);
   }
   /**
@@ -436,7 +438,7 @@ public:
     ScrubMapBuilder &pos,
     ScrubMap::object &o);
 
-  uint64_t be_get_ondisk_size(uint64_t logical_size) const {
+    uint64_t be_get_ondisk_size(uint64_t logical_size, shard_id_t unused) const {
     return sinfo.logical_to_next_chunk_offset(logical_size);
   }
 };
