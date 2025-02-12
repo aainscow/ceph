@@ -2240,7 +2240,7 @@ public:
   }
   static bool has_shard(bool ec, const std::vector<int>& v, pg_shard_t osd) {
     if (ec) {
-      return v.size() > int(osd.shard) && v[int(osd.shard)] == osd.osd;
+      return v.size() > static_cast<uint32_t>(osd.shard) && v[static_cast<uint32_t>(osd.shard)] == osd.osd;
     } else {
       return std::find(v.begin(), v.end(), osd.osd) != v.end();
     }
