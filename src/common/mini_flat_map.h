@@ -35,11 +35,26 @@
  * Coding), so the interface is not as complete as it could be.
  */
 template <typename Key, typename T, typename I = int8_t>
-struct mini_flat_map
+class mini_flat_map
 {
   using vector_type = std::optional<T>;
   using value_type = std::pair<const Key&, T&>;
   using const_value_type = const std::pair<const Key&, const T&>;
+
+  static unsigned int unsigned_cast(Key const k)
+  {
+    I i = static_cast<I>(k);
+    return i;
+  }
+
+  void range_check(Key const k) const
+  {
+    I i_s = static_cast<I>(k);
+    unsigned int i_u = static_cast<unsigned int>(i_s);
+    ceph_assert(0 <= i_s && i_u < max_size());
+  }
+
+public:
   struct iterator
   {
     mini_flat_map *map;
@@ -48,12 +63,12 @@ struct mini_flat_map
 
     void progress()
     {
-      while (I(key) < map->data.size() && !map->data[I(key)]) {
+      while (unsigned_cast(key) < map->data.size() && !map->_at(key)) {
         ++key;
       }
 
-      if (I(key) < map->data.size()) {
-        value.emplace(key, *(map->data[I(key)]));
+      if (unsigned_cast(key) < map->data.size()) {
+        value.emplace(key, *(map->_at(key)));
       } else {
         value.reset();
       }
@@ -68,10 +83,10 @@ struct mini_flat_map
 
     iterator(mini_flat_map *map, Key key) : map(map), key(key)
     {
-      if (I(key) < map->data.size()) {
-        value.emplace(key, *map->data[I(key)]);
+      if (unsigned_cast(key) < map->data.size()) {
+        value.emplace(key, *map->_at(key));
       } else {
-        ceph_assert(I(key) == map->data.size()); // end
+        ceph_assert(unsigned_cast(key) == map->data.size()); // end
       }
     }
     // Only for end constructor.
@@ -125,12 +140,12 @@ struct mini_flat_map
 
     void progress()
     {
-      while (I(key) < map->data.size() && !map->data[I(key)]) {
+      while (unsigned_cast(key) < map->data.size() && !map->_at(key)) {
         ++key;
       }
 
-      if (I(key) < map->data.size()) {
-        const T& v = *(map->data[I(key)]);
+      if (unsigned_cast(key) < map->data.size()) {
+        const T& v = *(map->_at(key));
         value.emplace(key, v);
       } else {
         value.reset();
@@ -147,9 +162,9 @@ struct mini_flat_map
     const_iterator(const mini_flat_map *map, Key key) : map(map), key(key)
     {
       if (key < map->data.size()) {
-        value.emplace(key, *map->data[I(key)]);
+        value.emplace(key, *map->_at(key));
       } else {
-        ceph_assert(I(key) == map->data.size()); // end
+        ceph_assert(unsigned_cast(key) == map->data.size()); // end
       }
     }
 
@@ -195,11 +210,25 @@ struct mini_flat_map
   };
   static_assert(std::input_or_output_iterator<const_iterator>);
 
+private:
   std::vector<vector_type> data;
   const iterator _end;
   const const_iterator _const_end;
   size_t _size;
 
+  std::optional<T>& _at(const Key &k)
+  {
+    range_check(k);
+    return data[static_cast<I>(k)];
+  }
+
+  const std::optional<T>& _at(const Key &k) const
+  {
+    range_check(k);
+    return data[static_cast<I>(k)];
+  }
+
+public:
   /** Basic constructor. The mini_flat_map cannot be re-sized, so there is no
    * default constructor.
    */
@@ -209,7 +238,9 @@ struct mini_flat_map
    */
   mini_flat_map(mini_flat_map &&other) noexcept : data(std::move(other.data)), _end(this, data.size()), _const_end(this, data.size()), _size(0)
   {
-    for (auto &&_ : *this) _size++;
+    for ([[maybe_unused]] auto &&_ : *this) {
+      _size++;
+    }
   };
   /** Generic initializer iterator constructor, simlar to std::map constructor
    * of the same name.
@@ -252,7 +283,7 @@ struct mini_flat_map
    */
   bool contains(const Key& key) const
   {
-    return I(key) < data.size() && data.at(I(key));
+    return unsigned_cast(key) < data.size() && data.at(unsigned_cast(key));
   }
 
   /** Checks if the container has no elements. */
@@ -440,10 +471,9 @@ struct mini_flat_map
   template< class... Args >
   bool emplace(const Key &k, Args&&... args)
   {
-    ceph_assert(I(k) < max_size());
-    if (!data[I(k)]) {
+    if (!contains(k)) {
       _size++;
-      data[I(k)].emplace(std::forward<Args>(args)...);
+      _at(k).emplace(std::forward<Args>(args)...);
       return true;
     }
     return false;
@@ -501,9 +531,9 @@ struct mini_flat_map
   template<size_t N>
   void populate_bitset_set( bitset_set<N, Key> &set ) const
   {
-    for (int i=0; i < data.size(); i++) {
-      if (data[i]) {
-        set.insert(Key(i));
+    for (Key k(0); k < data.size(); ++k) {
+      if (_at(k)) {
+        set.insert(k);
       }
     }
   }
@@ -511,7 +541,7 @@ struct mini_flat_map
   /** Standard ostream operator */
   friend std::ostream& operator<<(std::ostream& lhs, const mini_flat_map<Key,T>& rhs)
   {
-    int c = 0;
+    unsigned int c = 0;
     lhs << "{";
     for (auto &&[k, v] : rhs) {
       lhs << k << ":" << v;

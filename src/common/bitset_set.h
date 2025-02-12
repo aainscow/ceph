@@ -359,7 +359,7 @@ public:
   /** Standard ostream operator */
   friend std::ostream& operator<<(std::ostream& lhs, const bitset_set& rhs)
   {
-    int c = 0;
+    unsigned int c = 0;
     lhs << "{";
     for (auto &&k : rhs) {
       lhs << k;
