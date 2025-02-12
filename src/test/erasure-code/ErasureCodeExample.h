@@ -96,6 +96,8 @@ public:
     return 1;
   }
 
+  // See https://stackoverflow.com/questions/9995421/gcc-woverloaded-virtual-warnings
+  using ErasureCode::encode;
   int encode(const shard_id_set &want_to_encode,
                      const bufferlist &in,
                      shard_id_map<bufferlist> *encoded) override {

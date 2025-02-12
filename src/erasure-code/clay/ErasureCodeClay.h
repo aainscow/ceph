@@ -81,12 +81,16 @@ public:
 
   unsigned int get_minimum_granularity() override;
 
+  // See https://stackoverflow.com/questions/9995421/gcc-woverloaded-virtual-warnings
+  using ErasureCode::minimum_to_decode;
   int minimum_to_decode(const shard_id_set &want_to_read,
                         const shard_id_set &available,
                         shard_id_set &minimum_set,
                         shard_id_map<std::vector<std::pair<int, int>>> *
                         minimum) override;
 
+  // See https://stackoverflow.com/questions/9995421/gcc-woverloaded-virtual-warnings
+  using ErasureCode::decode;
   int decode(const shard_id_set &want_to_read,
              const shard_id_map<ceph::bufferlist> &chunks,
              shard_id_map<ceph::bufferlist> *decoded, int chunk_size) override;
