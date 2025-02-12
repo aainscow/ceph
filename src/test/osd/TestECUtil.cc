@@ -957,14 +957,6 @@ TEST(ECUtil, slice)
   sem.insert_in_shard(shard_id_t(4), 5, bl64k);
 
   {
-    auto slice = sem.slice(512, 1024);
-    ASSERT_EQ(4, slice.size());
-    for (int i=1; i<5; i++) {
-      ASSERT_EQ(1024, slice[shard_id_t(i)].length());
-    }
-  }
-
-  {
     auto slice_map = sem.slice_map(512, 1024);
     ASSERT_EQ(4, slice_map.get_extent_maps().size());
     ASSERT_EQ(512, slice_map.get_start_offset());
