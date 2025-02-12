@@ -997,7 +997,7 @@ void ECBackendL::handle_sub_write(
     async);
 
   if (!get_parent()->pg_is_undersized() &&
-        int(get_parent()->whoami_shard().shard) >= sinfo.get_k())
+        get_parent()->whoami_shard().shard >= sinfo.get_k())
     op.t.set_fadvise_flag(CEPH_OSD_OP_FLAG_FADVISE_DONTNEED);
 
   localt.register_on_commit(

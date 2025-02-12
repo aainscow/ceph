@@ -601,7 +601,7 @@ public:
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<HashInfo*>& o);
   uint32_t get_chunk_hash(shard_id_t shard) const {
-    ceph_assert(int(shard) < cumulative_shard_hashes.size());
+    ceph_assert(shard < cumulative_shard_hashes.size());
     return cumulative_shard_hashes[int(shard)];
   }
   uint64_t get_total_chunk_size() const {
@@ -783,8 +783,7 @@ public:
   shard_extent_set_t get_extent_set();
   void insert_parity_buffers();
   void erase_shard(shard_id_t shard);
-  shard_id_map<bufferlist> slice(int offset, int length) const;
-  shard_extent_map_t slice_map(int offset, int length) const;
+  shard_extent_map_t slice_map(uint64_t offset, uint64_t length) const;
   std::string debug_string(uint64_t inteval, uint64_t offset) const;
   void erase_stripe(uint64_t offset, uint64_t length);
   bool contains(shard_id_t shard) const;

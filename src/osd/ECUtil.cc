@@ -19,15 +19,6 @@ using ceph::Formatter;
 template<typename T>
 using shard_id_map = shard_id_map<T>;
 
-// FIXME: We want this to be the same as the constant in ErasureCode.h, which
-//        cannot be included here, for reasons I have not figured out yet.
-static const unsigned SIMD_ALIGN = 32;
-
-static ostream& _prefix(std::ostream* _dout)
-{
-  return *_dout << "ECUtil: ";
-}
-
 std::pair<uint64_t, uint64_t> ECUtil::stripe_info_t::chunk_aligned_ro_range_to_shard_ro_range(
   uint64_t _off, uint64_t _len) const {
   auto [off, len] = ro_offset_len_to_stripe_ro_offset_len(_off, _len);
@@ -598,23 +589,7 @@ namespace ECUtil {
     if (resized) compute_ro_range();
   }
 
-  shard_id_map<bufferlist> shard_extent_map_t::slice(int offset, int length) const
-  {
-    shard_id_map<bufferlist> slice(sinfo->get_k_plus_m());
-
-    for (auto &&[shard, emap]: extent_maps) {
-      bufferlist shard_bl;
-      get_buffer(shard, offset, length, shard_bl);
-      if (shard_bl.length()) {
-        shard_bl.rebuild_aligned_size_and_memory(length, SIMD_ALIGN);
-        slice.emplace(shard, std::move(shard_bl));
-      }
-    }
-
-    return slice;
-  }
-
-  shard_extent_map_t shard_extent_map_t::slice_map(int offset, int length) const
+  shard_extent_map_t shard_extent_map_t::slice_map(uint64_t offset, uint64_t length) const
   {
     // Range entirely contains offset - this will be common for small IO.
     if (offset <= start_offset && offset + length >= end_offset) return *this;

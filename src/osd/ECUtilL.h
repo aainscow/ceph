@@ -231,7 +231,7 @@ public:
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<HashInfo*>& o);
   uint32_t get_chunk_hash(shard_id_t shard) const {
-    ceph_assert(int(shard) < cumulative_shard_hashes.size());
+    ceph_assert(shard < cumulative_shard_hashes.size());
     return cumulative_shard_hashes[int(shard)];
   }
   uint64_t get_total_chunk_size() const {
