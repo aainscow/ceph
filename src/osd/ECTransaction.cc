@@ -63,9 +63,11 @@ static void encode_and_write(
   int r = 0;
   if (plan.do_parity_delta_write) {
     r = shard_extent_map.encode_parity_delta(ec_impl, plan.hinfo, plan.orig_size, old_shard_extent_map);
+    ldpp_dout(dpp, 20) << "JPN: PDW, return " << r << dendl;
   }
   else {
     r = shard_extent_map.encode(ec_impl, plan.hinfo, plan.orig_size);
+    ldpp_dout(dpp, 20) << "JPN: encode, return " << r << dendl;
   }
   ceph_assert(r == 0);
 
@@ -81,13 +83,17 @@ static void encode_and_write(
      * with implied zeros due to incomplete writes is both difficult and
      * removes a level of protection against bugs.
      */
+    ldpp_dout(dpp, 20) << "JPN: for loop shard: " << shard << dendl;
     for (auto &&[offset, len]: to_write_eset) {
+      ldpp_dout(dpp, 20) << "JPN: for loop offset: " << offset << ", len: " << len << dendl;
       shard_extent_map.zero_pad(shard, offset, len);
     }
 
     if (transactions->contains(shard)) {
+      ldpp_dout(dpp, 20) << "JPN: transaction contains shard " << shard << dendl;
       auto &t = transactions->at(shard);
       if (to_write_eset.begin().get_start() >= plan.orig_size) {
+        ldpp_dout(dpp, 20) << "JPN: start of shard greater than or equal to orig size... start: " << to_write_eset.begin().get_start() << ", orig_size: " << plan.orig_size << dendl;
         t.set_alloc_hint(
           coll_t(spg_t(pgid, shard)),
           ghobject_t(oid, ghobject_t::NO_GEN, shard),
@@ -99,6 +105,7 @@ static void encode_and_write(
       for (auto &&[offset, len]: to_write_eset) {
         buffer::list bl;
         shard_extent_map.get_buffer(shard, offset, len, bl);
+        ldpp_dout(dpp, 20) << "JPN: about to write shard: " << shard << ", offset: " << offset << ", len: " << len << ", bl: " << bl << dendl;
         t.write(coll_t(spg_t(pgid, shard)),
           ghobject_t(oid, ghobject_t::NO_GEN, shard),
           offset, bl.length(), bl, flags);
@@ -108,6 +115,7 @@ static void encode_and_write(
 }
 
 ECTransaction::WritePlanObj::WritePlanObj(
+  DoutPrefixProvider *dpp,
   const hobject_t &hoid,
   const PGTransaction::ObjectOperation &op,
   const ECUtil::stripe_info_t &sinfo,
@@ -268,7 +276,8 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
   do_parity_delta_write = false;
 #if PARTIY_DELTA_WRITES
   if (sinfo.supports_parity_delta_writes()) {
-    if (orig_size == projected_size) do_parity_delta_write = true; // Not an append, so can do parity delta write
+    if (orig_size == projected_size && !reads.empty()) do_parity_delta_write = true; // Not an append, so can do parity delta write
+    //if (orig_size == projected_size) do_parity_delta_write = true;
     // If this is a parity delta write, and there are reads to do, then we need to set to_read = will_write.
     // We will do it in generate_transactions when we know if we have reads to do.
   }
@@ -285,7 +294,27 @@ orig_size(orig_size) // On-disk object sizes are rounded up to the next page.
 
   // Do not do a read if there is nothing to read!
   if (!reads.empty()) {
-     to_read = std::move(reads);
+    ldpp_dout(dpp, 20) << "JP: reads not empty" << dendl;
+    to_read = std::move(reads);
+    if (orig_size == projected_size) {
+      ldpp_dout(dpp, 20) << "JP: orig_size equals projected_size" << dendl;
+      ldpp_dout(dpp, 20) << "JP: not empty case A" << dendl;
+    }
+    else {
+      ldpp_dout(dpp, 20) << "JP: orig_size does not equal projected_size" << dendl;
+      ldpp_dout(dpp, 20) << "JP: not empty case B" << dendl;
+    }
+  }
+  else {
+    ldpp_dout(dpp, 20) << "JP: reads empty" << dendl;
+    if (orig_size == projected_size) {
+      ldpp_dout(dpp, 20) << "JP: orig_size equals projected_size" << dendl;
+      ldpp_dout(dpp, 20) << "JP: empty case C" << dendl;
+    }
+    else {
+      ldpp_dout(dpp, 20) << "JP: orig_size does not equal projected_size" << dendl;
+      ldpp_dout(dpp, 20) << "JP: empty case D" << dendl;
+    }
   }
 
   if (do_parity_delta_write) {
@@ -733,7 +762,15 @@ void ECTransaction::generate_transactions(
       if (!to_write.empty()) {
         // Depending on the write, we may or may not have the parity buffers.
         // Here we invent some buffers.
+        for (auto &&[shard, emap] : to_write.extent_maps)
+        {
+          ldpp_dout(dpp, 20) << "JP: to_write before adding parity: shard:" << shard << " emap:" << emap << dendl;
+        }
         to_write.insert_parity_buffers();
+        for (auto &&[shard, emap] : to_write.extent_maps)
+        {
+          ldpp_dout(dpp, 20) << "JP: to_write after adding parity: shard:" << shard << " emap:" << emap << dendl;
+        }
         if (!sinfo.supports_partial_writes()) {
           for (auto &&[shard, eset] : plan.will_write) {
             if (sinfo.get_raw_shard(shard) >= sinfo.get_k()) continue;
@@ -742,6 +779,10 @@ void ECTransaction::generate_transactions(
               to_write.zero_pad(shard, off, len);
             }
           }
+        }
+        for (auto &&[shard, emap] : read_sem.extent_maps)
+        {
+          ldpp_dout(dpp, 20) << "JP: read_sem before adding parity: shard:" << shard << " emap:" << emap << dendl;
         }
 	encode_and_write(pgid, oid, ec_impl, plan, to_write, read_sem, fadvise_flags,
 	  transactions, dpp);
@@ -899,8 +940,11 @@ void ECTransaction::generate_transactions(
 	  }
 	}
       }
-
+      ldpp_dout(dpp, 20) << "JPN: plans before pop: " << plans << dendl;
+      ldpp_dout(dpp, 20) << "JPN: plans.plans before pop: " << plans.plans << dendl;
       plans.plans.pop_front();
+      ldpp_dout(dpp, 20) << "JPN: plans after pop: " << plans << dendl;
+      ldpp_dout(dpp, 20) << "JPN: plans.plans after pop: " << plans.plans << dendl;
     });
 }
 

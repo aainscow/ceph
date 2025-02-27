@@ -458,10 +458,11 @@ namespace ECUtil {
                                  const HashInfoRef &hinfo,
                                  uint64_t before_ro_size) 
   {
-    //dout(10) << "JP: encode start" << dendl;
+    dout(10) << "JP: encode start" << dendl;
     bool rebuild_req = false;
     shard_id_set out_set;
     out_set.insert_range(shard_id_t(sinfo->get_k()), sinfo->get_m());
+    dout(10) << "JP: encode sem " << *this << dendl;
 
     for (auto iter = begin_slice_iterator(out_set); !iter.is_end(); ++iter) {
       if (!iter.is_page_aligned()) {
@@ -472,6 +473,8 @@ namespace ECUtil {
       shard_id_map<bufferptr> &in = iter.get_in_bufferptrs();
       shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();
 
+      dout(10) << "JP: encode in " << in << dendl;
+      dout(10) << "JP: encode out " << out << dendl;
       int ret = ec_impl->encode_chunks(in, out);
       if (ret) return ret;
     }
@@ -480,6 +483,7 @@ namespace ECUtil {
       pad_and_rebuild_to_page_align();
       return encode(ec_impl, hinfo, before_ro_size);
     }
+    dout(10) << "JP: encode sem after encoding " << *this << dendl;
 
     if (hinfo && ro_start >= before_ro_size) {
       /* NEEDS REVIEW:  The following calculates the new hinfo CRCs. This is
@@ -495,8 +499,9 @@ namespace ECUtil {
         hinfo->append(iter.get_offset(), iter.get_in_bufferptrs());
       }
     }
+    dout(10) << "JP: encode sem after hinfo fun " << *this << dendl;
 
-    //dout(10) << "JP: encode end" << dendl;
+    dout(10) << "JP: encode end" << dendl;
     return 0;
   }
 
@@ -508,61 +513,109 @@ namespace ECUtil {
                                               uint64_t before_ro_size,
                                               shard_extent_map_t &old_sem)
   {
-    //dout(10) << "JP: PDW start" << dendl;
+    dout(10) << "JP: PDW start" << dendl;
+    dout(10) << "JP: old_sem start " << old_sem << dendl;
+    dout(10) << "JP: new_sem start " << *this << dendl;
     shard_id_set out_set;
     out_set.insert_range(shard_id_t(sinfo->get_k()), sinfo->get_m());
 
     for (auto i = sinfo->get_k(); i < sinfo->get_k_plus_m(); i++) {
-      extent_maps[shard_id_t(i)] = old_sem.extent_maps[shard_id_t(i)];
+      if (old_sem.contains_shard(shard_id_t(i))) {
+        dout(10) << "JP: parity buffer exists in old sem" << dendl;
+        extent_maps[shard_id_t(i)] = old_sem.extent_maps[shard_id_t(i)];
+      }
+      else {
+        dout(10) << "JP: parity buffer doesn't exist in old sem" << dendl;
+      }
+
     }
 
     for (auto data_shard : sinfo->get_data_shards()) {
       shard_extent_map_t s(sinfo);
-      if (!old_sem.contains_shard(data_shard) || !contains_shard(data_shard)) {
+      bool old_shard_exists = true;
+      //if (!old_sem.contains_shard(data_shard) || !contains_shard(data_shard)) {
+      if (!contains_shard(data_shard)) {
+        dout(10) << "JP: continuing, shard " << data_shard << dendl;
         continue;
       }
-      s.extent_maps[shard_id_t(0)] = old_sem.extent_maps[data_shard];
+      //s.extent_maps[shard_id_t(0)] = old_sem.extent_maps[data_shard];
+      if (old_sem.contains_shard(data_shard)){
+        dout(10) << "JP: old_sem contains data shard " << data_shard << dendl;
+        s.extent_maps[shard_id_t(0)] = old_sem.extent_maps[data_shard];
+      }
+      else {
+        old_shard_exists = false;
+        dout(10) << "JP: old_sem does not contain data shard " << data_shard << dendl;
+      }
+
       s.extent_maps[shard_id_t(1)] = extent_maps[data_shard];
       for (auto i = sinfo->get_k(); i < sinfo->get_k_plus_m(); i++) {
         s.extent_maps[shard_id_t(i)] = extent_maps[shard_id_t(i)];
       }
 
+      dout(10) << "JP: s before " << s << dendl;
       s.compute_ro_range();
+      dout(10) << "JP: s after " << s << dendl;
 
       for (auto iter = s.begin_slice_iterator(out_set); !iter.is_end(); ++iter) {
         // if (!iter.is_page_aligned()) {
         //   dout(10) << "JP: rebuilding s" << dendl;
-        //   s.pad_and_rebuild_to_page_align();
+        //   //s.pad_and_rebuild_to_page_align();
         // }
         shard_id_map<bufferptr> &data_shards = iter.get_in_bufferptrs();
         shard_id_map<bufferptr> &parity_shards = iter.get_out_bufferptrs();
 
+        dout(10) << "JP: data_shards " << data_shards << dendl;
+
         unsigned int size = parity_shards[shard_id_t(sinfo->get_k())].length();
         bufferptr delta = buffer::create_aligned(size, CEPH_PAGE_SIZE);
-        //dout(10) << "JP: delta size will be " << size << dendl;
-        delta.zero(false);
+        dout(10) << "JP: delta size will be " << size << dendl;
+        delta.zero(false); // needed?
 
-        if (!data_shards[shard_id_t(0)].length() == 0) {
+        // if (!data_shards[shard_id_t(0)].length() == 0) {
+        //   dout(10) << "JP: going to encode_delta for " << data_shard << dendl;
+        //   ec_impl->encode_delta(data_shards[shard_id_t(0)], data_shards[shard_id_t(1)], &delta);
+        // }
+        // else {
+        //   dout(10) << "JP: skipping encode_delta for " << data_shard << dendl;
+        // }
+        dout(10) << "JP: old sem data shard len " << data_shards[shard_id_t(0)].length() << dendl;
+        dout(10) << "JP: new sem data shard len " << data_shards[shard_id_t(1)].length() << dendl;
+        if (old_shard_exists && (!data_shards[shard_id_t(0)].length() == 0)) {
+          dout(10) << "JP: going to encode_delta for " << data_shard << dendl;
           ec_impl->encode_delta(data_shards[shard_id_t(0)], data_shards[shard_id_t(1)], &delta);
+        }
+        else {
+          dout(10) << "JP: skipping encode_delta for " << data_shard << dendl;
+          delta = data_shards[shard_id_t(1)];
         }
 
         shard_id_map<bufferptr> in(sinfo->get_k());
         in.emplace(data_shard, delta);
+        dout(10) << "JP: in " << in << dendl;
+        dout(10) << "JP: parity_shards " << parity_shards << dendl;
 
-        if (!data_shards[shard_id_t(0)].length() == 0) {
+        if (!data_shards[shard_id_t(1)].length() == 0) {
+          dout(10) << "JP: going to apply_delta for " << in << " to parity " << parity_shards << dendl;
           ec_impl->apply_delta(in, parity_shards);
+        }
+        else {
+          dout(10) << "JP: skipping apply_delta for " << data_shard << dendl;
         }
 
         for (auto i = sinfo->get_k(); i < sinfo->get_k_plus_m(); i++) {
           ceph::bufferlist bl;
           bl.append(parity_shards[shard_id_t(i)]);
+          dout(10) << "JP: going to insert " << i << " at offset " << iter.get_offset() << dendl;
           insert_in_shard(shard_id_t(i), iter.get_offset(), bl);
         }
       }
     }
 
     compute_ro_range();
-    //dout(10) << "JP: PDW end" << dendl;
+    dout(10) << "JP: PDW end" << dendl;
+    dout(10) << "JP: old_sem end " << old_sem << dendl;
+    dout(10) << "JP: new_sem end " << *this << dendl;
     return 0;
   }
 

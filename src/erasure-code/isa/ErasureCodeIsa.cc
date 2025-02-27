@@ -200,7 +200,7 @@ ErasureCodeIsa::isa_xor(char **data, char *coding, int blocksize, int data_vecto
   for (int i = 0; i <= data_vectors; i++) {
     aligned &= is_aligned(xor_bufs[i], EC_ISA_ADDRESS_ALIGNMENT);
   }
-
+  dout(20) << "JP: isa_xor: aligned? " << aligned << dendl;
   if (aligned) {
     xor_gen(data_vectors + 1, blocksize, (void**) xor_bufs);
   }

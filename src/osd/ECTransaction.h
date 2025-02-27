@@ -43,6 +43,7 @@ namespace ECTransaction {
     bool do_parity_delta_write;
 
     WritePlanObj(
+      DoutPrefixProvider *dpp,
       const hobject_t &hoid,
       const PGTransaction::ObjectOperation &op,
       const ECUtil::stripe_info_t &sinfo,
