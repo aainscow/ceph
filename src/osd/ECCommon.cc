@@ -868,7 +868,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op)
     if (pg_shard == get_parent()->whoami_shard()) {
       should_write_local = true;
       local_write_op.claim(sop);
-      } else if (cct->_conf->bluestore_debug_inject_read_err &&
+    } else if (cct->_conf->bluestore_debug_inject_read_err &&
                  ECInject::test_write_error1(ghobject_t(op.hoid,
                    ghobject_t::NO_GEN, pg_shard.shard))) {
         dout(0) << " Error inject - Dropping write message to shard " <<

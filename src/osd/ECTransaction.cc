@@ -63,7 +63,7 @@ static void encode_and_write(
   int r = 0;
   if (plan.do_parity_delta_write) {
     r = shard_extent_map.encode_parity_delta(ec_impl, plan.hinfo, plan.orig_size, old_shard_extent_map);
-    ldpp_dout(dpp, 20) << "JPN: PDW, return " << r << dendl;
+    ldpp_dout(dpp, 20) << "JPN: PDW, return " << r << "plan=" << plan << "sem=" << shard_extent_map << "old_shard_extent_map=" << old_shard_extent_map << dendl;
   }
   else {
     r = shard_extent_map.encode(ec_impl, plan.hinfo, plan.orig_size);
@@ -766,7 +766,9 @@ void ECTransaction::generate_transactions(
         {
           ldpp_dout(dpp, 20) << "JP: to_write before adding parity: shard:" << shard << " emap:" << emap << dendl;
         }
-        to_write.insert_parity_buffers();
+        if (!plan.do_parity_delta_write) {
+          to_write.insert_parity_buffers();
+        }
         for (auto &&[shard, emap] : to_write.extent_maps)
         {
           ldpp_dout(dpp, 20) << "JP: to_write after adding parity: shard:" << shard << " emap:" << emap << dendl;

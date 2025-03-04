@@ -255,6 +255,10 @@ ErasureCodeIsaDefault::encode_delta(const bufferptr &old_data,
                                   const bufferptr &new_data,
                                   bufferptr *delta)
 {
+  auto size = old_data.length();
+  ceph_assert(new_data.length() == size);
+  ceph_assert(delta->length() == size);
+
   //TODO handle old_data or new_data being a special zero buffer.
   constexpr int data_vectors = 2;
   char * data[data_vectors];
@@ -278,9 +282,11 @@ ErasureCodeIsaDefault::apply_delta(const shard_id_map<bufferptr> &in,
 
   for (auto const& [datashard, databuf] : in) {
     if (datashard < k) {
+      ceph_assert(datashard >= 0);
       for (auto const& [codingshard, codingbuf] : out) {
         if (codingshard >= k) {
           ceph_assert(codingbuf.length() == blocksize);
+          ceph_assert(codingshard < k + m);
           if (m==1) {
             constexpr int data_vectors = 2;
             char * data[data_vectors];
@@ -291,8 +297,14 @@ ErasureCodeIsaDefault::apply_delta(const shard_id_map<bufferptr> &in,
           }
           else {
             unsigned char* data = reinterpret_cast<unsigned char*>(const_cast<char*>(databuf.c_str()));
-            unsigned char* coding = reinterpret_cast<unsigned char*>(const_cast<char*>(codingbuf.c_str()));
-            ec_encode_data_update(blocksize, k, 1, int(datashard), encode_tbls + (32 * k * (int(codingshard) - k)), data, &coding);
+            // unsigned char* coding = reinterpret_cast<unsigned char*>(const_cast<char*>(codingbuf.c_str()));
+            unsigned char* coding[1];
+            coding[0] = reinterpret_cast<unsigned char*>(const_cast<char*>(codingbuf.c_str()));
+            ceph_assert(blocksize % 4096 == 0);
+            ceph_assert(uintptr_t(coding[0]) % 4096 == 0);
+            ceph_assert(uintptr_t(data) % 4096 == 0);
+
+            ec_encode_data_update(blocksize, k, 1, int(datashard), encode_tbls + (32 * k * (int(codingshard) - k)), data, coding);
           }
           //TODO return a special zero buffer if coding buffer is all zeroes
         }

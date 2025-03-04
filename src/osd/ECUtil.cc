@@ -530,6 +530,9 @@ namespace ECUtil {
 
     }
 
+    pad_and_rebuild_to_page_align();
+    old_sem.pad_and_rebuild_to_page_align();
+
     for (auto data_shard : sinfo->get_data_shards()) {
       shard_extent_map_t s(sinfo);
       bool old_shard_exists = true;
@@ -550,7 +553,7 @@ namespace ECUtil {
 
       s.extent_maps[shard_id_t(1)] = extent_maps[data_shard];
       for (auto i = sinfo->get_k(); i < sinfo->get_k_plus_m(); i++) {
-        s.extent_maps[shard_id_t(i)] = extent_maps[shard_id_t(i)];
+        s.extent_maps[shard_id_t(i)] = old_sem.extent_maps[shard_id_t(i)];
       }
 
       dout(10) << "JP: s before " << s << dendl;
@@ -562,15 +565,28 @@ namespace ECUtil {
         //   dout(10) << "JP: rebuilding s" << dendl;
         //   //s.pad_and_rebuild_to_page_align();
         // }
+        ceph_assert(iter.is_page_aligned());
         shard_id_map<bufferptr> &data_shards = iter.get_in_bufferptrs();
         shard_id_map<bufferptr> &parity_shards = iter.get_out_bufferptrs();
+
+        ceph_assert(parity_shards.size() == sinfo->get_m());
 
         dout(10) << "JP: data_shards " << data_shards << dendl;
 
         unsigned int size = parity_shards[shard_id_t(sinfo->get_k())].length();
+        ceph_assert(size % 4096 == 0);
+        ceph_assert(size > 0);
         bufferptr delta = buffer::create_aligned(size, CEPH_PAGE_SIZE);
         dout(10) << "JP: delta size will be " << size << dendl;
-        delta.zero(false); // needed?
+        delta.zero(false); // needed? Np.
+        // This code is to make a non-zero buffer without calling encode_delta.
+        // The intent being to test whether the apply_delta function alone will
+        // see the problem if it applies a non-zero buffer.
+        // char *delta_c = delta.c_str();
+        // for (int i=0; i<size; i++) {
+        //   delta_c[i] = i;
+        // }
+
 
         // if (!data_shards[shard_id_t(0)].length() == 0) {
         //   dout(10) << "JP: going to encode_delta for " << data_shard << dendl;
@@ -583,6 +599,9 @@ namespace ECUtil {
         dout(10) << "JP: new sem data shard len " << data_shards[shard_id_t(1)].length() << dendl;
         if (old_shard_exists && (!data_shards[shard_id_t(0)].length() == 0)) {
           dout(10) << "JP: going to encode_delta for " << data_shard << dendl;
+          size_t size = data_shards[shard_id_t(0)].length();
+          ceph_assert(size == data_shards[shard_id_t(1)].length());
+          ceph_assert(size == delta.length());
           ec_impl->encode_delta(data_shards[shard_id_t(0)], data_shards[shard_id_t(1)], &delta);
         }
         else {
@@ -597,17 +616,24 @@ namespace ECUtil {
 
         if (!data_shards[shard_id_t(1)].length() == 0) {
           dout(10) << "JP: going to apply_delta for " << in << " to parity " << parity_shards << dendl;
+          size_t size = in[data_shard].length();
+          for (auto &&[s, bp] : parity_shards) {
+            ceph_assert(bp.length() == size);
+          }
           ec_impl->apply_delta(in, parity_shards);
         }
         else {
           dout(10) << "JP: skipping apply_delta for " << data_shard << dendl;
         }
 
-        for (auto i = sinfo->get_k(); i < sinfo->get_k_plus_m(); i++) {
+        for (raw_shard_id_t i(sinfo->get_k()); i < sinfo->get_k_plus_m(); ++i) {
           ceph::bufferlist bl;
-          bl.append(parity_shards[shard_id_t(i)]);
-          dout(10) << "JP: going to insert " << i << " at offset " << iter.get_offset() << dendl;
-          insert_in_shard(shard_id_t(i), iter.get_offset(), bl);
+          shard_id_t shard = sinfo->get_shard(i);
+          ceph_assert(parity_shards.contains(shard));
+          bl.append(parity_shards[shard]);
+          ceph_assert(iter.get_length() == bl.length());
+          dout(10) << "JP: going to insert " << shard << " at offset " << iter.get_offset() << dendl;
+          insert_in_shard(shard, iter.get_offset(), bl);
         }
       }
     }
