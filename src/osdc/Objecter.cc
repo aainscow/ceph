@@ -2934,6 +2934,8 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
 	pi->peering_crush_bucket_barrier,
 	t->peering_crush_mandatory_member,
 	pi->peering_crush_mandatory_member,
+	t->allows_ecoptimizations,
+	pi->allows_ecoptimizations(),
 	prev_pgid)) {
     force_resend = true;
   }
