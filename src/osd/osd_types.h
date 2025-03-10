@@ -53,6 +53,7 @@
 #include "osd_perf_counters.h"
 #include "pg_features.h"
 #include "ECTypes.h"
+#include "common/bitset_set.h"
 
 #define CEPH_OSD_ONDISK_MAGIC "ceph osd volume v026"
 
