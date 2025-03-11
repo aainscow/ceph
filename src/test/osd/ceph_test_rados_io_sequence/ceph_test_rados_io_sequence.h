@@ -138,9 +138,9 @@ inline static constexpr int plugin_array_size = 5;
 inline static constexpr std::array<std::string_view, plugin_array_size>
     plugin_choices = {{"jerasure", "isa", "clay", "shec", "lrc"}};
 
-inline static constexpr int plugin_array_size_optimized = 4;
+inline static constexpr int plugin_array_size_optimized = 3;
 inline static constexpr std::array<std::string_view, plugin_array_size_optimized>
-    plugin_choices_optimized = {{"jerasure", "isa", "shec", "lrc"}};
+    plugin_choices_optimized = {{"jerasure", "isa", "lrc"}};
 
 using SelectErasurePlugin =
     PluginSelector<std::string_view,
