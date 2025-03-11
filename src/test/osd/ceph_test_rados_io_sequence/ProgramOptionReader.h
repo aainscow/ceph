@@ -115,6 +115,52 @@ class ProgramOptionSelector : public ProgramOptionReader<option_type> {
   std::optional<option_type> first_value;
 };
 
+template <typename option_type,
+          int num_selections,
+          const std::array< option_type,
+                            num_selections>& selections_array,
+          int num_selections_optimized,
+          const std::array< option_type,
+                            num_selections_optimized>& elections_array_optimized>
+class PluginSelector : public ProgramOptionReader<option_type> {
+public:
+  PluginSelector(ceph::util::random_number_generator<int>& rng,
+                        po::variables_map& vm,
+                        const std::string& option_name,
+                        bool select_first)
+      : ProgramOptionReader<option_type>(vm, option_name), rng(rng),
+          optimized(!vm.contains("disable_pool_ec_optimizations")) {
+    if (select_first) {
+      if (optimized) {
+        ceph_assert(selections_array.size() > 0);
+        first_value = elections_array_optimized[0];
+      } else {
+        ceph_assert(selections_array.size() > 0);
+        first_value = selections_array[0];
+      }
+    }
+  }
+
+  virtual ~PluginSelector() = default;
+
+  virtual const option_type select() override {
+    if (this->force_value.has_value()) {
+      return *this->force_value;
+    } else if (first_value.has_value()) {
+      return *std::exchange(first_value, std::nullopt);
+    } else if (optimized) {
+      return elections_array_optimized[rng(num_selections_optimized - 1)];
+    } else {
+      return selections_array[rng(num_selections - 1)];
+    }
+  }
+
+protected:
+  ceph::util::random_number_generator<int>& rng;
+  std::optional<option_type> first_value;
+  bool optimized;
+};
+
 template <typename option_type>
 class ProgramOptionGeneratedSelector
     : public OptionalProgramOptionReader<option_type> {

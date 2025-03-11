@@ -138,10 +138,16 @@ inline static constexpr int plugin_array_size = 5;
 inline static constexpr std::array<std::string_view, plugin_array_size>
     plugin_choices = {{"jerasure", "isa", "clay", "shec", "lrc"}};
 
+inline static constexpr int plugin_array_size_optimized = 4;
+inline static constexpr std::array<std::string_view, plugin_array_size_optimized>
+    plugin_choices_optimized = {{"jerasure", "isa", "shec", "lrc"}};
+
 using SelectErasurePlugin =
-    ProgramOptionSelector<std::string_view,
+    PluginSelector<std::string_view,
                           io_sequence::tester::plugin_array_size,
-                          io_sequence::tester::plugin_choices>;
+                          io_sequence::tester::plugin_choices,
+                          io_sequence::tester::plugin_array_size_optimized,
+                          io_sequence::tester::plugin_choices_optimized>;
 
 class SelectErasureKM
     : public ProgramOptionGeneratedSelector<std::pair<int, int>> {
