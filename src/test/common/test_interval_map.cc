@@ -385,3 +385,23 @@ TYPED_TEST(IntervalMapTest, get_start_end_off)
   ASSERT_EQ(5, m.get_start_off());
   ASSERT_EQ(25, m.get_end_off());
 }
+
+TYPED_TEST(IntervalMapTest, print) {
+  USING_NO_MERGE;
+  imap m;
+
+  {
+    std::ostringstream out;
+    m.insert(0, 5, gen(5));
+    out << m;
+    ASSERT_EQ("{0~5(5)}", fmt::format("{}", m));
+    EXPECT_EQ("{0~5(5)}", out.str() );
+  }
+  {
+    std::ostringstream out;
+    m.insert(10, 5, gen(5));
+    out << m;
+    ASSERT_EQ("{0~5(5),10~5(5)}", fmt::format("{}", m));
+    EXPECT_EQ("{0~5(5),10~5(5)}", out.str() );
+  }
+}

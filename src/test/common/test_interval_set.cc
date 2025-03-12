@@ -1870,3 +1870,23 @@ TYPED_TEST(IntervalSetTest, subtract) {
     ASSERT_TRUE(iset1.empty());
   }
 }
+
+TYPED_TEST(IntervalSetTest, print) {
+  typedef typename TestFixture::ISet ISet;
+
+  ISet iset;
+  {
+    std::ostringstream out;
+    iset.insert(0, 5);
+    out << iset;
+    ASSERT_EQ("[0~5]", fmt::format("{}", iset));
+    EXPECT_EQ("[0~5]", out.str() );
+  }
+  {
+    std::ostringstream out;
+    iset.insert(10, 5);
+    out << iset;
+    ASSERT_EQ("[0~5,10~5]", fmt::format("{}", iset));
+    EXPECT_EQ("[0~5,10~5]", out.str() );
+  }
+}

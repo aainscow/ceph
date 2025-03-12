@@ -18,7 +18,6 @@
 #include "include/interval_set.h"
 #include <initializer_list>
 
-template <typename K, typename V, typename S, template<typename, typename, typename ...> class C = std::map>
 /**
  * interval_map
  *
@@ -31,11 +30,12 @@ template <typename K, typename V, typename S, template<typename, typename, typen
  * commutativity, which doesn't work if we want more recent insertions
  * to overwrite previous ones.
  */
+template <typename K, typename V, typename S, template<typename, typename, typename ...> class C = std::map>
 class interval_map {
   S s;
   using Map = C<K, std::pair<K, V> >;
-  using Mapiter = typename C<K, std::pair<K, V> >::iterator;
-  using Cmapiter = typename C<K, std::pair<K, V> >::const_iterator;
+  using Mapiter = typename Map::iterator;
+  using Cmapiter = typename Map::const_iterator;
   Map m;
   std::pair<Mapiter, Mapiter> get_range(K off, K len) {
     // fst is first iterator with end after off (may be end)
@@ -308,25 +308,41 @@ public:
     return m == rhs.m;
   }
 
-  std::ostream &print(std::ostream &out) const {
+  void print(std::ostream &os) const {
     bool first = true;
-    out << "{";
+    os << "{";
     for (auto &&i: *this) {
       if (first) {
 	first = false;
       } else {
-	out << ",";
+	os << ",";
       }
-      out << i.get_off() << "~" << i.get_len() << "("
+      os << i.get_off() << "~" << i.get_len() << "("
 	  << s.length(i.get_val()) << ")";
     }
-    return out << "}";
+    os << "}";
+  }
+
+  std::string fmt_print() const
+  requires has_formatter<K> {
+    std::string str = "{";
+    bool first = true;
+    for (auto &&i: *this) {
+      if (first) {
+        first = false;
+      } else {
+        str += ",";
+      }
+      str += fmt::format("{}~{}({})", i.get_off(), i.get_len(),
+        s.length(i.get_val()));
+    }
+    str += "}";
+    return str;
   }
 };
 
-template <typename K, typename V, typename S, template<typename, typename, typename ...> class C = std::map>
-std::ostream &operator<<(std::ostream &out, const interval_map<K, V, S, C> &m) {
-  return m.print(out);
-}
+// make sure fmt::range would not try (and fail) to treat interval_map as a range
+template <typename K, typename V, typename S, template<typename, typename, typename ...> class C>
+struct fmt::is_range<interval_map<K, V, S, C>, char> : std::false_type {};
 
 #endif
