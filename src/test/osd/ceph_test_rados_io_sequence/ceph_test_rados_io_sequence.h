@@ -147,9 +147,9 @@ inline static constexpr int plugin_array_size = 5;
 inline static constexpr std::array<std::string_view, plugin_array_size>
     plugin_choices = {{"jerasure", "isa", "clay", "shec", "lrc"}};
 
-inline static constexpr int plugin_array_size_stable = 2;
+inline static constexpr int plugin_array_size_stable = 3;
 inline static constexpr std::array<std::string_view, plugin_array_size_stable>
-    plugin_choices_stable = {{"jerasure", "isa"}};
+    plugin_choices_stable = {{"jerasure", "isa", "lrc"}};
 
 using SelectErasurePlugin =
     StableOptionSelector<std::string_view,
@@ -463,8 +463,9 @@ class TestObject {
   bool verbose;
   std::optional<int> seqseed;
   std::optional<std::pair<int, int>> pool_km;
-  std::optional<std::pair<std::string_view, std::string_view>>
-      pool_mappinglayers;
+  // These are strings, rather than string_view as the underlying pointer
+  // can be freed before it is accessed by the io exerciser.
+  std::optional<std::pair<std::string, std::string>> pool_mappinglayers;
   bool testrecovery;
 };
 

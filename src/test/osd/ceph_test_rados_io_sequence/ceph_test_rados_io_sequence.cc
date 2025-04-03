@@ -930,8 +930,8 @@ ceph::io_sequence::tester::TestObject::TestObject(
       ceph_assert(spo.getProfile());
       pool_km = spo.getProfile()->km;
       if (spo.getProfile()->mapping && spo.getProfile()->layers) {
-        pool_mappinglayers = {*spo.getProfile()->mapping,
-                             *spo.getProfile()->layers};
+        pool_mappinglayers = {std::string(spo.getProfile()->mapping->c_str()),
+                             std::string(spo.getProfile()->layers->c_str())};
       }
     }
 
