@@ -846,6 +846,9 @@ void ECTransaction::Generate::attr_updates() {
       ceph_assert(!entry);
     }
   }
+  if (plan.orig_size != plan.projected_size) {
+    entry->written_shards.insert_range(shard_id_t(0), sinfo.get_k_plus_m());
+  }
   for (auto &&st: transactions) {
     if (!sinfo.is_nonprimary_shard(st.first)) {
       // Primary shard - Update all attributes
@@ -853,8 +856,7 @@ void ECTransaction::Generate::attr_updates() {
         coll_t(spg_t(pgid, st.first)),
         ghobject_t(oid, ghobject_t::NO_GEN, st.first),
         to_set);
-    } else if (entry->is_written_shard(st.first) || plan.orig_size != plan
-      .projected_size) {
+    } else if (entry->is_written_shard(st.first)) {
       // Written shard - Only update object_info attribute
       st.second.setattr(
         coll_t(spg_t(pgid, st.first)),
