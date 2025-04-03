@@ -69,14 +69,17 @@ void EcIoSequence::select_random_data_shard_to_inject_read_error(
   if (mappinglayers) {
     int count = std::ranges::count(mappinglayers->first, 'D');
     int data_shard_position = rng(count - 1);
-    shard_to_inject = 0;
-    for (int i = 0; i < data_shard_position; i++) {
-      shard_to_inject =
-          std::distance(std::find(mappinglayers->first.begin(),
-                                  mappinglayers->first.end(), *shard_to_inject),
-                        mappinglayers->first.begin());
-      ceph_assert(*shard_to_inject != std::string::npos);
+    shard_to_inject = -1;
+    for (int i = 0; i < mappinglayers->first.length(); i++) {
+      if (mappinglayers->first[i] == 'D') {
+        if (data_shard_position == 0) {
+          *shard_to_inject = i;
+          break;
+        }
+        data_shard_position--;
+      }
     }
+    ceph_assert(*shard_to_inject != -1);
   }
   setup_inject = true;
 }
@@ -95,14 +98,17 @@ void EcIoSequence::select_random_data_shard_to_inject_write_error(
       count--;
     }
     int data_shard_position = rng(1, count - 1);
-    shard_to_inject = 0;
-    for (int i = 1; i < data_shard_position; i++) {
-      shard_to_inject =
-          std::distance(std::find(mappinglayers->first.begin(),
-                                  mappinglayers->first.end(), *shard_to_inject),
-                        mappinglayers->first.begin());
-      ceph_assert(*shard_to_inject != std::string::npos);
+    shard_to_inject = -1;
+    for (int i = 0; i < mappinglayers->first.length(); i++) {
+      if (mappinglayers->first[i] == 'D') {
+        if (data_shard_position == 0) {
+          *shard_to_inject = i;
+          break;
+        }
+        data_shard_position--;
+      }
     }
+    ceph_assert(*shard_to_inject != -1);
   }
   setup_inject = true;
 }
@@ -117,14 +123,17 @@ void EcIoSequence::select_random_shard_to_inject_read_error(
   if (mappinglayers) {
     int count = std::ranges::count(mappinglayers->first, 'D');
     int data_shard_position = rng(count - 1);
-    shard_to_inject = 0;
-    for (int i = 0; i < data_shard_position; i++) {
-      shard_to_inject =
-          std::distance(std::find(mappinglayers->first.begin(),
-                                  mappinglayers->first.end(), *shard_to_inject),
-                        mappinglayers->first.begin());
-      ceph_assert(*shard_to_inject != std::string::npos);
+    shard_to_inject = -1;
+    for (int i = 0; i < mappinglayers->first.length(); i++) {
+      if (mappinglayers->first[i] == 'D') {
+        if (data_shard_position == 0) {
+          *shard_to_inject = i;
+          break;
+        }
+        data_shard_position--;
+      }
     }
+    ceph_assert(*shard_to_inject != -1);
   }
   setup_inject = true;
 }
@@ -143,14 +152,17 @@ void EcIoSequence::select_random_shard_to_inject_write_error(
       count--;
     }
     int data_shard_position = rng(count - 1);
-    shard_to_inject = 0;
-    for (int i = 0; i < data_shard_position; i++) {
-      shard_to_inject =
-          std::distance(std::find(mappinglayers->first.begin(),
-                                  mappinglayers->first.end(), *shard_to_inject),
-                        mappinglayers->first.begin());
-      ceph_assert(*shard_to_inject != std::string::npos);
+    shard_to_inject = -1;
+    for (int i = 0; i < mappinglayers->first.length(); i++) {
+      if (mappinglayers->first[i] == 'D') {
+        if (data_shard_position == 0) {
+          *shard_to_inject = i;
+          break;
+        }
+        data_shard_position--;
+      }
     }
+    ceph_assert(*shard_to_inject != -1);
   }
   setup_inject = true;
 }

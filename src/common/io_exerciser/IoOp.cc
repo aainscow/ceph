@@ -268,7 +268,9 @@ ceph::io_exerciser::InjectErrorOp<opType>::InjectErrorOp(
       shard(shard),
       type(type),
       when(when),
-      duration(duration) {}
+      duration(duration) {
+  ceph_assert(shard >= 0);
+}
 
 template <ceph::io_exerciser::OpType opType>
 std::string ceph::io_exerciser::InjectErrorOp<opType>::to_string(
