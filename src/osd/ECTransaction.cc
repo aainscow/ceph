@@ -847,7 +847,8 @@ void ECTransaction::Generate::attr_updates() {
     }
   }
   if (plan.orig_size != plan.projected_size) {
-    entry->written_shards.insert_range(shard_id_t(0), sinfo.get_k_plus_m());
+    // We clear the written shards at this point to represent "all shards"
+    entry->written_shards.clear();
   }
   for (auto &&st: transactions) {
     if (!sinfo.is_nonprimary_shard(st.first)) {
