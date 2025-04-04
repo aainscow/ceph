@@ -98,6 +98,9 @@ class Generate {
   std::vector<shard_id_set> rollback_shards;
   uint32_t fadvise_flags = 0;
 
+  void all_shards_written();
+  void shard_written(const shard_id_t shard);
+  void shards_written(const shard_id_set &shards);
   void delete_first();
   void zero_truncate_to_delete();
   void process_init();

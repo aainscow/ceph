@@ -274,6 +274,24 @@ ECTransaction::WritePlanObj::WritePlanObj(
   ceph_assert(!to_read || !soi);
 }
 
+void ECTransaction::Generate::all_shards_written() {
+  if (entry) {
+    entry->written_shards.insert_range(shard_id_t(0), sinfo.get_k_plus_m());
+  }
+}
+
+void ECTransaction::Generate::shard_written(const shard_id_t shard) {
+  if (entry) {
+    entry->written_shards.insert(shard);
+  }
+}
+
+void ECTransaction::Generate::shards_written(const shard_id_set &shards) {
+  if (entry) {
+    entry->written_shards.insert(shards);
+  }
+}
+
 void ECTransaction::Generate::zero_truncate_to_delete() {
   ceph_assert(obc);
 
@@ -318,18 +336,19 @@ void ECTransaction::Generate::delete_first() {
   }
   if (entry) {
     entry->mod_desc.rmobject(entry->version.version);
-    for (auto &&st: transactions) {
-      st.second.collection_move_rename(
-        coll_t(spg_t(pgid, st.first)),
-        ghobject_t(oid, ghobject_t::NO_GEN, st.first),
-        coll_t(spg_t(pgid, st.first)),
-        ghobject_t(oid, entry->version.version, st.first));
+    all_shards_written();
+    for (auto &&[shard, t]: transactions) {
+      t.collection_move_rename(
+        coll_t(spg_t(pgid, shard)),
+        ghobject_t(oid, ghobject_t::NO_GEN, shard),
+        coll_t(spg_t(pgid, shard)),
+        ghobject_t(oid, entry->version.version, shard));
     }
   } else {
-    for (auto &&st: transactions) {
-      st.second.remove(
-        coll_t(spg_t(pgid, st.first)),
-        ghobject_t(oid, ghobject_t::NO_GEN, st.first));
+    for (auto &&[shard, t]: transactions) {
+      t.remove(
+        coll_t(spg_t(pgid, shard)),
+        ghobject_t(oid, ghobject_t::NO_GEN, shard));
     }
   }
   if (plan.hinfo)
@@ -341,24 +360,26 @@ void ECTransaction::Generate::process_init() {
     op.init_type,
     [&](const PGTransaction::ObjectOperation::Init::None &) {},
     [&](const PGTransaction::ObjectOperation::Init::Create &_) {
-      for (auto &&st: transactions) {
+      all_shards_written();
+      for (auto &&[shard, t]: transactions) {
         if (osdmap->require_osd_release >= ceph_release_t::octopus) {
-          st.second.create(
-            coll_t(spg_t(pgid, st.first)),
-            ghobject_t(oid, ghobject_t::NO_GEN, st.first));
+          t.create(
+            coll_t(spg_t(pgid, shard)),
+            ghobject_t(oid, ghobject_t::NO_GEN, shard));
         } else {
-          st.second.touch(
-            coll_t(spg_t(pgid, st.first)),
-            ghobject_t(oid, ghobject_t::NO_GEN, st.first));
+          t.touch(
+            coll_t(spg_t(pgid, shard)),
+            ghobject_t(oid, ghobject_t::NO_GEN, shard));
         }
       }
     },
     [&](const PGTransaction::ObjectOperation::Init::Clone &cop) {
-      for (auto &&st: transactions) {
-        st.second.clone(
-          coll_t(spg_t(pgid, st.first)),
-          ghobject_t(cop.source, ghobject_t::NO_GEN, st.first),
-          ghobject_t(oid, ghobject_t::NO_GEN, st.first));
+      all_shards_written();
+      for (auto &&[shard, t]: transactions) {
+        t.clone(
+          coll_t(spg_t(pgid, shard)),
+          ghobject_t(cop.source, ghobject_t::NO_GEN, shard),
+          ghobject_t(oid, ghobject_t::NO_GEN, shard));
       }
 
       if (plan.hinfo && plan.shinfo)
@@ -372,12 +393,13 @@ void ECTransaction::Generate::process_init() {
     },
     [&](const PGTransaction::ObjectOperation::Init::Rename &rop) {
       ceph_assert(rop.source.is_temp());
-      for (auto &&st: transactions) {
-        st.second.collection_move_rename(
-          coll_t(spg_t(pgid, st.first)),
-          ghobject_t(rop.source, ghobject_t::NO_GEN, st.first),
-          coll_t(spg_t(pgid, st.first)),
-          ghobject_t(oid, ghobject_t::NO_GEN, st.first));
+      all_shards_written();
+      for (auto &&[shard, t]: transactions) {
+        t.collection_move_rename(
+          coll_t(spg_t(pgid, shard)),
+          ghobject_t(rop.source, ghobject_t::NO_GEN, shard),
+          coll_t(spg_t(pgid, shard)),
+          ghobject_t(oid, ghobject_t::NO_GEN, shard));
       }
       if (plan.hinfo && plan.shinfo)
         plan.hinfo->update_to(*plan.shinfo);
@@ -405,10 +427,10 @@ void alloc_hint(PGTransaction::ObjectOperation& op,
   uint64_t write_size = sinfo.ro_offset_to_next_chunk_offset(
     op.alloc_hint->expected_write_size);
 
-  for (auto &&st: transactions) {
-    st.second.set_alloc_hint(
-      coll_t(spg_t(pgid, st.first)),
-      ghobject_t(oid, ghobject_t::NO_GEN, st.first),
+  for (auto &&[shard, t]: transactions) {
+    t.set_alloc_hint(
+      coll_t(spg_t(pgid, shard)),
+      ghobject_t(oid, ghobject_t::NO_GEN, shard),
       object_size,
       write_size,
       op.alloc_hint->flags);
@@ -519,16 +541,13 @@ ECTransaction::Generate::Generate(PGTransaction &t,
    * missing. However, written_shards must contain all parity shards.
    * Note that the write plan will *not* drop data shards.
    */
-  if (entry && !entry->written_shards.empty()) {
-    entry->written_shards.insert(sinfo.get_parity_shards());
-  }
+  shards_written(sinfo.get_parity_shards());
 
   if (!to_write.empty()) {
     encode_and_write();
   }
 
   written_map->emplace(oid, std::move(to_write));
-  written_and_present_shards();
 
   if (entry && plan.hinfo) {
     plan.hinfo->set_total_chunk_size_clear_hash(
@@ -550,12 +569,15 @@ ECTransaction::Generate::Generate(PGTransaction &t,
   if (!op.is_delete()) {
     handle_deletes();
   }
+
+  written_and_present_shards();
 }
 
 void ECTransaction::Generate::truncate() {
   ceph_assert(!op.is_fresh_object());
-  to_write.erase_after_ro_offset(plan.orig_size);
   // causes encode to invent zeros
+  to_write.erase_after_ro_offset(plan.orig_size);
+  all_shards_written();
 
   debug(oid, "truncate_erase", to_write, dpp);
 
@@ -667,9 +689,7 @@ void ECTransaction::Generate::appends_and_clone_ranges() {
       }
       // Update written_shards because this must complete to consider
       // the write as complete
-      if (entry) {
-        entry->written_shards.insert(shard);
-      }
+      shard_written(shard);
     }
   }
 
@@ -680,9 +700,7 @@ void ECTransaction::Generate::appends_and_clone_ranges() {
     uint64_t clone_end = 0;
 
     for (auto &&[shard, eset]: plan.will_write) {
-      if (entry) {
-        entry->written_shards.insert(shard);
-      }
+      shard_written(shard);
 
       // If no clonable range here, then ignore.
       if (!cloneable_range.contains(shard)) continue;
@@ -776,10 +794,10 @@ void ECTransaction::Generate::written_and_present_shards() {
           if (sinfo.is_nonprimary_shard(shard)) {
             if (entry->is_written_shard(shard) || plan.orig_size != plan.
               projected_size) {
-              // Written - erase per shard version
-              if (oi.shard_versions.erase(shard)) {
-                update = true;
-              }
+                // Written - erase per shard version
+                if (oi.shard_versions.erase(shard)) {
+                  update = true;
+                }
               } else if (!oi.shard_versions.count(shard)) {
                 // Unwritten shard, previously up to date
                 oi.shard_versions[shard] = oi.prior_version;
@@ -804,6 +822,17 @@ void ECTransaction::Generate::written_and_present_shards() {
                         << " written=" << entry->written_shards
                         << " shard_versions=" << oi.shard_versions << dendl;
     }
+
+    /* It is essential for rollback that every shard with a non-empty transaction
+     * is recorded in written_shards. In fact written shards contains every
+     * shard that would have a transaction if it were present. This is why we do
+     * not simply construct written shards here.
+     */
+    for (auto &&[shard, t] : transactions) {
+      if (entry && (!t.empty() || !sinfo.is_nonprimary_shard(shard))) {
+        ceph_assert(entry->is_written_shard(shard));
+      }
+    }
   }
 }
 
@@ -813,10 +842,11 @@ void ECTransaction::Generate::attr_updates() {
     if (update) {
       to_set[attr] = *(update);
     } else {
-      for (auto &&st: transactions) {
-        st.second.rmattr(
-          coll_t(spg_t(pgid, st.first)),
-          ghobject_t(oid, ghobject_t::NO_GEN, st.first),
+      all_shards_written();
+      for (auto &&[shard, t]: transactions) {
+        t.rmattr(
+          coll_t(spg_t(pgid, shard)),
+          ghobject_t(oid, ghobject_t::NO_GEN, shard),
           attr);
       }
     }
@@ -846,22 +876,19 @@ void ECTransaction::Generate::attr_updates() {
       ceph_assert(!entry);
     }
   }
-  if (plan.orig_size != plan.projected_size) {
-    // We clear the written shards at this point to represent "all shards"
-    entry->written_shards.clear();
-  }
-  for (auto &&st: transactions) {
-    if (!sinfo.is_nonprimary_shard(st.first)) {
+  all_shards_written();
+  for (auto &&[shard, t]: transactions) {
+    if (!sinfo.is_nonprimary_shard(shard)) {
       // Primary shard - Update all attributes
-      st.second.setattrs(
-        coll_t(spg_t(pgid, st.first)),
-        ghobject_t(oid, ghobject_t::NO_GEN, st.first),
+      t.setattrs(
+        coll_t(spg_t(pgid, shard)),
+        ghobject_t(oid, ghobject_t::NO_GEN, shard),
         to_set);
-    } else if (entry->is_written_shard(st.first)) {
+    } else if (entry->is_written_shard(shard)) {
       // Written shard - Only update object_info attribute
-      st.second.setattr(
-        coll_t(spg_t(pgid, st.first)),
-        ghobject_t(oid, ghobject_t::NO_GEN, st.first),
+      t.setattr(
+        coll_t(spg_t(pgid, shard)),
+        ghobject_t(oid, ghobject_t::NO_GEN, shard),
         OI_ATTR,
         to_set[OI_ATTR]);
     } // Else: Unwritten shard - Don't update any attributes
@@ -873,11 +900,12 @@ void ECTransaction::Generate::handle_deletes() {
   bufferlist hbuf;
   if (plan.hinfo) {
     encode(*plan.hinfo, hbuf);
-    for (auto &&i: transactions) {
-      if (!sinfo.is_nonprimary_shard(i.first)) {
-        i.second.setattr(
-          coll_t(spg_t(pgid, i.first)),
-          ghobject_t(oid, ghobject_t::NO_GEN, i.first),
+    for (auto &&[shard, t]: transactions) {
+      if (!sinfo.is_nonprimary_shard(shard)) {
+        shard_written(shard);
+        t.setattr(
+          coll_t(spg_t(pgid, shard)),
+          ghobject_t(oid, ghobject_t::NO_GEN, shard),
           ECUtil::get_hinfo_key(),
           hbuf);
       }
