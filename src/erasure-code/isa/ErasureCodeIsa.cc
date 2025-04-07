@@ -168,6 +168,8 @@ int ErasureCodeIsa::decode_chunks(const shard_id_set &want_to_read,
   memset(data, 0, sizeof(char*) * k);
   memset(coding, 0, sizeof(char*) * m);
 
+  erasures_set.insert_range(shard_id_t(k), m);
+
   for (auto &&[shard, ptr] : in) {
     if (size == 0) size = ptr.length();
     else ceph_assert(size == ptr.length());
@@ -189,6 +191,7 @@ int ErasureCodeIsa::decode_chunks(const shard_id_set &want_to_read,
     else {
       coding[static_cast<int>(shard) - k] = const_cast<char*>(ptr.c_str());
     }
+    erasures_set.insert(shard);
   }
 
   for (int i = 0; i < k + m; i++) {
@@ -196,6 +199,13 @@ int ErasureCodeIsa::decode_chunks(const shard_id_set &want_to_read,
     if (*buf == nullptr) {
       *buf = (char *)malloc(size);
       to_free.insert(shard_id_t(i));
+      /* If buffer was not provided, is not an erasure (i.e. in the out map),
+       * and a data shard, then it can be assumed to be zero. This is most
+       * likely due to EC shards being different sizes.
+       */
+      if (i < k && !erasures_set.contains(shard_id_t(i))) {
+        memset(*buf, 0, size);
+      }
     }
   }
 
