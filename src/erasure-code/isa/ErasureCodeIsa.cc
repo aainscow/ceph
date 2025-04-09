@@ -168,8 +168,6 @@ int ErasureCodeIsa::decode_chunks(const shard_id_set &want_to_read,
   memset(data, 0, sizeof(char*) * k);
   memset(coding, 0, sizeof(char*) * m);
 
-  erasures_set.insert_range(shard_id_t(k), m);
-
   for (auto &&[shard, ptr] : in) {
     if (size == 0) size = ptr.length();
     else ceph_assert(size == ptr.length());
