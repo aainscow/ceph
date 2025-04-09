@@ -338,8 +338,9 @@ list<ECExtentCache::LRU::Key>::iterator ECExtentCache::LRU::erase(
     update_mempool(-1, 0 - size_change);
   }
   size -= size_change;
+  auto new_it = lru.erase(it);
   map.erase(*it);
-  return lru.erase(it);
+  return new_it;
 }
 
 void ECExtentCache::LRU::add(const Line &line) {
