@@ -326,10 +326,6 @@ int ECExtentCache::get_and_reset_counter() {
   return ret;
 }
 
-void ECExtentCache::LRU::erase(const Key &k) {
-  erase(map.at(k).first, true);
-}
-
 list<ECExtentCache::LRU::Key>::iterator ECExtentCache::LRU::erase(
     const list<Key>::iterator &it,
     bool do_update_mempool) {
@@ -338,9 +334,8 @@ list<ECExtentCache::LRU::Key>::iterator ECExtentCache::LRU::erase(
     update_mempool(-1, 0 - size_change);
   }
   size -= size_change;
-  auto new_it = lru.erase(it);
   map.erase(*it);
-  return new_it;
+  return lru.erase(it);
 }
 
 void ECExtentCache::LRU::add(const Line &line) {
@@ -371,7 +366,8 @@ shared_ptr<shard_extent_map_t> ECExtentCache::LRU::find(
   if (map.contains(k)) {
     auto &&[lru_iter, c] = map.at(k);
     cache = c;
-    erase(lru_iter, false);
+    auto it = lru_iter; // Intentional copy.
+    erase(it, false);
   }
   mutex.unlock();
   return cache;
@@ -380,15 +376,20 @@ shared_ptr<shard_extent_map_t> ECExtentCache::LRU::find(
 void ECExtentCache::LRU::remove_object(const hobject_t &oid) {
   mutex.lock();
   for (auto it = lru.begin(); it != lru.end();) {
-    if (it->oid == oid) it = erase(it, true);
-    else ++it;
+    if (it->oid == oid) {
+      it = erase(it, true);
+    }
+    else {
+      ++it;
+    }
   }
   mutex.unlock();
 }
 
 void ECExtentCache::LRU::free_maybe() {
   while (max_size < size) {
-    erase(lru.front());
+    auto it = lru.begin();
+    erase(it, true);
   }
 }
 
