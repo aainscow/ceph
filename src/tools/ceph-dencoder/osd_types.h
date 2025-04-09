@@ -93,11 +93,11 @@ TYPE(HitSet::Params)
 TYPE(SnapMapper::Mapping)
 TYPE(SnapMapper::object_snaps)
 
-#include "os/Transaction.h"
-TYPE(ceph::os::Transaction)
+//BILL FIXME: #include "os/Transaction.h"
+//BILL FIXME: TYPE(ceph::os::Transaction)
 
-#include "os/ObjectStore.h"
-TYPE(ObjectStore::Transaction)
+//BILL FIXME: #include "os/ObjectStore.h"
+//BILL FIXME: TYPE(ObjectStore::Transaction)
 
 #include "os/SequencerPosition.h"
 TYPE(SequencerPosition)

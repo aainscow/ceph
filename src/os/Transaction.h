@@ -1332,6 +1332,7 @@ public:
     if (is_format_aligned()) {
       //cannot encode a new format transaction in the old format
       ceph_assert(ver >= 10);
+      ceph_assert(p_bl != d_bl);
     }
     ENCODE_START(ver, ver, p_bl);
     if (ver < 10) {
@@ -1387,8 +1388,8 @@ public:
   void dump(ceph::Formatter *f);
   static void generate_test_instances(std::list<Transaction*>& o);
 };
-WRITE_CLASS_ENCODER(ceph::os::Transaction)
-WRITE_CLASS_ENCODER(ceph::os::Transaction::TransactionData)
+//BILL FIXME:WRITE_CLASS_ENCODER(ceph::os::Transaction)
+//BILL FIXME:WRITE_CLASS_ENCODER(ceph::os::Transaction::TransactionData)
 
 std::ostream& operator<<(std::ostream& out, const Transaction& tx);
 

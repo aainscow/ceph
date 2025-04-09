@@ -1088,10 +1088,12 @@ Message * ReplicatedBackend::generate_subop(
   // ship resulting transaction, log entries, and pg_stats
   if (!parent->should_send_op(peer, soid)) {
     ObjectStore::Transaction t;
-    encode(t, wr->get_data());
+    op_t.encode(wr->get_data());//BILL:FIXME
+    dout(10) << __func__ << " BILLe p=NONE d=" << wr->get_data().length() << dendl;
   } else {
     bufferlist p, d;
     op_t.encode(p, d, get_parent()->min_peer_features());
+    dout(10) << __func__ << " BILLe p=" << p.length() << " d=" << d.length() << dendl;
     if (d.length() != 0) {
       wr->set_txn_payload(p);
       wr->set_data(d);
@@ -1214,6 +1216,7 @@ void ReplicatedBackend::do_repop(OpRequestRef op)
 
   auto p = const_cast<bufferlist&>(m->get_middle()).cbegin();
   auto d = const_cast<bufferlist&>(m->get_data()).cbegin();
+  dout(10) << __func__ << " BILLd p=" << m->get_middle().length() << " d=" << m->get_data().length() << dendl;
   rm->opt.decode(m->get_middle().length() != 0 ?  p : d, d);
 
   if (m->new_temp_oid != hobject_t()) {
