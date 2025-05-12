@@ -138,8 +138,7 @@ class slice_iterator {
             erase = true;
           } else {
             if (out_set.contains(shard)) {
-              bufferlist bl = emap_iter.get_val();
-              bl.invalidate_crc();
+              emap_iter.get_val().invalidate_crc();
             }
             iters.at(shard).second = emap_iter.get_val().begin();
           }
