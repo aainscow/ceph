@@ -291,6 +291,10 @@ shard_extent_map_t shard_extent_map_t::intersect(
   return out;
 }
 
+void shard_extent_map_t::insert(shard_id_t const shard, extent_map &&map) {
+  extent_maps[shard] = map;
+}
+
 void shard_extent_map_t::insert(shard_extent_map_t const &other) {
   for (auto &&[shard, emap] : other.extent_maps) {
     if (!extent_maps.contains(shard)) {
@@ -768,6 +772,47 @@ void shard_extent_map_t::pad_and_rebuild_to_ec_align() {
   if (resized) {
     compute_ro_range();
   }
+}
+
+void shard_extent_map_t::subtract(shard_id_set other) {
+  for (auto &&[shard, eset] : other) {
+    if (!extent_maps.contains((shard))) {
+        continue;
+    }
+    for (auto &&[off, len] : eset) {
+      extent_maps.at(shard).erase(off, len);
+    }
+    if (extent_maps.at(shard).empty()) {
+      extent_maps.erase(shard);
+    }
+  }
+
+  compute_ro_range();
+}
+
+void shard_extent_map_t::remove_zeros(shard_id_t shard) {
+  shard_id_set ss;
+  ss.insert_range(shard_id_t(0), sinfo->get_k_plus_m());
+  shard_extent_map_t map(sinfo);
+  shard_extent_set_t zero_set(sinfo->get_k_plus_m());
+  for (auto iter = begin_slice_iterator(ss); !iter.is_end(); ++iter) {
+    shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();
+    uint64_t offset = iter.get_offset();
+    uint64_t length = iter.get_length();
+
+    for (auto &&[shard, bp] : out) {
+      char *c_str = out.at(shard).c_str();
+      uint64_t cursor = 0;
+      while (cursor < length) {
+        if (0 == memcmp(0, c_str, EC_ALIGN_SIZE)) {
+          zero_set[shard].insert(offset + cursor, EC_ALIGN_SIZE);
+        }
+        cursor += EC_ALIGN_SIZE;
+      }
+    }
+  }
+
+  subtract(zero_set);
 }
 
 shard_extent_map_t shard_extent_map_t::slice_map(
