@@ -774,46 +774,40 @@ void shard_extent_map_t::pad_and_rebuild_to_ec_align() {
   }
 }
 
-void shard_extent_map_t::subtract(shard_id_set other) {
-  for (auto &&[shard, eset] : other) {
-    if (!extent_maps.contains((shard))) {
-        continue;
-    }
-    for (auto &&[off, len] : eset) {
-      extent_maps.at(shard).erase(off, len);
-    }
-    if (extent_maps.at(shard).empty()) {
-      extent_maps.erase(shard);
-    }
-  }
+// statics should be initialised tot zero!
+static char zero_page[EC_ALIGN_SIZE];
 
-  compute_ro_range();
-}
-
-void shard_extent_map_t::remove_zeros(shard_id_t shard) {
-  shard_id_set ss;
-  ss.insert_range(shard_id_t(0), sinfo->get_k_plus_m());
-  shard_extent_map_t map(sinfo);
+shard_extent_set_t shard_extent_map_t::get_zeros_extent_set() const {
   shard_extent_set_t zero_set(sinfo->get_k_plus_m());
-  for (auto iter = begin_slice_iterator(ss); !iter.is_end(); ++iter) {
-    shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();
-    uint64_t offset = iter.get_offset();
-    uint64_t length = iter.get_length();
+  for (auto &&[shard, emap] : extent_maps) {
+    for (auto i = emap.begin(); i != emap.end(); ++i) {
+      uint64_t emap_offset = i.get_off();
+      uint64_t emap_length = i.get_len();
 
-    for (auto &&[shard, bp] : out) {
-      char *c_str = out.at(shard).c_str();
-      uint64_t cursor = 0;
-      while (cursor < length) {
-        if (0 == memcmp(0, c_str, EC_ALIGN_SIZE)) {
-          zero_set[shard].insert(offset + cursor, EC_ALIGN_SIZE);
+      ceph_assert(emap_offset % EC_ALIGN_SIZE == 0);
+      ceph_assert(emap_length % EC_ALIGN_SIZE == 0);
+
+      bufferlist bl = i.get_val();
+      uint64_t bl_offset = 0;
+      auto j = bl.begin();
+      while (j != bl.end()) {
+        bufferptr bp = j.get_current_ptr();
+        uint64_t bp_length = bp.length();
+        ceph_assert(bp_length % EC_ALIGN_SIZE == 0);
+        char *c_str = bp.c_str();
+        for (uint64_t bp_offset = 0; bp_offset < bp_length; bp_offset += EC_ALIGN_SIZE) {
+          if (0 == memcmp(zero_page, c_str + bp_offset, EC_ALIGN_SIZE)) {
+            zero_set[shard].insert(emap_offset + bl_offset + bp_offset, EC_ALIGN_SIZE);
+          }
         }
-        cursor += EC_ALIGN_SIZE;
+        bl_offset += bp_length;
+        j += bp_length;
       }
     }
   }
-
-  subtract(zero_set);
+  return zero_set;
 }
+
 
 shard_extent_map_t shard_extent_map_t::slice_map(
     uint64_t offset, uint64_t length) const {

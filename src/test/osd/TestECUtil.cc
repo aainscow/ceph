@@ -1081,3 +1081,63 @@ TEST(ECUtil, insert_parity_buffer_into_sem) {
     ASSERT_EQ(8192, sem.ro_end);
   }
 }
+
+TEST(ECUtil, get_zeros_extent_set) {
+  int k=2;
+  int m=2;
+  int chunk_size = EC_ALIGN_SIZE;
+  stripe_info_t sinfo(k, m, k*chunk_size);
+  shard_id_t s0(0);
+  shard_id_t s1(1);
+  shard_id_t s2(2);
+  shard_id_t s3(3);
+
+  buffer::list bl4k_zero;
+  buffer::list bl8k_zero;
+
+  buffer::list bl4k_one;
+  buffer::list bl4k_one_end;
+  buffer::list bl8k_one_at_4k;
+
+  bl4k_zero.append_zero(EC_ALIGN_SIZE);
+  bl8k_zero.append_zero(EC_ALIGN_SIZE * 2);
+
+  bl4k_one.append_zero(EC_ALIGN_SIZE);
+  bl4k_one_end.append_zero(EC_ALIGN_SIZE);
+  bl8k_one_at_4k.append_zero(EC_ALIGN_SIZE * 2);
+
+  bl4k_one.c_str()[0] = 1;
+  bl4k_one_end.c_str()[EC_ALIGN_SIZE - 1] = 1;
+  bl8k_one_at_4k.c_str()[EC_ALIGN_SIZE] = 1;
+
+  {
+    shard_extent_map_t sem(&sinfo);
+    shard_extent_set_t ref(sinfo.get_k_plus_m());
+    // Test zero at start
+    sem.insert_in_shard(s0, 0, bl4k_zero);
+    ref[s0].insert(0, EC_ALIGN_SIZE);
+
+    // Followed by a non-zero buffer, then a zero one.
+    sem.insert_in_shard(s0, EC_ALIGN_SIZE, bl4k_one);
+    sem.insert_in_shard(s0, EC_ALIGN_SIZE * 2, bl4k_zero);
+    ref[s0].insert(EC_ALIGN_SIZE * 2, EC_ALIGN_SIZE);
+
+    // THen after a gap..
+    sem.insert_in_shard(s0, EC_ALIGN_SIZE*10, bl4k_zero);
+    ref[s0].insert(EC_ALIGN_SIZE * 10, EC_ALIGN_SIZE);
+
+    // Shard 1 has an 8k buffer and nothing else.
+    sem.insert_in_shard(s1, 0, bl8k_zero);
+    ref[s1].insert(0, EC_ALIGN_SIZE * 2);
+
+    // Shard 2 has an 8k buffer but with a 1 part way through.
+    sem.insert_in_shard(s2, 0, bl8k_one_at_4k);
+    ref[s2].insert(0, EC_ALIGN_SIZE);
+
+    // Shard 3 as a 4k with a one at the end.
+    sem.insert_in_shard(s3, 0, bl4k_one_end);
+
+    ASSERT_EQ(ref, sem.get_zeros_extent_set());
+  }
+
+}

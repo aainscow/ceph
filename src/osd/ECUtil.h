@@ -983,6 +983,8 @@ public:
   void pad_and_rebuild_to_ec_align();
   uint64_t size();
   void clear();
+  shard_extent_set_t get_zeros_extent_set() const;
+  bool get_zeros_extent_set(shard_extent_set_t &zero_set) const;
   uint64_t get_start_offset() const { return start_offset; }
   uint64_t get_end_offset() const { return end_offset; }
   void deep_copy(shard_extent_map_t const &other);
