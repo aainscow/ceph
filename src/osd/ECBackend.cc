@@ -361,6 +361,10 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
 
   uint64_t aligned_size = ECUtil::align_next(op.obc->obs.oi.size);
 
+  dout(20) << __func__ << " before decode: oid=" << op.hoid << " EC_DEBUG_BUFFERS: "
+         << op.returned_data->debug_string(2048, 0)
+         << dendl;
+
   int r = op.returned_data->decode(ec_impl, shard_want_to_read, aligned_size);
   ceph_assert(r == 0);
 
@@ -376,7 +380,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
   }
 
   dout(20) << __func__ << ": oid=" << op.hoid << dendl;
-  dout(20) << __func__ << "EC_DEBUG_BUFFERS: "
+  dout(20) << __func__ << " after decode: oid=" << op.hoid << " EC_DEBUG_BUFFERS: "
            << op.returned_data->debug_string(2048, 0)
            << dendl;
 
