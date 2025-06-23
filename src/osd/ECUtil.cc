@@ -659,14 +659,16 @@ int shard_extent_map_t::decode(const ErasureCodeInterfaceRef &ec_impl,
     return 0;
   }
 
-  if (add_zero_padding_for_decode(object_size, need_set)) {
+  shard_id_set decode_set = shard_id_set::intersection(need_set, sinfo->get_data_shards());
+  shard_id_set encode_set = shard_id_set::intersection(need_set, sinfo->get_parity_shards());
+
+  if (add_zero_padding_for_decode(object_size)) {
     // We added some zero buffers, which means our have and need set may change
     extent_maps.populate_bitset_set(have_set);
     need_set = shard_id_set::difference(want_set, have_set);
+    decode_set = shard_id_set::intersection(need_set, sinfo->get_data_shards());
+    encode_set = shard_id_set::intersection(need_set, sinfo->get_parity_shards());
   }
-
-  shard_id_set decode_set = shard_id_set::intersection(need_set, sinfo->get_data_shards());
-  shard_id_set encode_set = shard_id_set::intersection(need_set, sinfo->get_parity_shards());
 
   if (!encode_set.empty()) {
     shard_extent_set_t read_mask(sinfo->get_k_plus_m());
@@ -684,6 +686,7 @@ int shard_extent_map_t::decode(const ErasureCodeInterfaceRef &ec_impl,
        * decode to happen.
        */
       decode_set.insert(decode_for_parity_shards);
+      need_set.insert(decode_for_parity_shards);
       extent_set decode_for_parity = get_extent_superset();
 
       for (auto shard : decode_for_parity_shards) {

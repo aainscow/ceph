@@ -958,16 +958,31 @@ public:
     }
   }
 
-  bool add_zero_padding_for_decode(uint64_t object_size, shard_id_set &exclude_set) {
+  bool add_zero_padding_for_decode(uint64_t object_size) {
     shard_extent_set_t zeros(sinfo->get_k_plus_m());
     sinfo->ro_size_to_zero_mask(object_size, zeros);
     extent_set superset = get_extent_superset();
     bool changed = false;
     for (auto &&[shard, z] : zeros) {
-      if (exclude_set.contains(shard)) {
+      z.intersection_of(superset);
+
+      /* This function is only called if we know we need to do a decode. This
+       * means that we are attempting to decode superset everywhere. This
+       * function is interested in cases where some of this superset contains
+       * zeros.
+       */
+      if (z.empty()) {
         continue;
       }
-      z.intersection_of(superset);
+      /* There are zeros on this shard - we need in two scenarios:
+       * 1. We already have some data on these shards, we must pad it with
+       *    zeros required for hte plugin.
+       * 2. The entire decode can be satisfied by inventing zeros. This happens
+       *    during recovery.
+       */
+      if (!extent_maps.contains(shard) && !z.contains(superset)) {
+        continue;
+      }
       for (auto [off, len] : z) {
         changed = true;
         bufferlist bl;
