@@ -1339,4 +1339,48 @@ TEST(ECCommon, decode2)
   ceph_assert(0 == semap.decode(ec_impl, want, 2104*1024));
 }
 
+TEST(ECCommon, decode3) {
+  const unsigned int k = 4;
+  const unsigned int m = 1;
+  const uint64_t chunk_size = EC_ALIGN_SIZE;
+  const uint64_t swidth = k*chunk_size;
+  const uint64_t object_size = 4 * swidth + 2 * chunk_size + 1;
 
+  ECUtil::stripe_info_t s(k, m, swidth, vector<shard_id_t>(0));
+  ECListenerStub listenerStub;
+  ASSERT_EQ(s.get_stripe_width(), swidth);
+  ASSERT_EQ(s.get_chunk_size(), swidth / k);
+
+  const std::vector<int> chunk_mapping = {}; // no remapping
+  ErasureCodeDummyImpl *ecode = new ErasureCodeDummyImpl();
+  ecode->data_chunk_count = k;
+  ecode->chunk_count = k + m;
+  ErasureCodeInterfaceRef ec_impl(ecode);
+  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
+
+
+  /* For this problematic IO, we want to reads:
+   * first is readable - shard 0, 0~4k
+   * second is on missing shard - shard 2, 16k~4k
+   *
+   * Recovery would work out it needs to recover shard 2, so would need
+   * shards 0,1,3,4 - howecer it works out that shard 3 does not need a read
+   *                  because the object is off the end!
+   *
+   * So the reads we end up doing are to 0,1 and 4 only.
+   */
+
+  ECUtil::shard_extent_set_t want(k + m);
+  want[shard_id_t(0)].insert(0, chunk_size);
+  want[shard_id_t(2)].insert(4 *chunk_size, chunk_size);
+
+  ECUtil::shard_extent_map_t semap(&s);
+  bufferlist bl4k;
+  bl4k.append_zero(528*1024);
+  semap.insert_in_shard(shard_id_t(0), 0, bl4k);
+  semap.insert_in_shard(shard_id_t(0), 4 * chunk_size, bl4k);
+  semap.insert_in_shard(shard_id_t(1), 4 * chunk_size, bl4k);
+  semap.insert_in_shard(shard_id_t(4), 4 * chunk_size, bl4k);
+
+  ASSERT_EQ(0, semap.decode(ec_impl, want, object_size));
+}

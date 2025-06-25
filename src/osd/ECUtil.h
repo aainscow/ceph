@@ -913,7 +913,8 @@ public:
              uint64_t object_size);
   int _decode(const ErasureCodeInterfaceRef &ec_impl,
               const shard_id_set &want_set,
-              const shard_id_set &need_set);
+              const shard_id_set &need_set,
+              const shard_extent_set_t &zeros);
   void get_buffer(shard_id_t shard, uint64_t offset, uint64_t length,
                   buffer::list &append_to) const;
   void get_shard_first_buffer(shard_id_t shard, buffer::list &append_to) const;
@@ -958,12 +959,13 @@ public:
     }
   }
 
-  bool add_zero_padding_for_decode(uint64_t object_size) {
+  shard_extent_set_t add_zero_padding_for_decode(uint64_t object_size) {
     shard_extent_set_t zeros(sinfo->get_k_plus_m());
     sinfo->ro_size_to_zero_mask(object_size, zeros);
     extent_set superset = get_extent_superset();
     bool changed = false;
-    for (auto &&[shard, z] : zeros) {
+    for (auto iter = zeros.begin(); iter != zeros.end(); ) {
+      auto &&[shard, z] = *iter;
       z.intersection_of(superset);
 
       /* This function is only called if we know we need to do a decode. This
@@ -972,15 +974,7 @@ public:
        * zeros.
        */
       if (z.empty()) {
-        continue;
-      }
-      /* There are zeros on this shard - we need in two scenarios:
-       * 1. We already have some data on these shards, we must pad it with
-       *    zeros required for hte plugin.
-       * 2. The entire decode can be satisfied by inventing zeros. This happens
-       *    during recovery.
-       */
-      if (!extent_maps.contains(shard) && !z.contains(superset)) {
+        iter = zeros.erase(iter);
         continue;
       }
       for (auto [off, len] : z) {
@@ -989,13 +983,14 @@ public:
         bl.append_zero(len);
         extent_maps[shard].insert(off, len, bl);
       }
+      ++iter;
     }
 
     if (changed) {
       compute_ro_range();
     }
 
-    return changed;
+    return zeros;
   }
 
   // FAIL REVIEW

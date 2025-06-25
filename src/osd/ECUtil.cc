@@ -662,13 +662,7 @@ int shard_extent_map_t::decode(const ErasureCodeInterfaceRef &ec_impl,
   shard_id_set decode_set = shard_id_set::intersection(need_set, sinfo->get_data_shards());
   shard_id_set encode_set = shard_id_set::intersection(need_set, sinfo->get_parity_shards());
 
-  if (add_zero_padding_for_decode(object_size)) {
-    // We added some zero buffers, which means our have and need set may change
-    extent_maps.populate_bitset_set(have_set);
-    need_set = shard_id_set::difference(want_set, have_set);
-    decode_set = shard_id_set::intersection(need_set, sinfo->get_data_shards());
-    encode_set = shard_id_set::intersection(need_set, sinfo->get_parity_shards());
-  }
+  const shard_extent_set_t zeros = add_zero_padding_for_decode(object_size);
 
   if (!encode_set.empty()) {
     shard_extent_set_t read_mask(sinfo->get_k_plus_m());
@@ -700,7 +694,7 @@ int shard_extent_map_t::decode(const ErasureCodeInterfaceRef &ec_impl,
   int r = 0;
   if (!decode_set.empty()) {
     pad_on_shards(want, decode_set);
-    r = _decode(ec_impl, want_set, decode_set);
+    r = _decode(ec_impl, want_set, decode_set, zeros);
   }
   if (!r && !encode_set.empty()) {
     pad_on_shards(get_extent_superset(), sinfo->get_parity_shards());
@@ -726,15 +720,37 @@ int shard_extent_map_t::decode(const ErasureCodeInterfaceRef &ec_impl,
 
 int shard_extent_map_t::_decode(const ErasureCodeInterfaceRef &ec_impl,
                                 const shard_id_set &want_set,
-                                const shard_id_set &need_set) {
+                                const shard_id_set &need_set,
+                                const shard_extent_set_t &zeros) {
   bool rebuild_req = false;
+  extent_set zeros_superset = zeros.get_extent_common_set();
+
   for (auto iter = begin_slice_iterator(need_set); !iter.is_end(); ++iter) {
     if (!iter.is_page_aligned()) {
       rebuild_req = true;
       break;
     }
+
+
     shard_id_map<bufferptr> &in = iter.get_in_bufferptrs();
     shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();
+
+    /* Zeros should always be there own buffers due to the way they are inserted.
+     * They count as *inputs* rather than outputs - so we need to shuffle
+     * around in and out.
+     */
+    if (zeros_superset.intersects(iter.get_offset(), iter.get_length())) {
+      for (auto &&[shard, eset] : zeros) {
+        ceph_assert(iter.get_offset() == eset.range_start());
+        ceph_assert(iter.get_offset() + iter.get_length() == eset.range_end());
+        in.emplace(shard, std::move(out[shard]));
+        out.erase(shard);
+      }
+    }
+
+    if (out.empty()) {
+      continue;
+    }
 
     if (int ret = ec_impl->decode_chunks(want_set, in, out)) {
       return ret;
@@ -743,7 +759,7 @@ int shard_extent_map_t::_decode(const ErasureCodeInterfaceRef &ec_impl,
 
   if (rebuild_req) {
     pad_and_rebuild_to_ec_align();
-    return _decode(ec_impl, want_set, need_set);
+    return _decode(ec_impl, want_set, need_set, zeros);
   }
 
   compute_ro_range();
