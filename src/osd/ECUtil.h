@@ -981,6 +981,7 @@ public:
         changed = true;
         bufferlist bl;
         bl.append_zero(len);
+        bl.rebuild_aligned(EC_ALIGN_SIZE);
         extent_maps[shard].insert(off, len, bl);
       }
       ++iter;

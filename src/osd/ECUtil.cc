@@ -575,11 +575,7 @@ void shard_extent_map_t::pad_on_shards(const shard_extent_set_t &pad_to,
     if (!pad_to.contains(shard)) {
       continue;
     }
-    for (auto &[off, length] : pad_to.at(shard)) {
-      bufferlist bl;
-      bl.push_back(buffer::create_aligned(length, EC_ALIGN_SIZE));
-      insert_in_shard(shard, off, bl);
-    }
+    pad_on_shard(pad_to.at(shard), shard);
   }
 }
 
@@ -730,7 +726,6 @@ int shard_extent_map_t::_decode(const ErasureCodeInterfaceRef &ec_impl,
       rebuild_req = true;
       break;
     }
-
 
     shard_id_map<bufferptr> &in = iter.get_in_bufferptrs();
     shard_id_map<bufferptr> &out = iter.get_out_bufferptrs();

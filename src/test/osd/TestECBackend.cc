@@ -1339,6 +1339,14 @@ TEST(ECCommon, decode2)
   ceph_assert(0 == semap.decode(ec_impl, want, 2104*1024));
 }
 
+bufferlist create_buf(uint64_t len) {
+  bufferlist bl;
+  bl.append_zero(len);
+  bl.rebuild_aligned(EC_ALIGN_SIZE);
+  ceph_assert(bl.is_aligned(EC_ALIGN_SIZE));
+  return bl;
+}
+
 TEST(ECCommon, decode3) {
   const unsigned int k = 4;
   const unsigned int m = 1;
@@ -1376,11 +1384,53 @@ TEST(ECCommon, decode3) {
 
   ECUtil::shard_extent_map_t semap(&s);
   bufferlist bl4k;
-  bl4k.append_zero(528*1024);
+  bl4k.append_zero(4*1024);
   semap.insert_in_shard(shard_id_t(0), 0, bl4k);
   semap.insert_in_shard(shard_id_t(0), 4 * chunk_size, bl4k);
   semap.insert_in_shard(shard_id_t(1), 4 * chunk_size, bl4k);
   semap.insert_in_shard(shard_id_t(4), 4 * chunk_size, bl4k);
+
+  ASSERT_EQ(0, semap.decode(ec_impl, want, object_size));
+}
+
+TEST(ECCommon, decode4) {
+  const unsigned int k = 5;
+  const unsigned int m = 2;
+  const uint64_t chunk_size = 4096;
+  const uint64_t swidth = k*chunk_size;
+  const uint64_t object_size = 3243718;
+
+  ECUtil::stripe_info_t s(k, m, swidth, vector<shard_id_t>(0));
+  ECListenerStub listenerStub;
+  ASSERT_EQ(s.get_stripe_width(), swidth);
+  ASSERT_EQ(s.get_chunk_size(), swidth / k);
+
+  const std::vector<int> chunk_mapping = {}; // no remapping
+  ErasureCodeDummyImpl *ecode = new ErasureCodeDummyImpl();
+  ecode->data_chunk_count = k;
+  ecode->chunk_count = k + m;
+  ErasureCodeInterfaceRef ec_impl(ecode);
+  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
+
+
+  /* Recreating:
+  * shard_want_to_read={0:[544768~106496],1:[544151~106799],2:[540672~106496],3:[540672~106496],4:[540672~106496]}
+  * maps={0:{540672~110592(110592)},2:{540672~106496(106496)},3:{540672~106496(106496)},4:{540672~106496(106496)},5:{540672~110592(110592)}})
+  */
+
+  ECUtil::shard_extent_set_t want(k + m);
+  want[shard_id_t(0)].insert(544768, 106496);
+  want[shard_id_t(1)].insert(544151, 106799);
+  want[shard_id_t(2)].insert(540672, 106496);
+  want[shard_id_t(3)].insert(540672, 106496);
+  want[shard_id_t(4)].insert(540672, 106496);
+
+  ECUtil::shard_extent_map_t semap(&s);
+  semap.insert_in_shard(shard_id_t(0), 540672, create_buf(110592));
+  semap.insert_in_shard(shard_id_t(2), 540672, create_buf(106496));
+  semap.insert_in_shard(shard_id_t(3), 540672, create_buf(106496));
+  semap.insert_in_shard(shard_id_t(4), 540672, create_buf(106496));
+  semap.insert_in_shard(shard_id_t(5), 540672, create_buf(110592));
 
   ASSERT_EQ(0, semap.decode(ec_impl, want, object_size));
 }
