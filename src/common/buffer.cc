@@ -556,7 +556,7 @@ static ceph::spinlock debug_lock;
 
   bool buffer::ptr::is_zero() const
   {
-    return is_zero_fast() || mem_is_zero(c_str(), _len);
+    return /*is_zero_fast() ||*/ mem_is_zero(c_str(), _len);
   }
 
   unsigned buffer::ptr::append(char c)
@@ -1464,7 +1464,7 @@ static ceph::spinlock debug_lock;
     _buffers.push_front(*bp.release());
   }
   
-  void buffer::list::append_zero(unsigned len)
+  void buffer::list::append_zero2(unsigned len)
   {
     _len += len;
     while (len > 0) {
@@ -1474,8 +1474,10 @@ static ceph::spinlock debug_lock;
       _num += 1;
       len -= round_size;
     }
+  }
 
-#if 0
+  void buffer::list::append_zero(unsigned len)
+  {
     const unsigned free_in_last = get_append_buffer_unused_tail_length();
     const unsigned first_round = std::min(len, free_in_last);
     if (first_round) {
@@ -1494,7 +1496,6 @@ static ceph::spinlock debug_lock;
       new_back.set_length(second_round);
       new_back.zero(false);
     }
-#endif
   }
 
   
