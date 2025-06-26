@@ -1277,20 +1277,21 @@ void ECBackend::handle_sub_read_reply(
           // If we don't have enough copies, try other pg_shard_ts if available.
           // During recovery there may be multiple osds with copies of the same shard,
           // so getting EIO from one may result in multiple passes through this code path.
-          if (!rop.do_redundant_reads) {
-            rop.debug_log.emplace_back(ECUtil::REQUEST_MISSING, op.from);
-            int r = read_pipeline.send_all_remaining_reads(oid, rop);
-            if (r == 0) {
-              // We found that new reads are required to do a decode.
-              need_resend = true;
-              continue;
-            } else if (r > 0) {
-              // No new reads were requested. This means that some parity
-              // shards can be assumed to be zeros.
-              err = 0;
-            }
-            // else insufficient shards are available, keep the errors.
+
+          rop.debug_log.emplace_back(ECUtil::REQUEST_MISSING, op.from);
+          int r = read_pipeline.send_all_remaining_reads(oid, rop);
+          if (r == 0 && !rop.do_redundant_reads) {
+            // We found that new reads are required to do a decode.
+            need_resend = true;
+            continue;
           }
+          if (r > 0) {
+            // No new reads were requested. This means that some parity
+            // shards can be assumed to be zeros.
+            err = 0;
+          }
+          // else insufficient shards are available, keep the errors.
+
           // Couldn't read any additional shards so handle as completed with errors
           // We don't want to confuse clients / RBD with objectstore error
           // values in particular ENOENT.  We may have different error returns
