@@ -669,6 +669,7 @@ int shard_extent_map_t::decode(const ErasureCodeInterfaceRef &ec_impl,
      * any missing...
      */
     shard_id_set decode_for_parity_shards = shard_id_set::difference(sinfo->get_data_shards(), have_set);
+    decode_for_parity_shards = shard_id_set::intersection(decode_for_parity_shards, read_mask.get_shard_id_set());
 
     if (!decode_for_parity_shards.empty()) {
       /* So there are missing data shards which need decoding before we encode,
@@ -736,10 +737,11 @@ int shard_extent_map_t::_decode(const ErasureCodeInterfaceRef &ec_impl,
      */
     if (zeros_superset.intersects(iter.get_offset(), iter.get_length())) {
       for (auto &&[shard, eset] : zeros) {
-        ceph_assert(iter.get_offset() == eset.range_start());
-        ceph_assert(iter.get_offset() + iter.get_length() == eset.range_end());
-        in.emplace(shard, std::move(out[shard]));
-        out.erase(shard);
+        if (iter.get_offset() == eset.range_start() &&
+            iter.get_offset() + iter.get_length() == eset.range_end()) {
+          in.emplace(shard, std::move(out[shard]));
+          out.erase(shard);
+        }
       }
     }
 
