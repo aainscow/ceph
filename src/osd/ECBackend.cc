@@ -302,7 +302,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
     const hobject_t &hoid,
     ECUtil::shard_extent_map_t &&buffers_read,
     std::optional<map<string, bufferlist, less<>>> attrs,
-    const ECUtil::shard_extent_set_t &want_to_read,
+    read_request_t &req,
     RecoveryMessages *m) {
   dout(10) << __func__ << ": returned " << hoid << " " << buffers_read << dendl;
   ceph_assert(recovery_ops.contains(hoid));
@@ -331,6 +331,13 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
       ceph_assert(op.obc);
       op.recovery_info.size = op.obc->obs.oi.size;
       op.recovery_info.oi = op.obc->obs.oi;
+
+      // We didn't know the size before, meaning the zero for decode calculations
+      // will be off. Recalculate them!
+      req.object_size = op.obc->obs.oi.size;
+      int r = read_pipeline.get_min_avail_to_read_shards(
+        op.hoid, true, false, req);
+      ceph_assert(r == 0);
     }
   }
   ceph_assert(op.xattrs.size());
@@ -342,7 +349,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
   sinfo.ro_size_to_read_mask(op.recovery_info.size, read_mask);
   ECUtil::shard_extent_set_t shard_want_to_read(sinfo.get_k_plus_m());
 
-  for (auto &[shard, eset] : want_to_read) {
+  for (auto &[shard, eset] : req.shard_want_to_read) {
     /* Read buffers do not need recovering! */
     if (buffers_read.contains(shard)) {
       continue;
@@ -365,6 +372,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
          << op.returned_data->debug_string(2048, 0)
          << dendl;
 
+  op.returned_data->add_zero_padding_for_decode(req.zeros_for_decode);
   int r = op.returned_data->decode(ec_impl, shard_want_to_read, aligned_size);
   ceph_assert(r == 0);
 
@@ -436,7 +444,7 @@ struct RecoveryReadCompleter : ECCommon::ReadCompleter {
       hoid,
       std::move(res.buffers_read),
       res.attrs,
-      req.shard_want_to_read,
+      req,
       &rm);
   }
 

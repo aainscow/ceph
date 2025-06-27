@@ -141,24 +141,31 @@ public:
   int minimum_to_decode(const shard_id_set &want_to_read, const shard_id_set &available,
                         shard_id_set &minimum_set,
 			shard_id_map<std::vector<std::pair<int, int>>> *minimum_sub_chunks) override {
-    shard_id_t parity_shard_index(data_chunk_count);
+    bool recover = false;
     for (shard_id_t shard : want_to_read) {
       if (available.contains(shard)) {
         minimum_set.insert(shard);
       } else {
-        // Shard is missing.  Recover with every other shard and one parity
-        // for each missing shard.
-        for (shard_id_t i; i<data_chunk_count; ++i) {
-          if (available.contains(i)) {
-            minimum_set.insert(i);
-          } else {
-            minimum_set.insert(parity_shard_index);
-            ++parity_shard_index;
-          }
+        recover = true;
+        break;
+      }
+    }
 
-          if (int(parity_shard_index) == chunk_count)
-            return -EIO; // Cannot recover.
+    if (recover) {
+      minimum_set.clear();
+
+      // Shard is missing.  Recover with every other shard and one parity
+      // for each missing shard.
+      for (auto a : available) {
+        minimum_set.insert(a);
+        if (minimum_set.size() == data_chunk_count) {
+          break;
         }
+      }
+
+      if (minimum_set.size() != data_chunk_count) {
+        minimum_set.clear();
+        return -EIO; // Cannot recover.
       }
     }
 
@@ -1265,15 +1272,25 @@ TEST(ECCommon, encode)
   semap.encode(ec_impl);
 }
 
-TEST(ECCommon, decode)
+
+bufferlist create_buf(uint64_t len) {
+  bufferlist bl;
+  bl.append_zero(len);
+  ceph_assert(bl.is_aligned(EC_ALIGN_SIZE));
+  return bl;
+}
+
+
+void test_decode(unsigned int k, unsigned int m, uint64_t chunk_size, uint64_t object_size, const ECUtil::shard_extent_set_t &want, const shard_id_set &acting_set)
 {
-  const uint64_t align_size = EC_ALIGN_SIZE;
-  const unsigned int k = 4;
-  const unsigned int m = 2;
-  const uint64_t swidth = k*align_size;
+  const uint64_t swidth = k*chunk_size;
 
   ECUtil::stripe_info_t s(k, m, swidth, vector<shard_id_t>(0));
   ECListenerStub listenerStub;
+  listenerStub.acting_shards.clear();
+  for (auto s : acting_set) {
+    listenerStub.acting_shards.insert(pg_shard_t(int(s), s));
+  }
   ASSERT_EQ(s.get_stripe_width(), swidth);
   ASSERT_EQ(s.get_chunk_size(), swidth/k);
 
@@ -1284,90 +1301,62 @@ TEST(ECCommon, decode)
   ErasureCodeInterfaceRef ec_impl(ecode);
   ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
 
+
   ECUtil::shard_extent_map_t semap(&s);
-  bufferlist bl4k;
-  bl4k.append_zero(4096);
-  semap.insert_in_shard(shard_id_t(1), 256 * 1024, bl4k);
-  semap.insert_in_shard(shard_id_t(4), 256 * 1024, bl4k);
+  hobject_t hoid;
+  ECCommon::read_request_t read_request(want, false, object_size);
+  ASSERT_EQ(0, pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request));
+  for (auto [shard, read] : read_request.shard_reads) {
+    for (auto [off, len] : read.extents) {
+      semap.insert_in_shard(shard, off, create_buf(len));
+    }
+  }
 
-  ECUtil::shard_extent_set_t want = semap.get_extent_set();
-  want[shard_id_t(0)].insert(256 * 1024, 4096);
-  want[shard_id_t(5)].insert(256 * 1024, 4096);
+  semap.add_zero_padding_for_decode(read_request.zeros_for_decode);
+  ASSERT_EQ(0, semap.decode(ec_impl, want, object_size));
+}
 
-  ceph_assert(0 == semap.decode(ec_impl, want, k * 256 * 1024 + 4096 + 1));
+TEST(ECCommon, decode) {
+  unsigned int k = 4;
+  unsigned int m = 2;
+  uint64_t chunk_size = 4096;
+  uint64_t object_size = k * 256 * 1024 + 4096 + 1;
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
+
+  want[shard_id_t(1)].insert(256 * 1024, 4096);
+  want[shard_id_t(4)].insert(256 * 1024, 4096);
+
+  acting_set.insert_range(shard_id_t(1), 4);
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
 }
 
 
 TEST(ECCommon, decode2)
 {
-  const unsigned int k = 4;
-  const unsigned int m = 2;
-  const uint64_t align_size = EC_ALIGN_SIZE;
-  const uint64_t swidth = k*align_size;
+  unsigned int k = 4;
+  unsigned int m = 2;
+  uint64_t chunk_size = 4096;
+  uint64_t object_size = 2104*1024;
 
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
 
-  ECUtil::stripe_info_t s(k, m, swidth, vector<shard_id_t>(0));
-  ECListenerStub listenerStub;
-  ASSERT_EQ(s.get_stripe_width(), swidth);
-  ASSERT_EQ(s.get_chunk_size(), swidth/k);
-
-  const std::vector<int> chunk_mapping = {}; // no remapping
-  ErasureCodeDummyImpl *ecode = new ErasureCodeDummyImpl();
-  ecode->data_chunk_count = k;
-  ecode->chunk_count = k + m;
-  ErasureCodeInterfaceRef ec_impl(ecode);
-  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
-
-  ECUtil::shard_extent_map_t semap(&s);
-  bufferlist bl528k;
-  bl528k.append_zero(528*1024);
-  bufferlist bl524k;
-  bl524k.append_zero(524*1024);
-  semap.insert_in_shard(shard_id_t(0), 0, bl528k);
-  semap.insert_in_shard(shard_id_t(1), 0, bl528k);
-  semap.insert_in_shard(shard_id_t(3), 0, bl524k);
-  semap.insert_in_shard(shard_id_t(4), 0, bl528k);
-  ECUtil::shard_extent_set_t want(k + m);
-
-  //shard_want_to_read={1:[0~540672],2:[0~536576],3:[0~536576],4:[0~540672],5:[0~540672]}
   want[shard_id_t(1)].insert(0, 528*1024);
   want[shard_id_t(2)].insert(0, 524*1024);
   want[shard_id_t(3)].insert(0, 524*1024);
   want[shard_id_t(4)].insert(0, 528*1024);
   want[shard_id_t(5)].insert(0, 528*1024);
 
-  ceph_assert(0 == semap.decode(ec_impl, want, 2104*1024));
-}
+  acting_set.insert(shard_id_t(0));
+  acting_set.insert(shard_id_t(1));
+  acting_set.insert(shard_id_t(3));
+  acting_set.insert(shard_id_t(4));
 
-bufferlist create_buf(uint64_t len) {
-  bufferlist bl;
-  bl.append_zero(len+8192);
-  bufferlist bl2;
-  bl2.substr_of(bl, 4096, len);
-  ceph_assert(bl2.is_aligned(EC_ALIGN_SIZE));
-  return bl2;
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
 }
 
 TEST(ECCommon, decode3) {
-  const unsigned int k = 4;
-  const unsigned int m = 1;
-  const uint64_t chunk_size = EC_ALIGN_SIZE;
-  const uint64_t swidth = k*chunk_size;
-  const uint64_t object_size = 4 * swidth + 2 * chunk_size + 1;
-
-  ECUtil::stripe_info_t s(k, m, swidth, vector<shard_id_t>(0));
-  ECListenerStub listenerStub;
-  ASSERT_EQ(s.get_stripe_width(), swidth);
-  ASSERT_EQ(s.get_chunk_size(), swidth / k);
-
-  const std::vector<int> chunk_mapping = {}; // no remapping
-  ErasureCodeDummyImpl *ecode = new ErasureCodeDummyImpl();
-  ecode->data_chunk_count = k;
-  ecode->chunk_count = k + m;
-  ErasureCodeInterfaceRef ec_impl(ecode);
-  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
-
-
   /* For this problematic IO, we want to reads:
    * first is readable - shard 0, 0~4k
    * second is on missing shard - shard 2, 16k~4k
@@ -1378,90 +1367,52 @@ TEST(ECCommon, decode3) {
    *
    * So the reads we end up doing are to 0,1 and 4 only.
    */
+  unsigned int k = 4;
+  unsigned int m = 1;
+  uint64_t chunk_size = 4096;
+  uint64_t object_size = 4 * chunk_size * k + 2 * chunk_size + 1;
 
-  ECUtil::shard_extent_set_t want(k + m);
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
   want[shard_id_t(0)].insert(0, chunk_size);
-  want[shard_id_t(2)].insert(4 *chunk_size, chunk_size);
+  want[shard_id_t(2)].insert(4 * chunk_size, chunk_size);
 
-  ECUtil::shard_extent_map_t semap(&s);
-  bufferlist bl4k;
-  bl4k.append_zero(4*1024);
-  semap.insert_in_shard(shard_id_t(0), 0, bl4k);
-  semap.insert_in_shard(shard_id_t(0), 4 * chunk_size, bl4k);
-  semap.insert_in_shard(shard_id_t(1), 4 * chunk_size, bl4k);
-  semap.insert_in_shard(shard_id_t(4), 4 * chunk_size, bl4k);
+  acting_set.insert(shard_id_t(0));
+  acting_set.insert(shard_id_t(1));
+  acting_set.insert(shard_id_t(3));
+  acting_set.insert(shard_id_t(4));
 
-  ASSERT_EQ(0, semap.decode(ec_impl, want, object_size));
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
 }
 
 TEST(ECCommon, decode4) {
   const unsigned int k = 5;
   const unsigned int m = 2;
   const uint64_t chunk_size = 4096;
-  const uint64_t swidth = k*chunk_size;
   const uint64_t object_size = 3243718;
 
-  ECUtil::stripe_info_t s(k, m, swidth, vector<shard_id_t>(0));
-  ECListenerStub listenerStub;
-  ASSERT_EQ(s.get_stripe_width(), swidth);
-  ASSERT_EQ(s.get_chunk_size(), swidth / k);
-
-  const std::vector<int> chunk_mapping = {}; // no remapping
-  ErasureCodeDummyImpl *ecode = new ErasureCodeDummyImpl();
-  ecode->data_chunk_count = k;
-  ecode->chunk_count = k + m;
-  ErasureCodeInterfaceRef ec_impl(ecode);
-  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
-
-
-  /* Recreating:
-  * shard_want_to_read={0:[544768~106496],1:[544151~106799],2:[540672~106496],3:[540672~106496],4:[540672~106496]}
-  * maps={0:{540672~110592(110592)},2:{540672~106496(106496)},3:{540672~106496(106496)},4:{540672~106496(106496)},5:{540672~110592(110592)}})
-  */
-
-  ECUtil::shard_extent_set_t want(k + m);
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
   want[shard_id_t(0)].insert(544768, 106496);
   want[shard_id_t(1)].insert(544151, 106799);
   want[shard_id_t(2)].insert(540672, 106496);
   want[shard_id_t(3)].insert(540672, 106496);
   want[shard_id_t(4)].insert(540672, 106496);
 
-  ECUtil::shard_extent_map_t semap(&s);
-  semap.insert_in_shard(shard_id_t(0), 540672, create_buf(110592));
-  semap.insert_in_shard(shard_id_t(2), 540672, create_buf(106496));
-  semap.insert_in_shard(shard_id_t(3), 540672, create_buf(106496));
-  semap.insert_in_shard(shard_id_t(4), 540672, create_buf(106496));
-  semap.insert_in_shard(shard_id_t(5), 540672, create_buf(110592));
+  acting_set.insert(shard_id_t(0));
+  acting_set.insert_range(shard_id_t(2), 4);
 
-  ASSERT_EQ(0, semap.decode(ec_impl, want, object_size));
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
 }
 
 TEST(ECCommon, decode5) {
   const unsigned int k = 6;
   const unsigned int m = 4;
   const uint64_t chunk_size = 4096;
-  const uint64_t swidth = k*chunk_size;
   const uint64_t object_size = 3428595;
 
-  ECUtil::stripe_info_t s(k, m, swidth, vector<shard_id_t>(0));
-  ECListenerStub listenerStub;
-  ASSERT_EQ(s.get_stripe_width(), swidth);
-  ASSERT_EQ(s.get_chunk_size(), swidth / k);
-
-  const std::vector<int> chunk_mapping = {}; // no remapping
-  ErasureCodeDummyImpl *ecode = new ErasureCodeDummyImpl();
-  ecode->data_chunk_count = k;
-  ecode->chunk_count = k + m;
-  ErasureCodeInterfaceRef ec_impl(ecode);
-  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
-
-
-  /* Recreating:
-  * shard_want_to_read={0:[0~573440],1:[0~573440],2:[0~573440],3:[0~569587],4:[0~569344],5:[0~569344]}
-  * maps={0:{0~573440(573440)},3:{0~573440(573440)},6:{0~573440(573440)},7:{0~573440(573440)},8:{0~573440(573440)},9:{0~573440(573440)}}
-  */
-
-  ECUtil::shard_extent_set_t want(k + m);
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
   want[shard_id_t(0)].insert(0, 573440);
   want[shard_id_t(1)].insert(0, 573440);
   want[shard_id_t(2)].insert(0, 573440);
@@ -1469,13 +1420,69 @@ TEST(ECCommon, decode5) {
   want[shard_id_t(4)].insert(0, 569344);
   want[shard_id_t(5)].insert(0, 569344);
 
-  ECUtil::shard_extent_map_t semap(&s);
-  semap.insert_in_shard(shard_id_t(0), 0, create_buf(573440));
-  semap.insert_in_shard(shard_id_t(3), 0, create_buf(573440));
-  semap.insert_in_shard(shard_id_t(6), 0, create_buf(573440));
-  semap.insert_in_shard(shard_id_t(7), 0, create_buf(573440));
-  semap.insert_in_shard(shard_id_t(8), 0, create_buf(573440));
-  semap.insert_in_shard(shard_id_t(9), 0, create_buf(573440));
+  acting_set.insert(shard_id_t(0));
+  acting_set.insert(shard_id_t(3));
+  acting_set.insert_range(shard_id_t(6), 4);
 
-  ASSERT_EQ(0, semap.decode(ec_impl, want, object_size));
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
+}
+
+TEST(ECCommon, decode6) {
+  const unsigned int k = 8;
+  const unsigned int m = 4;
+  const uint64_t chunk_size = 4096;
+  const uint64_t object_size = 3092488;
+
+
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
+  want[shard_id_t(0)].insert(262144, 126976);
+  want[shard_id_t(1)].insert(262144, 126976);
+  want[shard_id_t(2)].insert(262144, 126976);
+  want[shard_id_t(3)].insert(262144, 126976);
+  want[shard_id_t(4)].insert(262144, 122880);
+  want[shard_id_t(5)].insert(262144, 122880);
+  want[shard_id_t(6)].insert(262144, 122880);
+  want[shard_id_t(7)].insert(262144, 122880);
+  want[shard_id_t(8)].insert(262144, 126976);
+  want[shard_id_t(9)].insert(262144, 126976);
+  want[shard_id_t(10)].insert(262144, 126976);
+
+  acting_set.insert(shard_id_t(0));
+  acting_set.insert_range(shard_id_t(2), 2);
+  acting_set.insert_range(shard_id_t(5), 5);
+
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
+}
+
+TEST(ECCommon, decode7) {
+  const unsigned int k = 6;
+  const unsigned int m = 4;
+  const uint64_t chunk_size = 262144;
+  const uint64_t object_size = 35057;
+
+
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
+  want[shard_id_t(0)].insert(0, 31870);
+
+  acting_set.insert_range(shard_id_t(1), 8);
+
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
+}
+
+TEST(ECCommon, decode8) {
+  const unsigned int k = 6;
+  const unsigned int m = 3;
+  const uint64_t chunk_size = 262144;
+  const uint64_t object_size = 89236;
+
+
+  ECUtil::shard_extent_set_t want(k+m);
+  shard_id_set acting_set;
+  want[shard_id_t(0)].insert(0, 1572864);
+
+  acting_set.insert_range(shard_id_t(1), 8);
+
+  test_decode(k, m, chunk_size, object_size, want, acting_set);
 }

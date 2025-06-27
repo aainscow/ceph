@@ -913,8 +913,7 @@ public:
              uint64_t object_size);
   int _decode(const ErasureCodeInterfaceRef &ec_impl,
               const shard_id_set &want_set,
-              const shard_id_set &need_set,
-              const shard_extent_set_t &zeros);
+              const shard_id_set &need_set);
   void get_buffer(shard_id_t shard, uint64_t offset, uint64_t length,
                   buffer::list &append_to) const;
   void get_shard_first_buffer(shard_id_t shard, buffer::list &append_to) const;
@@ -959,39 +958,20 @@ public:
     }
   }
 
-  shard_extent_set_t add_zero_padding_for_decode(uint64_t object_size) {
-    shard_extent_set_t zeros(sinfo->get_k_plus_m());
-    sinfo->ro_size_to_zero_mask(object_size, zeros);
-    extent_set superset = get_extent_superset();
+  void add_zero_padding_for_decode(ECUtil::shard_extent_set_t &zeros) {
     bool changed = false;
-    for (auto iter = zeros.begin(); iter != zeros.end(); ) {
-      auto &&[shard, z] = *iter;
-      z.intersection_of(superset);
-
-      /* This function is only called if we know we need to do a decode. This
-       * means that we are attempting to decode superset everywhere. This
-       * function is interested in cases where some of this superset contains
-       * zeros.
-       */
-      if (z.empty()) {
-        iter = zeros.erase(iter);
-        continue;
-      }
+    for (auto &&[shard, z] : zeros) {
       for (auto [off, len] : z) {
         changed = true;
         bufferlist bl;
         bl.append_zero(len);
-        bl.rebuild_aligned(EC_ALIGN_SIZE);
         extent_maps[shard].insert(off, len, bl);
       }
-      ++iter;
     }
 
     if (changed) {
       compute_ro_range();
     }
-
-    return zeros;
   }
 
   // FAIL REVIEW

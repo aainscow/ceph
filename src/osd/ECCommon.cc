@@ -265,6 +265,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     }
   }
 
+  read_request.zeros_for_decode.clear();
   for (auto &shard: need_set) {
     if (!have.contains(shard)) {
       continue;
@@ -284,6 +285,12 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     extents.align(EC_ALIGN_SIZE);
     if (read_mask.contains(shard)) {
       shard_read.extents.intersection_of(extents, read_mask.at(shard));
+      extents.subtract(read_mask.at(shard));
+    }
+
+    /* Any remaining extents can be assumed ot be zeros... so record these. */
+    if (!extents.empty()) {
+      read_request.zeros_for_decode.emplace(shard, std::move(extents));
     }
 
     if (!shard_read.extents.empty()) {
@@ -521,6 +528,7 @@ struct ClientReadCompleter final : ECCommon::ReadCompleter {
                << res.buffers_read.debug_string(2048, 0)
                << dendl;
       /* Decode any missing buffers */
+      res.buffers_read.add_zero_padding_for_decode(req.zeros_for_decode);
       int r = res.buffers_read.decode(read_pipeline.ec_impl,
                                   req.shard_want_to_read,
                                   req.object_size);
