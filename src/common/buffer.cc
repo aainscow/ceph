@@ -1490,6 +1490,8 @@ static ceph::spinlock debug_lock;
 
   void buffer::list::append_zero(unsigned len)
   {
+    _len += len;
+
     const unsigned free_in_last = get_append_buffer_unused_tail_length();
     const unsigned first_round = std::min(len, free_in_last);
     if (first_round) {
