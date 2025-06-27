@@ -1343,6 +1343,17 @@ void ECBackend::handle_sub_read_reply(
     dout(20) << __func__ << " Complete: " << rop << dendl;
     rop.trace.event("ec read complete");
     rop.debug_log.emplace_back(ECUtil::COMPLETE, op.from);
+
+    /* If we are do_redundant_reads is set the there might be some in progress
+     * reads remaining.  We need to make sure that these non-read shards
+     * do not get padded. If there was no in progress read, then the zero
+     * padding is allowed to stay.
+     */
+    for (auto pg_shard : rop.in_progress) {
+      for (auto &&[oid, read] : rop.to_read) {
+        read.zeros_for_decode.erase(pg_shard.shard);
+      }
+    }
     read_pipeline.complete_read_op(std::move(rop));
   } else {
     dout(10) << __func__ << " readop not complete: " << rop << dendl;
