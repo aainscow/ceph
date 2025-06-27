@@ -285,12 +285,15 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     extents.align(EC_ALIGN_SIZE);
     if (read_mask.contains(shard)) {
       shard_read.extents.intersection_of(extents, read_mask.at(shard));
-      extents.subtract(read_mask.at(shard));
     }
 
-    /* Any remaining extents can be assumed ot be zeros... so record these. */
-    if (!extents.empty()) {
-      read_request.zeros_for_decode.emplace(shard, std::move(extents));
+    if (zero_mask.contains(shard)) {
+      extents.intersection_of(zero_mask.at(shard));
+
+      /* Any remaining extents can be assumed ot be zeros... so record these. */
+      if (!extents.empty()) {
+        read_request.zeros_for_decode.emplace(shard, std::move(extents));
+      }
     }
 
     if (!shard_read.extents.empty()) {

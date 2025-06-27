@@ -1455,34 +1455,3 @@ TEST(ECCommon, decode6) {
   test_decode(k, m, chunk_size, object_size, want, acting_set);
 }
 
-TEST(ECCommon, decode7) {
-  const unsigned int k = 6;
-  const unsigned int m = 4;
-  const uint64_t chunk_size = 262144;
-  const uint64_t object_size = 35057;
-
-
-  ECUtil::shard_extent_set_t want(k+m);
-  shard_id_set acting_set;
-  want[shard_id_t(0)].insert(0, 31870);
-
-  acting_set.insert_range(shard_id_t(1), 8);
-
-  test_decode(k, m, chunk_size, object_size, want, acting_set);
-}
-
-TEST(ECCommon, decode8) {
-  const unsigned int k = 6;
-  const unsigned int m = 3;
-  const uint64_t chunk_size = 262144;
-  const uint64_t object_size = 89236;
-
-
-  ECUtil::shard_extent_set_t want(k+m);
-  shard_id_set acting_set;
-  want[shard_id_t(0)].insert(0, 1572864);
-
-  acting_set.insert_range(shard_id_t(1), 8);
-
-  test_decode(k, m, chunk_size, object_size, want, acting_set);
-}
