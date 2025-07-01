@@ -300,16 +300,15 @@ void ECBackend::RecoveryBackend::handle_recovery_push_reply(
 
 void ECBackend::RecoveryBackend::handle_recovery_read_complete(
     const hobject_t &hoid,
-    ECUtil::shard_extent_map_t &&buffers_read,
-    std::optional<map<string, bufferlist, less<>>> attrs,
+    read_result_t &&res,
     read_request_t &req,
     RecoveryMessages *m) {
-  dout(10) << __func__ << ": returned " << hoid << " " << buffers_read << dendl;
+  dout(10) << __func__ << ": returned " << hoid << " " << res << dendl;
   ceph_assert(recovery_ops.contains(hoid));
   RecoveryBackend::RecoveryOp &op = recovery_ops[hoid];
 
-  if (attrs) {
-    op.xattrs.swap(*attrs);
+  if (res.attrs) {
+    op.xattrs.swap(*(res.attrs));
 
     if (!op.obc) {
       // attrs only reference the origin bufferlist (decode from
@@ -334,16 +333,20 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
 
       // We didn't know the size before, meaning the zero for decode calculations
       // will be off. Recalculate them!
-      req.object_size = op.obc->obs.oi.size;
-      int r = read_pipeline.get_min_avail_to_read_shards(
-        op.hoid, true, false, req);
-      ceph_assert(r == 0);
+      ECUtil::shard_extent_set_t zero_mask(sinfo.get_k_plus_m());
+      sinfo.ro_size_to_zero_mask(op.recovery_info.size, zero_mask);
+
+      for (auto &&[shard, eset] : zero_mask) {
+        if (res.zero_length_reads.contains(shard) || res.buffers_read.contains(shard)) {
+          req.zeros_for_decode[shard].insert(eset);
+        }
+      }
     }
   }
   ceph_assert(op.xattrs.size());
   ceph_assert(op.obc);
 
-  op.returned_data.emplace(std::move(buffers_read));
+  op.returned_data.emplace(std::move(res.buffers_read));
 
   ECUtil::shard_extent_set_t read_mask(sinfo.get_k_plus_m());
   sinfo.ro_size_to_read_mask(op.recovery_info.size, read_mask);
@@ -351,7 +354,7 @@ void ECBackend::RecoveryBackend::handle_recovery_read_complete(
 
   for (auto &[shard, eset] : req.shard_want_to_read) {
     /* Read buffers do not need recovering! */
-    if (buffers_read.contains(shard)) {
+    if (op.returned_data->contains(shard)) {
       continue;
     }
 
@@ -442,8 +445,7 @@ struct RecoveryReadCompleter : ECCommon::ReadCompleter {
     ceph_assert(req.to_read.size() == 0);
     backend.handle_recovery_read_complete(
       hoid,
-      std::move(res.buffers_read),
-      res.attrs,
+      std::move(res),
       req,
       &rm);
   }
@@ -1213,6 +1215,11 @@ void ECBackend::handle_sub_read_reply(
       buffers_read.insert_in_shard(from.shard, offset, buffer_list);
     }
     rop.debug_log.emplace_back(ECUtil::READ_DONE, op.from, buffers_read);
+
+    // zero length reads may need to be zero padded during recovery
+    if (offset_buffer_map.empty()) {
+      rop.complete.at(hoid).zero_length_reads.insert(from.shard);
+    }
   }
   for (auto &&[hoid, req]: rop.to_read) {
     if (!rop.complete.contains(hoid)) {

@@ -326,9 +326,7 @@ class ECBackend : public ECCommon {
         RecoveryMessages *m);
     void handle_recovery_read_complete(
         const hobject_t &hoid,
-        ECUtil::shard_extent_map_t &&buffers_read,
-        std::optional<std::map<std::string, ceph::buffer::list, std::less<>>>
-          attrs,
+        read_result_t &&res,
         read_request_t &req,
         RecoveryMessages *m);
     void handle_recovery_push(
