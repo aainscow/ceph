@@ -438,8 +438,7 @@ static int get_fd_data(int fd, bufferlist &bl)
 
 int get_log(CephContext *cct, ObjectStore *fs, __u8 struct_ver,
 	    spg_t pgid, const pg_info_t &info,
-	    PGLog::IndexedLog &log, pg_missing_t &missing,
-	    bool ec_optimizations_enabled)
+	    PGLog::IndexedLog &log, pg_missing_t &missing)
 {
   try {
     auto ch = fs->open_collection(coll_t(pgid));
@@ -455,7 +454,7 @@ int get_log(CephContext *cct, ObjectStore *fs, __u8 struct_ver,
       info, log, missing,
       oss,
       g_ceph_context->_conf->osd_ignore_stale_divergent_priors,
-      ec_optimizations_enabled);
+      true); // Always use relaxed asserts for this tool.
     if (debug && oss.str().size())
       cerr << oss.str() << std::endl;
   }
@@ -1175,7 +1174,7 @@ int expand_log(
       info,
       oss,
       cct->_conf->osd_ignore_stale_divergent_priors,
-      pool_info->allows_ecoptimizations(),
+      true, // Always use relaxed asserts for this tool.
       cct->_conf->osd_debug_verify_missing_on_start);
     if (debug && oss.str().size())
       cerr << oss.str() << std::endl;
@@ -1249,17 +1248,7 @@ int ObjectStoreTool::do_export(
 
   cerr << "Exporting " << pgid << " info " << info << std::endl;
 
-  bufferlist bl;
-  OSDMap osdmap;
-  int ret = get_osdmap(fs, info.last_update.epoch, osdmap, bl);
-  if (ret < 0) {
-    std::cerr << "Can't find latest local OSDMap " << info.last_update.epoch << std::endl;
-    return ret;
-  }
-  ceph_assert(osdmap.have_pg_pool(info.pgid.pool()));
-  auto pool_info = osdmap.get_pg_pool(info.pgid.pool());
-  ret = get_log(cct, fs, struct_ver, pgid, info, log, missing,
-		pool_info->allows_ecoptimizations());
+  int ret = get_log(cct, fs, struct_ver, pgid, info, log, missing);
   if (ret > 0)
       return ret;
 
@@ -4776,17 +4765,7 @@ int main(int argc, char **argv)
     } else if (op == "log") {
       PGLog::IndexedLog log;
       pg_missing_t missing;
-      bufferlist bl;
-      OSDMap osdmap;
-      int ret = get_osdmap(fs.get(), info.last_update.epoch, osdmap, bl);
-      if (ret < 0) {
-	std::cerr << "Can't find latest local OSDMap " << info.last_update.epoch << std::endl;
-	goto out;
-      }
-      ceph_assert(osdmap.have_pg_pool(info.pgid.pool()));
-      auto pool_info = osdmap.get_pg_pool(info.pgid.pool());
-      ret = get_log(cct.get(), fs.get(), struct_ver, pgid, info, log, missing,
-		    pool_info->allows_ecoptimizations());
+      ret = get_log(cct.get(), fs.get(), struct_ver, pgid, info, log, missing);
       if (ret < 0)
           goto out;
 
