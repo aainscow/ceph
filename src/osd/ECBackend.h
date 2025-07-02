@@ -324,6 +324,10 @@ class ECBackend : public ECCommon {
     void continue_recovery_op(
         RecoveryBackend::RecoveryOp &op,
         RecoveryMessages *m);
+    void update_object_size_after_read(
+        uint64_t size,
+        read_result_t &res,
+        read_request_t &req);
     void handle_recovery_read_complete(
         const hobject_t &hoid,
         read_result_t &&res,
