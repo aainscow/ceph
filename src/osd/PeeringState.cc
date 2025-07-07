@@ -3036,6 +3036,7 @@ void PeeringState::activate(
 			       << "] " << pi.last_backfill
 			       << " to " << info.last_update;
 
+	pi.partial_writes_last_complete = info.partial_writes_last_complete;
 	pi.last_update = info.last_update;
 	pi.last_complete = info.last_update;
 	pi.set_last_backfill(hobject_t());
