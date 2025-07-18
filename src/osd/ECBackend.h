@@ -204,7 +204,7 @@ class ECBackend : public ECCommon {
     ceph::buffer::list *bl
   );
 
-public:
+ public:
   struct ECRecoveryBackend : RecoveryBackend {
     ECRecoveryBackend(CephContext *cct,
                       const coll_t &coll,

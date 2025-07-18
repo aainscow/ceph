@@ -62,6 +62,8 @@
 
 #include "neorados/RADOSImpl.h"
 
+#include "osdc/SplitIo.h"
+
 using std::list;
 using std::make_pair;
 using std::map;
@@ -1329,6 +1331,7 @@ void Objecter::handle_osd_map(MOSDMap *m)
     Op *op = p->second;
     if (op->target.epoch < osdmap->get_epoch()) {
       ldout(cct, 10) << __func__ << "  checking op " << p->first << dendl;
+      // Do not pass op. We want ECReads to retry via the primary.
       int r = _calc_target(&op->target);
       if (r == RECALC_OP_TARGET_POOL_DNE) {
 	p = need_resend.erase(p);
@@ -2331,7 +2334,12 @@ void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
   if (!ptid)
     ptid = &tid;
   op->trace.event("op submit");
-  _op_submit_with_budget(op, rl, ptid, ctx_budget);
+
+  bool was_split = SplitIo::create(op, *this, rl, ptid, ctx_budget, cct);
+
+  if (!was_split) {
+    _op_submit_with_budget(op, rl, ptid, ctx_budget);
+  }
 }
 
 void Objecter::_op_submit_with_budget(Op *op,
@@ -3068,6 +3076,7 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
       prev_pgid.is_merge_target(t->pg_num, pg_num);
   }
 
+  bool ec_direct = false;
   if (legacy_change || split_or_merge || force_resend) {
     t->pgid = pgid;
     t->acting = std::move(acting);
@@ -3084,15 +3093,28 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
       // Optimized EC pools need to be careful when calculating the shard
       // because an OSD may have multiple shards and the primary shard
       // might not be the first one in the acting set. The lookup
-      // therefoere has to be done in primaryfirst order.
+      // therefore has to be done in primaryfirst order.
       std::vector<int> pg_temp = t->acting;
       if (osdmap->has_pgtemp(actual_pgid)) {
 	pg_temp = osdmap->pgtemp_primaryfirst(*pi, t->acting);
       }
-      for (uint8_t i = 0; i < t->acting.size(); ++i) {
-        if (pg_temp[i] == acting_primary) {
-	  spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, shard_id_t(i)));
-          break;
+      if (t->force_shard) {
+        ec_direct = true;
+        t->osd = t->acting[int(*t->force_shard)];
+        // In some redrive scenarios, the acting set can change. Fail the IO
+        // and retry.
+        if (!osdmap->exists(t->osd)) {
+          t->osd = -1;
+          return RECALC_OP_TARGET_POOL_DNE;
+        }
+        spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, *t->force_shard));
+
+      } else {
+        for (uint8_t i = 0; i < t->acting.size(); ++i) {
+          if (pg_temp[i] == acting_primary) {
+            spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, shard_id_t(i)));
+            break;
+          }
         }
       }
     }
@@ -3109,12 +3131,15 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
 		   << " acting " << t->acting
 		   << " primary " << acting_primary << dendl;
     t->used_replica = false;
-    if ((t->flags & (CEPH_OSD_FLAG_BALANCE_READS |
+    if (!ec_direct && (t->flags & (CEPH_OSD_FLAG_BALANCE_READS |
                      CEPH_OSD_FLAG_LOCALIZE_READS)) &&
         !is_write && pi->is_replicated() && t->acting.size() > 1) {
       int osd;
       ceph_assert(is_read && t->acting[0] == acting_primary);
-      if (t->flags & CEPH_OSD_FLAG_BALANCE_READS) {
+      if (t->force_shard) {
+        osd = t->acting[int(*t->force_shard)];
+      }
+      else if (t->flags & CEPH_OSD_FLAG_BALANCE_READS) {
 	int p = rand() % t->acting.size();
 	if (p)
 	  t->used_replica = true;
@@ -3145,8 +3170,10 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
 	ceph_assert(best >= 0);
 	osd = t->acting[best];
       }
+      ceph_assert(!t->force_shard);
       t->osd = osd;
-    } else {
+    } else if (!ec_direct) {
+      ceph_assert(!t->force_shard);
       t->osd = acting_primary;
     }
   }
@@ -3470,6 +3497,9 @@ void Objecter::_send_op(Op *op)
   if (op->trace.valid()) {
     m->trace.init("op msg", nullptr, &op->trace);
   }
+  if (op->target.force_shard) {
+    ceph_assert(op->target.osd == op->target.acting[(int)*op->target.force_shard]);
+  }
   op->session->con->send_message(m);
 }
 
@@ -3709,7 +3739,7 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
     }
   }
 
-  if (rc == -EAGAIN) {
+  if (rc == -EAGAIN && !op->target.force_shard) {
     ldout(cct, 7) << " got -EAGAIN, resubmitting" << dendl;
     if (op->has_completion())
       num_in_flight--;

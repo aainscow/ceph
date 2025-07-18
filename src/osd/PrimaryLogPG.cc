@@ -5893,17 +5893,17 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
 
         dout(20) << " EC sync read for " << soid << " result=" << result << dendl;
     } else {
-    ctx->pending_async_reads.push_back(
-      make_pair(
-        boost::make_tuple(op.extent.offset, op.extent.length, op.flags),
-        make_pair(&osd_op.outdata,
-		  new FillInVerifyExtent(&op.extent.length, &osd_op.rval,
-					 &osd_op.outdata, maybe_crc, oi.size,
-					 osd, soid, op.flags))));
-    dout(10) << " async_read noted for " << soid << dendl;
+      ctx->pending_async_reads.push_back(
+        make_pair(
+          boost::make_tuple(op.extent.offset, op.extent.length, op.flags),
+            make_pair(&osd_op.outdata,
+              new FillInVerifyExtent(&op.extent.length, &osd_op.rval,
+                                     &osd_op.outdata, maybe_crc, oi.size,
+                                     osd, soid, op.flags))));
+      dout(10) << " async_read noted for " << soid << dendl;
 
-    ctx->op_finishers[ctx->current_osd_subop_num].reset(
-      new ReadFinisher(osd_op));
+      ctx->op_finishers[ctx->current_osd_subop_num].reset(
+        new ReadFinisher(osd_op));
     }
   } else {
     int r = pgbackend->objects_read_sync(
@@ -9008,7 +9008,7 @@ int PrimaryLogPG::prepare_transaction(OpContext *ctx)
     if (ctx->op->may_write() &&
 	get_osdmap()->require_osd_release >= ceph_release_t::kraken) {
       // need to save the error code in the pg log, to detect dup ops,
-      // but do nothing else
+      // but do nothing elses
       ctx->update_log_only = true;
     }
     return result;

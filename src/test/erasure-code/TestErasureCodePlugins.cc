@@ -460,6 +460,175 @@ TEST_P(PluginTest,SubChunkSupport)
         ErasureCodeInterface::FLAG_EC_PLUGIN_REQUIRE_SUB_CHUNKS) != 0);
   }
 }
+TEST_P(PluginTest, CRCEncodeDecodeSupport) {
+  initialize();
+
+  shard_id_set want_to_encode;
+  for (shard_id_t i = shard_id_t(0); i < get_k_plus_m(); ++i) {
+    want_to_encode.insert(i);
+  }
+  // Generate random data to encode
+  bufferlist data_bl;
+  for (unsigned int i = 0; i < get_k(); ++i) {
+    generate_chunk(data_bl);
+  }
+
+  int crc_seed = -1;
+  uint32_t zero_data_crc = calculate_zero_buffer_crc(crc_seed);
+
+  // Calculate CRCs for the random data
+  bufferlist hashes_bl;
+  bufferlist unseeded_hashes_bl;
+  for (unsigned int i = 0; i < get_k(); ++i) {
+    // Calculate the CRC for the shard at position i
+    bufferlist data_shard_bl;
+    data_shard_bl.substr_of(data_bl, i * chunk_size, chunk_size);
+    uint32_t crc = calculate_crc(data_shard_bl, crc_seed);
+
+    // XOR with the CRC of zeros preseeded with the same preseed
+    // This undoes the pre-seeding and gives us the CRC as if no seed was
+    // applied
+    uint32_t unseeded_crc = crc ^ zero_data_crc;
+
+    // Convert integers to bufferlists
+    hashes_bl.append(create_buffer_from_crc(crc));
+    unseeded_hashes_bl.append(create_buffer_from_crc(unseeded_crc));
+  }
+
+  // Encode data and get back data + parity chunks
+  shard_id_map<bufferlist> encoded_data(get_k_plus_m());
+  erasure_code->encode(want_to_encode, data_bl, &encoded_data);
+
+  // Encode CRCs to get back the data + parity CRCs
+  shard_id_map<bufferlist> encoded_hashes(get_k_plus_m());
+  shard_id_map<bufferlist> encoded_unseeded_hashes(get_k_plus_m());
+  erasure_code->encode(want_to_encode, hashes_bl, &encoded_hashes);
+  erasure_code->encode(want_to_encode, unseeded_hashes_bl,
+                       &encoded_unseeded_hashes);
+
+  shard_id_map<bufferlist> encoded_data_crcs(get_k_plus_m());
+
+  // Calculate CRCs for the new data and new CRCs and compare first parity shard
+  bool different = false;
+  for (shard_id_t shard_id : want_to_encode) {
+    // Calculations vary for additional parities, so only first parity supported
+    if (shard_id < get_k() + 1) {
+      // Calculate the CRC for the current shard from the encoded data
+      uint32_t calculated_crc =
+          calculate_crc(encoded_data.at(shard_id), crc_seed);
+      encoded_data_crcs[shard_id].append(
+          create_buffer_from_crc(calculated_crc));
+
+      // XOR with the CRC of zeros preseeded with the same preseed
+      // This undoes the pre-seeding and gives us the CRC as if no seed was
+      // applied
+      uint32_t calculated_unseeded_crc = calculated_crc ^ zero_data_crc;
+
+      // Calculate integer form of CRCs in bufferlists
+      uint32_t unseeded_crc =
+          read_crc_from_bufferlist(encoded_unseeded_hashes.at(shard_id));
+
+      if (calculated_unseeded_crc != unseeded_crc) {
+        different = true;
+      }
+    }
+
+    ECUtil::stripe_info_t sinfo{get_k(), get_m(), get_k() * chunk_size,
+                                erasure_code->get_chunk_mapping()};
+
+    // Decode CRCs as if 1 to m-1 data CRCs are missing and assert decoded CRC
+    // is equal to missing CRC
+    for (raw_shard_id_t missing_raw_shard_id{0}; missing_raw_shard_id < get_k();
+         ++missing_raw_shard_id) {
+      shard_id_t missing_shard_id = sinfo.get_shard(missing_raw_shard_id);
+
+      shard_id_set need;
+      need.insert(missing_shard_id);
+      shard_id_map<bufferlist> chunks(get_k_plus_m());
+      // Create a map of all buffers except the one (our missing shard)
+      for (raw_shard_id_t raw_shard_id{0}; raw_shard_id < get_k_plus_m();
+           ++raw_shard_id) {
+        shard_id_t shard_id = sinfo.get_shard(raw_shard_id);
+
+        if (shard_id != missing_shard_id) {
+          chunks.insert(shard_id, encoded_hashes[shard_id]);
+        }
+      }
+
+      // Decode the missing shard
+      shard_id_map<bufferlist> out_bls(get_k_plus_m());
+      int r = erasure_code->decode(need, chunks, &out_bls, chunk_size);
+
+      EXPECT_EQ(r, 0);
+
+      // Check the missing shard has been decoded correctly
+      uint32_t decoded_crc =
+          read_crc_from_bufferlist(out_bls[missing_shard_id]);
+      uint32_t original_crc =
+          read_crc_from_bufferlist(hashes_bl, missing_shard_id.id * chunk_size);
+
+      different = different | (decoded_crc != original_crc);
+    }
+  }
+
+  if (erasure_code->get_supported_optimizations() &
+      ErasureCodeInterface::FLAG_EC_PLUGIN_CRC_ENCODE_DECODE_SUPPORT) {
+    // Plugin should not have FLAG_EC_PLUGIN_CRC_ENCODE_DECODE_SUPPORT enabled,
+    // this failure proves that it can cause a data integrity issue
+    EXPECT_EQ(different, false);
+  }
+}
+
+TEST_P(PluginTest, decode_test)
+{
+  initialize();
+  if (get_k() != 2)
+  {
+    GTEST_SKIP() << "Ignore me";
+  }
+
+  if (get_m() != 1)
+  {
+    GTEST_SKIP() << "Ignore me";
+  }
+
+  shard_id_set want_to_encode;
+  for (shard_id_t i = shard_id_t(0); i < get_k_plus_m(); ++i) {
+    want_to_encode.insert(i);
+  }
+
+  uint32_t crcs[] = {0x9967888a, 0xb14039a2, 0x2827b128};
+  bufferlist data_bl;
+  for (unsigned i=0; i < get_k(); ++i) {
+    bufferptr s = create_buffer_from_crc(crcs[i]);
+    data_bl.append(s);
+  }
+
+  shard_id_map<bufferlist> encoded_data(get_k_plus_m());
+  erasure_code->encode(want_to_encode, data_bl, &encoded_data);
+
+  std::cout << fmt::format("{}: Encoded: ", __func__);
+  for (auto& [shard_id, bl] : encoded_data)
+  {
+    unsigned int hex = (reinterpret_cast<unsigned char&>(bl.c_str()[3]) << 24) |
+                       (reinterpret_cast<unsigned char&>(bl.c_str()[2]) << 16) |
+                       (reinterpret_cast<unsigned char&>(bl.c_str()[1]) << 8) |
+                       (reinterpret_cast<unsigned char&>(bl.c_str()[0]));
+    std::cout << fmt::format("[{}: {:#010x}] ", shard_id.id, hex);
+    //ceph_assert(hex == crcs[(int)shard_id]);
+  }
+  std::cout << std::endl;
+
+  bufferptr s5 = create_buffer_from_crc(0xd5e5629a);
+  bufferptr s6 = create_buffer_from_crc(0x556e82b9);
+
+  shard_id_set want_to_decode;
+  for (shard_id_t i = shard_id_t(1); i < get_k_plus_m(); ++i) {
+    want_to_decode.insert(i);
+  }
+  //erasure_code->decode_chunks(want_to_decode, data_bl, )
+}
+
 INSTANTIATE_TEST_SUITE_P(
   PluginTests,
   PluginTest,

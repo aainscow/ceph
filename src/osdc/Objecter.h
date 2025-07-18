@@ -56,6 +56,7 @@
 #include "common/tracer.h"
 #include "common/Throttle.h"
 #include "crush/crush.h" // for CRUSH_ITEM_NONE
+#include "common/interval_map.h"
 
 #include "mon/MonClient.h"
 
@@ -1690,6 +1691,10 @@ inline std::ostream& operator <<(std::ostream& m, const ObjectOperation& oo) {
 // ----------------
 
 class Objecter : public md_config_obs_t, public Dispatcher {
+  friend class SplitIo;
+  friend class ECSplitIo;
+  friend class ReplicaSplitIo;
+
   using MOSDOp = _mosdop::MOSDOp<osdc_opvec>;
 public:
   using OpSignature = void(boost::system::error_code);

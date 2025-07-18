@@ -1008,8 +1008,8 @@ int ECBackend::objects_read_sync(
     bufferlist *bl) {
 
   if (!sinfo.supports_direct_reads()) {
-  return -EOPNOTSUPP;
-}
+    return -EOPNOTSUPP;
+  }
 
   int r = _objects_read_sync(hoid, off, len, op_flags, bl);
 
