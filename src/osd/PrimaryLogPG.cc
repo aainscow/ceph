@@ -9166,7 +9166,9 @@ void PrimaryLogPG::log_stats(hobject_t soid,
                              ObjectStore::Transaction& t,
                              bool is_delta)
 {
-  Formatter *f = Formatter::create("json");
+  std::map<hobject_t, int> soid_oi_set_count_map;
+
+  dout(20) << __func__ << ", soid: " << soid << " pg_stats ";
 
   std::string operation = "updated to ";
   if (is_delta)
@@ -9174,15 +9176,14 @@ void PrimaryLogPG::log_stats(hobject_t soid,
     operation = "delta applied ";
   }
 
+  *_dout << operation;
+
+  std::unique_ptr<Formatter> f(Formatter::create("json"));
   f->open_object_section("stats");
-  stats.dump(f);
+  stats.dump(f.get());
   f->close_section();
 
-  dout(20) << __func__ << ", soid: " << soid << " pg_stats " << operation;
   f->flush(*_dout);
-  *_dout << dendl;
-
-  std::map<hobject_t, int> soid_oi_set_count_map;
 
   ObjectStore::Transaction::iterator i = t.begin();
 
@@ -9221,10 +9222,10 @@ void PrimaryLogPG::log_stats(hobject_t soid,
           f->open_object_section("oi");
           i.decode_bl(bl);
           object_info_t oi(bl);
-          oi.dump(f);
+          oi.dump(f.get());
           f->close_section();
 
-          dout(20) << __func__ << ", soid: " << soid
+          dout(20) << "\n" << __func__ << ", soid: " << soid
                    << " setattr - OI set to ";
           f->flush(*_dout);
           *_dout << dendl;
@@ -9246,13 +9247,12 @@ void PrimaryLogPG::log_stats(hobject_t soid,
             f->open_object_section("oi");
             bl.append(p->second);
             object_info_t oi_decode(bl);
-            oi_decode.dump(f);
+            oi_decode.dump(f.get());
             f->close_section();
 
-            dout(20) << __func__ << ", soid: " << soid
+            *_dout << "\n" <<__func__ << ", soid: " << soid
                      << " setattrs - OI set to ";
             f->flush(*_dout);
-            *_dout << "bl: " << bl << dendl;
 
             soid_oi_set_count_map[soid]++;
           }
@@ -9293,12 +9293,15 @@ void PrimaryLogPG::log_stats(hobject_t soid,
     }
   }
 
+  *_dout << dendl;
+
   for (const auto&[soid, oi_set_count] : soid_oi_set_count_map)
   {
     if (oi_set_count > 1)
     {
+      std::unique_ptr<Formatter> f(Formatter::create("json"));
       f->open_object_section("t");
-      t.dump(f);
+      t.dump(f.get());
       f->close_section();
       dout(10) << __func__ << ", soid: " << soid
                << " INFO: oi set multiple ("
