@@ -93,6 +93,8 @@ public:
           std::string &location, bool &propose_pending);
   int cfg_location_disaster_clear(const NvmeGroupKey& group_key,
           std::string &location, bool &propose_pending);
+  void check_all_gws_in_deleting_state(const NvmeGwId &gw_id,
+    const NvmeGroupKey& group_key);
   void process_gw_map_ka(
     const NvmeGwId &gw_id, const NvmeGroupKey& group_key,
     epoch_t& last_osd_epoch,  bool &propose_pending);
