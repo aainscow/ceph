@@ -188,26 +188,26 @@ class SplitOp {
     shunique_lock<ceph::shared_mutex>& sul, ceph_tid_t *ptid, int *ctx_budget, CephContext *cct);
 };
 
-class ECSpllitOp : public SplitOp{
+class ECSplitOp : public SplitOp{
  public:
   using SplitOp::SplitOp;
   std::pair<extent_set, bufferlist> assemble_buffer_sparse_read(int ops_index) override;
   void assemble_buffer_read(bufferlist &bl_out, int ops_index) override;
   void init_read(OSDOp &op, bool sparse, int ops_index) override;
-  ECSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count);
-  ~ECSpllitOp() {
+  ECSplitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count);
+  ~ECSplitOp() {
     complete();
   }
 };
 
-class ReplicaSpllitOp : public SplitOp {
+class ReplicaSplitOp : public SplitOp {
  public:
   using SplitOp::SplitOp;
   std::pair<extent_set, bufferlist> assemble_buffer_sparse_read(int ops_index) override;
   void assemble_buffer_read(bufferlist &bl_out, int ops_index) override;
   void init_read(OSDOp &op, bool sparse, int ops_index) override;
-  ReplicaSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size);
-  ~ReplicaSpllitOp() {
+  ReplicaSplitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size);
+  ~ReplicaSplitOp() {
     complete();
   }
 };

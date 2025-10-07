@@ -16,9 +16,9 @@ constexpr static uint64_t kReplicaMinShardReads = 2;
 constexpr static uint64_t kReplicaMinReadSize = kReplicaMinShardReadSize * kReplicaMinShardReads;
 
 #undef dout_prefix
-#define dout_prefix *_dout << " ECSpllitOp::"
+#define dout_prefix *_dout << " ECSplitOp::"
 
-std::pair<SplitOp::extent_set, bufferlist> ECSpllitOp::assemble_buffer_sparse_read(int ops_index) {
+std::pair<SplitOp::extent_set, bufferlist> ECSplitOp::assemble_buffer_sparse_read(int ops_index) {
   bufferlist bl_out;
   extent_set extents_out;
 
@@ -63,7 +63,7 @@ std::pair<SplitOp::extent_set, bufferlist> ECSpllitOp::assemble_buffer_sparse_re
   return std::pair(extents_out, bl_out);
 }
 
-void ECSpllitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
+void ECSplitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
   auto &orig_osd_op = orig_op->ops[ops_index].op;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(orig_op->target.base_oloc.pool);
   ECStripeView stripe_view(orig_osd_op.extent.offset, orig_osd_op.extent.length, pi);
@@ -81,7 +81,7 @@ void ECSpllitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
   }
 }
 
-void ECSpllitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
+void ECSplitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
   auto &t = orig_op->target;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(t.base_oloc.pool);
   uint64_t offset = op.op.extent.offset;
@@ -140,32 +140,13 @@ void ECSpllitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
   }
 }
 
-ECSpllitOp::ECSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count) :
-  SplitOp(op, objecter, cct, count) {
-  auto &t = op->target;
-  const pg_pool_t *pi = objecter.osdmap->get_pg_pool(t.base_oloc.pool);
-
-  // Reject if direct reads not supported by profile.
-  if (!pi->has_flag(pg_pool_t::FLAG_CLIENT_SPLIT_READS)) {
-    ldout(cct, DBG_LVL) << __func__ <<" ABORT: direct reads off" << dendl;
-    abort = true;
-    return;
-  }
-
-  ceph_osd_op &osd_op = op->ops[0].op;
-
-  // Ignore zero-length reads.
-  if (osd_op.extent.length == 0) {
-    ldout(cct, DBG_LVL) << __func__ <<" ABORT: Zero length read" << dendl;
-    abort = true;
-    return;
-  }
-}
+ECSplitOp::ECSplitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count) :
+  SplitOp(op, objecter, cct, count) {}
 
 #undef dout_prefix
-#define dout_prefix *_dout << " ReplicaSpllitOp::"
+#define dout_prefix *_dout << " ReplicaSplitOp::"
 
-std::pair<SplitOp::extent_set, bufferlist> ReplicaSpllitOp::assemble_buffer_sparse_read(int ops_index) {
+std::pair<SplitOp::extent_set, bufferlist> ReplicaSplitOp::assemble_buffer_sparse_read(int ops_index) {
   extent_set extents_out;
   bufferlist bl_out;
 
@@ -179,21 +160,14 @@ std::pair<SplitOp::extent_set, bufferlist> ReplicaSpllitOp::assemble_buffer_spar
   return std::pair(extents_out, bl_out);
 }
 
-void ReplicaSpllitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
+void ReplicaSplitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
   for (auto && [_, sr] : sub_reads) {
     bl_out.append(sr.details[ops_index].bl);
   }
 }
 
-ReplicaSpllitOp::ReplicaSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size) :
+ReplicaSplitOp::ReplicaSplitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size) :
   SplitOp(op, objecter, cct, pool_size) {
-  ceph_osd_op &osd_op = orig_op->ops[0].op;
-
-  if (osd_op.extent.length < kReplicaMinReadSize) {
-    ldout(cct, DBG_LVL) << __func__ <<" ABORT: IO too small" << dendl;
-    abort = true;
-    return;
-  }
 
   // This may not actually be the primary, but since all shards are kept current
   // in replica, it does not actually matter which we choose here. Choose 0 since
@@ -201,7 +175,7 @@ ReplicaSpllitOp::ReplicaSpllitOp(Objecter::Op *op, Objecter &objecter, CephConte
   primary_shard = shard_id_t(0);
 }
 
-void ReplicaSpllitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
+void ReplicaSplitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
 
   auto &t = orig_op->target;
 
@@ -245,7 +219,7 @@ void ReplicaSpllitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
 }
 
 #undef dout_prefix
-#define dout_prefix *_dout << " SpllitOp::"
+#define dout_prefix *_dout << " SplitOp::"
 
 int SplitOp::assemble_rc() {
   int rc = 0;
@@ -334,7 +308,9 @@ static bool validate(Objecter::Op *op, bool is_erasure, CephContext *cct) {
     switch (o.op.op) {
       case CEPH_OSD_OP_READ:
       case CEPH_OSD_OP_SPARSE_READ: {
-        if (is_erasure || o.op.extent.length >= kReplicaMinReadSize) {
+        uint64_t length = o.op.extent.length;
+        if ((is_erasure && length > 0) ||
+            (!is_erasure && length >= kReplicaMinReadSize)) {
           suitable_read_found = true;
         }
         break;
@@ -420,14 +396,13 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
 
   debug_op_summary("orig_op: ", op, cct);
 
-  bool validated = validate(op, pi->is_erasure(), cct);
-
-  // In EC, the "original" op never supports balanced reads and indeed setting
-  // it will misdirect IO in the OSD. The following logic will determine if a
-  // direct read is actually possible.
-  if (pi->is_erasure()) {
-    t.flags &= ~CEPH_OSD_FLAG_BALANCE_READS;
+  // Reject if direct reads not supported by profile.
+  if (!pi->has_flag(pg_pool_t::FLAG_CLIENT_SPLIT_READS)) {
+    ldout(cct, DBG_LVL) << __func__ <<" REJECT: split reads off" << dendl;
+    return false;
   }
+
+  bool validated = validate(op, pi->is_erasure(), cct);
 
   if (!validated) {
     return false;
@@ -436,9 +411,9 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
   std::shared_ptr<SplitOp> split_read;
 
   if (pi->is_erasure()) {
-    split_read = std::make_shared<ECSpllitOp>(op, objecter, cct, pi->size);
+    split_read = std::make_shared<ECSplitOp>(op, objecter, cct, pi->size);
   } else {
-    split_read = std::make_shared<ReplicaSpllitOp>(op, objecter, cct, pi->size);
+    split_read = std::make_shared<ReplicaSplitOp>(op, objecter, cct, pi->size);
   }
 
   if (split_read->abort) {
@@ -457,15 +432,12 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     }
   }
 
-  if (split_read->sub_reads.size() == 1 && split_read->primary_shard && pi->is_erasure()) {
-    ldout(cct, DBG_LVL) << __func__ <<" single-read to primary or replica, ignore. " << dendl;
-    split_read->abort = true;
-  }
-
   if (split_read->abort) {
     ldout(cct, DBG_LVL) << __func__ <<" ABORTED 2" << dendl;
     return false;
   }
+
+  ldout(cct, DBG_LVL) << __func__ <<" sub_reads ready. count=" << split_read->sub_reads.size() << dendl;
 
   // We are committed to doing a split read. Any re-attempts should not be either
   // split or balanced.
@@ -487,8 +459,8 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
       sub_op->target.flags |= CEPH_OSD_FLAG_BALANCE_READS;
     }
 
-    debug_op_summary("sent_op: ", sub_op, cct);
     objecter._op_submit_with_budget(sub_op, sul, ptid, ctx_budget);
+    debug_op_summary("sent_op", sub_op, cct);
   }
 
   ceph_assert(split_read->sub_reads.size() > 0);
