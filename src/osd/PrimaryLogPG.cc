@@ -2053,7 +2053,15 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
-  if ((m->get_flags() & CEPH_OSD_FLAG_DIRECT_READ) &&
+  if (m->get_flags() & CEPH_OSD_FLAG_EC_DIRECT_READ) {
+    if (is_primary() || is_nonprimary()) {
+      op->set_ec_direct_read();
+    } else {
+      osd->handle_misdirected_op(this, op);
+      return;
+    }
+  } else if ((m->get_flags() & (CEPH_OSD_FLAG_BALANCE_READS |
+                                CEPH_OSD_FLAG_LOCALIZE_READS)) &&
       op->may_read() &&
       !(op->may_write() || op->may_cache())) {
     // balanced reads; any replica will do
@@ -2061,7 +2069,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       osd->handle_misdirected_op(this, op);
       return;
     }
-    op->set_ec_direct_read();
   } else {
     // normal case; must be primary
     if (!is_primary()) {
