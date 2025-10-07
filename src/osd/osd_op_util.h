@@ -59,7 +59,7 @@ public:
   bool need_skip_handle_cache() const;
   bool need_skip_promote() const;
   bool allows_returnvec() const;
-  bool balance_read() const;
+  bool ec_direct_read() const;
 
   void set_read();
   void set_write();
@@ -73,7 +73,7 @@ public:
   void set_force_rwordered();
   void set_returnvec();
   void set_read_data();
-  void set_balance_read();
+  void set_ec_direct_read();
 
   int set_from_op(
     const MOSDOp *m,

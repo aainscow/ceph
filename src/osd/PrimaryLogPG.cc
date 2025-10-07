@@ -2046,16 +2046,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   // check for op with rwordered and rebalance or localize reads
-  if ((m->has_flag(CEPH_OSD_FLAG_BALANCE_READS) || m->has_flag(CEPH_OSD_FLAG_LOCALIZE_READS)) &&
-      op->rwordered()) {
+  if (m->has_flag(CEPH_OSD_FLAG_DIRECT_READ) && op->rwordered()) {
     dout(4) << __func__ << ": rebelance or localized reads with rwordered not allowed "
        << *m << dendl;
     osd->reply_op_error(op, -EINVAL);
     return;
   }
 
-  if ((m->get_flags() & (CEPH_OSD_FLAG_BALANCE_READS |
-			 CEPH_OSD_FLAG_LOCALIZE_READS)) &&
+  if ((m->get_flags() & CEPH_OSD_FLAG_DIRECT_READ) &&
       op->may_read() &&
       !(op->may_write() || op->may_cache())) {
     // balanced reads; any replica will do
@@ -2063,7 +2061,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       osd->handle_misdirected_op(this, op);
       return;
     }
-    op->set_balance_read();
+    op->set_ec_direct_read();
   } else {
     // normal case; must be primary
     if (!is_primary()) {
@@ -5887,7 +5885,7 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
         op.extent.length >= oi.size)
       maybe_crc = oi.data_digest;
 
-    if (ctx->op->balance_read()) {
+    if (ctx->op->ec_direct_read()) {
       result = pgbackend->objects_read_sync(
         soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata);
 
@@ -5964,7 +5962,7 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
   }
 
   ++ctx->num_read;
-  if (pool.info.is_erasure() && !ctx->op->balance_read()) {
+  if (pool.info.is_erasure() && !ctx->op->ec_direct_read()) {
     // translate sparse read to a normal one if not supported
 
     if (length > 0) {
