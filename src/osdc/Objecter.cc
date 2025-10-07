@@ -3076,7 +3076,6 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
       prev_pgid.is_merge_target(t->pg_num, pg_num);
   }
 
-  bool ec_direct = false;
   if (legacy_change || split_or_merge || force_resend) {
     t->pgid = pgid;
     t->acting = std::move(acting);
@@ -3089,7 +3088,18 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
     t->pg_num_mask = pg_num_mask;
     t->pg_num_pending = pg_num_pending;
     spg_t spgid(actual_pgid);
-    if (pi->is_erasure()) {
+    if (t->force_shard) {
+      t->osd = t->acting[int(*t->force_shard)];
+      // In some redrive scenarios, the acting set can change. Fail the IO
+      // and retry.
+      if (!osdmap->exists(t->osd)) {
+        t->osd = -1;
+        return RECALC_OP_TARGET_POOL_DNE;
+      }
+      if (pi->is_erasure()) {
+        spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, *t->force_shard));
+      }
+    } else if (pi->is_erasure()) {
       // Optimized EC pools need to be careful when calculating the shard
       // because an OSD may have multiple shards and the primary shard
       // might not be the first one in the acting set. The lookup
@@ -3098,23 +3108,10 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
       if (osdmap->has_pgtemp(actual_pgid)) {
 	pg_temp = osdmap->pgtemp_primaryfirst(*pi, t->acting);
       }
-      if (t->force_shard) {
-        ec_direct = true;
-        t->osd = t->acting[int(*t->force_shard)];
-        // In some redrive scenarios, the acting set can change. Fail the IO
-        // and retry.
-        if (!osdmap->exists(t->osd)) {
-          t->osd = -1;
-          return RECALC_OP_TARGET_POOL_DNE;
-        }
-        spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, *t->force_shard));
-
-      } else {
-        for (uint8_t i = 0; i < t->acting.size(); ++i) {
-          if (pg_temp[i] == acting_primary) {
-            spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, shard_id_t(i)));
-            break;
-          }
+      for (uint8_t i = 0; i < t->acting.size(); ++i) {
+        if (pg_temp[i] == acting_primary) {
+          spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, shard_id_t(i)));
+          break;
         }
       }
     }
@@ -3131,15 +3128,12 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
 		   << " acting " << t->acting
 		   << " primary " << acting_primary << dendl;
     t->used_replica = false;
-    if (!ec_direct && (t->flags & (CEPH_OSD_FLAG_BALANCE_READS |
+    if (!t->force_shard && (t->flags & (CEPH_OSD_FLAG_BALANCE_READS |
                      CEPH_OSD_FLAG_LOCALIZE_READS)) &&
         !is_write && pi->is_replicated() && t->acting.size() > 1) {
       int osd;
       ceph_assert(is_read && t->acting[0] == acting_primary);
-      if (t->force_shard) {
-        osd = t->acting[int(*t->force_shard)];
-      }
-      else if (t->flags & CEPH_OSD_FLAG_BALANCE_READS) {
+      if (t->flags & CEPH_OSD_FLAG_BALANCE_READS) {
 	int p = rand() % t->acting.size();
 	if (p)
 	  t->used_replica = true;
@@ -3172,8 +3166,7 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
       }
       ceph_assert(!t->force_shard);
       t->osd = osd;
-    } else if (!ec_direct) {
-      ceph_assert(!t->force_shard);
+    } else if (!t->force_shard) {
       t->osd = acting_primary;
     }
   }
