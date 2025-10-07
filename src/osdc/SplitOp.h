@@ -3,7 +3,7 @@
 #include <ostream>
 #include <ranges>
 
-class SplitIo {
+class SplitOp {
 
  protected:
   using extent = std::pair<uint64_t, uint64_t>;
@@ -156,10 +156,10 @@ class SplitIo {
   // RC, but otherwise rely on the shared_ptr destroying ec_read to deal with
   // completion of the parent IO.
   struct Finisher : Context {
-    std::shared_ptr<SplitIo> split_read;
+    std::shared_ptr<SplitOp> split_read;
     SubRead &sub_read;
 
-    Finisher(std::shared_ptr<SplitIo> split_read, SubRead &sub_read) : split_read(split_read), sub_read(sub_read) {}
+    Finisher(std::shared_ptr<SplitOp> split_read, SubRead &sub_read) : split_read(split_read), sub_read(sub_read) {}
     void finish(int r) override {
       sub_read.rc = r;
     }
@@ -181,33 +181,33 @@ class SplitIo {
   std::map<shard_id_t, std::vector<int>> op_offset_map;
 
  public:
-  SplitIo(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count) : orig_op(op), objecter(objecter), sub_reads(count), cct(cct) {}
-  virtual ~SplitIo() = default;
+  SplitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count) : orig_op(op), objecter(objecter), sub_reads(count), cct(cct) {}
+  virtual ~SplitOp() = default;
   void complete();
   static bool create(Objecter::Op *op, Objecter &objecter,
     shunique_lock<ceph::shared_mutex>& sul, ceph_tid_t *ptid, int *ctx_budget, CephContext *cct);
 };
 
-class ECSplitIo : public SplitIo{
+class ECSpllitOp : public SplitOp{
  public:
-  using SplitIo::SplitIo;
+  using SplitOp::SplitOp;
   std::pair<extent_set, bufferlist> assemble_buffer_sparse_read(int ops_index) override;
   void assemble_buffer_read(bufferlist &bl_out, int ops_index) override;
   void init_read(OSDOp &op, bool sparse, int ops_index) override;
-  ECSplitIo(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count);
-  ~ECSplitIo() {
+  ECSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count);
+  ~ECSpllitOp() {
     complete();
   }
 };
 
-class ReplicaSplitIo : public SplitIo {
+class ReplicaSpllitOp : public SplitOp {
  public:
-  using SplitIo::SplitIo;
+  using SplitOp::SplitOp;
   std::pair<extent_set, bufferlist> assemble_buffer_sparse_read(int ops_index) override;
   void assemble_buffer_read(bufferlist &bl_out, int ops_index) override;
   void init_read(OSDOp &op, bool sparse, int ops_index) override;
-  ReplicaSplitIo(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size);
-  ~ReplicaSplitIo() {
+  ReplicaSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size);
+  ~ReplicaSpllitOp() {
     complete();
   }
 };

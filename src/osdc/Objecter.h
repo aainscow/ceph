@@ -1691,9 +1691,9 @@ inline std::ostream& operator <<(std::ostream& m, const ObjectOperation& oo) {
 // ----------------
 
 class Objecter : public md_config_obs_t, public Dispatcher {
-  friend class SplitIo;
-  friend class ECSplitIo;
-  friend class ReplicaSplitIo;
+  friend class SplitOp;
+  friend class ECSpllitOp;
+  friend class ReplicaSpllitOp;
 
   using MOSDOp = _mosdop::MOSDOp<osdc_opvec>;
 public:

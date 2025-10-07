@@ -1,5 +1,5 @@
 #include "osdc/Objecter.h"
-#include "osdc/SplitIo.h"
+#include "osdc/SplitOp.h"
 #include "osd/osd_types.h"
 
 #define dout_subsys ceph_subsys_objecter
@@ -16,9 +16,9 @@ constexpr static uint64_t kReplicaMinShardReads = 2;
 constexpr static uint64_t kReplicaMinReadSize = kReplicaMinShardReadSize * kReplicaMinShardReads;
 
 #undef dout_prefix
-#define dout_prefix *_dout << " ECSplitIo::"
+#define dout_prefix *_dout << " ECSpllitOp::"
 
-std::pair<SplitIo::extent_set, bufferlist> ECSplitIo::assemble_buffer_sparse_read(int ops_index) {
+std::pair<SplitOp::extent_set, bufferlist> ECSpllitOp::assemble_buffer_sparse_read(int ops_index) {
   bufferlist bl_out;
   extent_set extents_out;
 
@@ -63,7 +63,7 @@ std::pair<SplitIo::extent_set, bufferlist> ECSplitIo::assemble_buffer_sparse_rea
   return std::pair(extents_out, bl_out);
 }
 
-void ECSplitIo::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
+void ECSpllitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
   auto &orig_osd_op = orig_op->ops[ops_index].op;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(orig_op->target.base_oloc.pool);
   ECStripeView stripe_view(orig_osd_op.extent.offset, orig_osd_op.extent.length, pi);
@@ -81,7 +81,7 @@ void ECSplitIo::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
   }
 }
 
-void ECSplitIo::init_read(OSDOp &op, bool sparse, int ops_index) {
+void ECSpllitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
   auto &t = orig_op->target;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(t.base_oloc.pool);
   uint64_t offset = op.op.extent.offset;
@@ -140,8 +140,8 @@ void ECSplitIo::init_read(OSDOp &op, bool sparse, int ops_index) {
   }
 }
 
-ECSplitIo::ECSplitIo(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count) :
-  SplitIo(op, objecter, cct, count) {
+ECSpllitOp::ECSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count) :
+  SplitOp(op, objecter, cct, count) {
   auto &t = op->target;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(t.base_oloc.pool);
 
@@ -163,9 +163,9 @@ ECSplitIo::ECSplitIo(Objecter::Op *op, Objecter &objecter, CephContext *cct, int
 }
 
 #undef dout_prefix
-#define dout_prefix *_dout << " ReplicaSplitIo::"
+#define dout_prefix *_dout << " ReplicaSpllitOp::"
 
-std::pair<SplitIo::extent_set, bufferlist> ReplicaSplitIo::assemble_buffer_sparse_read(int ops_index) {
+std::pair<SplitOp::extent_set, bufferlist> ReplicaSpllitOp::assemble_buffer_sparse_read(int ops_index) {
   extent_set extents_out;
   bufferlist bl_out;
 
@@ -179,14 +179,14 @@ std::pair<SplitIo::extent_set, bufferlist> ReplicaSplitIo::assemble_buffer_spars
   return std::pair(extents_out, bl_out);
 }
 
-void ReplicaSplitIo::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
+void ReplicaSpllitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) {
   for (auto && [_, sr] : sub_reads) {
     bl_out.append(sr.details[ops_index].bl);
   }
 }
 
-ReplicaSplitIo::ReplicaSplitIo(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size) :
-  SplitIo(op, objecter, cct, pool_size) {
+ReplicaSpllitOp::ReplicaSpllitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int pool_size) :
+  SplitOp(op, objecter, cct, pool_size) {
   ceph_osd_op &osd_op = orig_op->ops[0].op;
 
   if (osd_op.extent.length < kReplicaMinReadSize) {
@@ -201,7 +201,7 @@ ReplicaSplitIo::ReplicaSplitIo(Objecter::Op *op, Objecter &objecter, CephContext
   primary_shard = shard_id_t(0);
 }
 
-void ReplicaSplitIo::init_read(OSDOp &op, bool sparse, int ops_index) {
+void ReplicaSpllitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
 
   auto &t = orig_op->target;
 
@@ -245,9 +245,9 @@ void ReplicaSplitIo::init_read(OSDOp &op, bool sparse, int ops_index) {
 }
 
 #undef dout_prefix
-#define dout_prefix *_dout << " SplitIo::"
+#define dout_prefix *_dout << " SpllitOp::"
 
-int SplitIo::assemble_rc() {
+int SplitOp::assemble_rc() {
   int rc = 0;
   bool rc_zero = false;
 
@@ -270,7 +270,7 @@ int SplitIo::assemble_rc() {
   return rc;
 }
 
-void SplitIo::complete() {
+void SplitOp::complete() {
   if (abort) {
     return;
   }
@@ -354,7 +354,7 @@ static bool validate(Objecter::Op *op, bool is_erasure, CephContext *cct) {
   return suitable_read_found;
 }
 
-void SplitIo::init(OSDOp &op, int ops_index) {
+void SplitOp::init(OSDOp &op, int ops_index) {
   switch (op.op.op) {
     case CEPH_OSD_OP_SPARSE_READ: {
       init_read(op, true, ops_index);
@@ -407,7 +407,7 @@ void debug_op_summary(const std::string &str, Objecter::Op *op, CephContext *cct
 }
 
 
-bool SplitIo::create(Objecter::Op *op, Objecter &objecter,
+bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
   shunique_lock<ceph::shared_mutex>& sul, ceph_tid_t *ptid, int *ctx_budget, CephContext *cct) {
 
   auto &t = op->target;
@@ -433,12 +433,12 @@ bool SplitIo::create(Objecter::Op *op, Objecter &objecter,
     return false;
   }
 
-  std::shared_ptr<SplitIo> split_read;
+  std::shared_ptr<SplitOp> split_read;
 
   if (pi->is_erasure()) {
-    split_read = std::make_shared<ECSplitIo>(op, objecter, cct, pi->size);
+    split_read = std::make_shared<ECSpllitOp>(op, objecter, cct, pi->size);
   } else {
-    split_read = std::make_shared<ReplicaSplitIo>(op, objecter, cct, pi->size);
+    split_read = std::make_shared<ReplicaSpllitOp>(op, objecter, cct, pi->size);
   }
 
   if (split_read->abort) {
@@ -481,7 +481,11 @@ bool SplitIo::create(Objecter::Op *op, Objecter &objecter,
       t.base_oid, t.base_oloc, split_read->sub_reads.at(shard).rd, op->snapid,
       nullptr, split_read->flags, -1, fin, objver);
     sub_op->target.force_shard.emplace(shard);
-    sub_op->target.flags |= CEPH_OSD_FLAG_BALANCE_READS;
+    if (pi->is_erasure()) {
+      sub_op->target.flags |= CEPH_OSD_FLAG_EC_DIRECT_READ;
+    } else {
+      sub_op->target.flags |= CEPH_OSD_FLAG_BALANCE_READS;
+    }
 
     debug_op_summary("sent_op: ", sub_op, cct);
     objecter._op_submit_with_budget(sub_op, sul, ptid, ctx_budget);

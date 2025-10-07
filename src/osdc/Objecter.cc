@@ -62,7 +62,7 @@
 
 #include "neorados/RADOSImpl.h"
 
-#include "osdc/SplitIo.h"
+#include "osdc/SplitOp.h"
 
 using std::list;
 using std::make_pair;
@@ -2335,7 +2335,7 @@ void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
     ptid = &tid;
   op->trace.event("op submit");
 
-  bool was_split = SplitIo::create(op, *this, rl, ptid, ctx_budget, cct);
+  bool was_split = SplitOp::create(op, *this, rl, ptid, ctx_budget, cct);
 
   if (!was_split) {
     _op_submit_with_budget(op, rl, ptid, ctx_budget);
