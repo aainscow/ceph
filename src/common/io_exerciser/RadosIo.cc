@@ -245,8 +245,9 @@ void RadosIo::applyReadWriteOp(IoOp& op) {
       }
       finish_io();
     };
-    librados::async_operate(asio.get_executor(), io, oid,
-                            std::move(rop), 0, nullptr, read_cb);
+    int flags = librados::OPERATION_BALANCE_READS;
+    librados::async_operate(asio.get_executor(), io, primary_oid,
+                            std::move(rop), flags, nullptr, read_cb);
     num_io++;
   };
 
