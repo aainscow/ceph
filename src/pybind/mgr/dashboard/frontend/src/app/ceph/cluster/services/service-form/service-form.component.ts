@@ -4,7 +4,7 @@ import { Component, EventEmitter, Input, OnInit, Output, ViewChild } from '@angu
 import { AbstractControl, UntypedFormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { NgbTypeahead } from '@ng-bootstrap/ng-bootstrap';
+import { NgbActiveModal, NgbTypeahead } from '@ng-bootstrap/ng-bootstrap';
 import { ListItem } from 'carbon-components-angular';
 import _ from 'lodash';
 import { forkJoin, Observable, Subject, Subscription } from 'rxjs';
@@ -145,7 +145,8 @@ export class ServiceFormComponent extends CdForm implements OnInit {
     public rgwMultisiteService: RgwMultisiteService,
     private route: ActivatedRoute,
     public modalService: ModalCdsService,
-    private location: Location
+    private location: Location,
+    public activeModal: NgbActiveModal,
   ) {
     super();
     this.resource = $localize`service`;
