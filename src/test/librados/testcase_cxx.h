@@ -136,7 +136,6 @@ protected:
 
   void SetUp() override;
   void TearDown() override;
-  librados::IoCtx ioctx;
   bool cleanup;
   std::string nspace;
 };

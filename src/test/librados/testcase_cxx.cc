@@ -430,8 +430,12 @@ void RadosTestECPP::TearDown()
     cleanup_namespace(ioctx, nspace);
   }
   if (ec_overwrites_set) {
-    ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, s_cluster));
-    ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
+    ASSERT_EQ(0, destroy_ec_pool_pp(pool_name, s_cluster));
+    ASSERT_EQ("", create_ec_pool_pp(pool_name, s_cluster, fast_ec));
+    if (split_ops) {
+      set_split_ops_pp(pool_name, s_cluster, true);
+    }
+
     ec_overwrites_set = false;
   }
   ioctx.close();
