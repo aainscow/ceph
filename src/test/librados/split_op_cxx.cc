@@ -83,4 +83,35 @@ TEST_P(LibRadosSplitOpECPP, XattrReads) {
   ASSERT_EQ(0, getxattrs_rval);
 }
 
+TEST_P(LibRadosSplitOpECPP, Stat) {
+  SKIP_IF_CRIMSON();
+  bufferlist bl, attr_bl, attr_read_bl;
+  std::string attr_key = "my_key";
+  std::string attr_value = "my_attr";
+
+  bl.append("ceph");
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  encode(attr_value, attr_bl);
+  write1.setxattr(attr_key.c_str(), attr_bl);
+  ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &write1));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+
+  uint64_t size;
+  timespec time;
+  time.tv_nsec = 0;
+  time.tv_sec = 0;
+  int stat_rval;
+  read.stat2(&size, &time, &stat_rval);
+
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+  ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
+  ASSERT_EQ(0, stat_rval);
+  ASSERT_EQ(4, size);
+  ASSERT_NE(0, time.tv_nsec);
+  ASSERT_NE(0, time.tv_sec);
+}
+
 INSTANTIATE_TEST_SUITE_P_EC(LibRadosSplitOpECPP);
