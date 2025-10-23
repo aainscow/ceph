@@ -44,9 +44,11 @@ TEST_P(LibRadosSplitOpECPP, SmallRead) {
   write1.write(0, bl);
   ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &write1));
 
+  ioctx.set_no_objver(true);
   ObjectReadOperation read;
   read.read(0, bl.length(), NULL, NULL);
   ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+  ioctx.set_no_objver(true);
 }
 
 TEST_P(LibRadosSplitOpECPP, ReadWithIllegalClsOp) {

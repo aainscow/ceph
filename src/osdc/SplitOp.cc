@@ -595,6 +595,8 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     } else {
       st.flags |= CEPH_OSD_FLAG_BALANCE_READS;
     }
+    st.osd = st.acting[(int)shard];
+    st.actual_pgid.reset_shard(shard);
 
     objecter._op_submit_with_budget(sub_op, sul, ptid, ctx_budget);
     debug_op_summary("sent_op", sub_op, cct);
