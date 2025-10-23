@@ -2486,17 +2486,20 @@ void Objecter::_op_submit(Op *op, shunique_lock<ceph::shared_mutex>& sul, ceph_t
   OSDSession *s = NULL;
 
   bool check_for_latest_map = false;
-  int r = _calc_target(&op->target);
-  switch(r) {
-  case RECALC_OP_TARGET_POOL_DNE:
-    check_for_latest_map = true;
-    break;
-  case RECALC_OP_TARGET_POOL_EIO:
-    if (op->has_completion()) {
-      op->complete(make_error_code(osdc_errc::pool_eio), -EIO,
-		   service.get_executor());
+  int r = 0;
+  if ((op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ) == 0) {
+    r = _calc_target(&op->target);
+    switch(r) {
+    case RECALC_OP_TARGET_POOL_DNE:
+      check_for_latest_map = true;
+      break;
+    case RECALC_OP_TARGET_POOL_EIO:
+      if (op->has_completion()) {
+        op->complete(make_error_code(osdc_errc::pool_eio), -EIO,
+                     service.get_executor());
+      }
+      return;
     }
-    return;
   }
 
   // Try to get a session, including a retry if we need to take write lock

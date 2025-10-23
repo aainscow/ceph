@@ -583,12 +583,15 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     auto sub_op = objecter.prepare_read_op(
       t.base_oid, t.base_oloc, split_read->sub_reads.at(shard).rd, op->snapid,
       nullptr, split_read->flags, -1, fin, objver);
-    sub_op->target.force_shard.emplace(shard);
-    sub_op->target.flags |= CEPH_OSD_FLAG_FAIL_ON_EAGAIN;
+
+    auto &st = sub_op->target;
+    st = t; // Target can start off in same state as parent.
+    st.force_shard.emplace(shard);
+    st.flags |= CEPH_OSD_FLAG_FAIL_ON_EAGAIN;
     if (pi->is_erasure()) {
-      sub_op->target.flags |= CEPH_OSD_FLAG_EC_DIRECT_READ;
+      st.flags |= CEPH_OSD_FLAG_EC_DIRECT_READ;
     } else {
-      sub_op->target.flags |= CEPH_OSD_FLAG_BALANCE_READS;
+      st.flags |= CEPH_OSD_FLAG_BALANCE_READS;
     }
 
     objecter._op_submit_with_budget(sub_op, sul, ptid, ctx_budget);
