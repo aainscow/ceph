@@ -40,6 +40,7 @@ struct librados::IoCtxImpl {
   uint64_t assert_ver = 0;
   version_t last_objver = 0;
   uint32_t notify_timeout = 30;
+  bool no_objver = false;
   object_locator_t oloc;
   int extra_op_flags = 0;
   int objclass_flags_mask = -1;
@@ -296,6 +297,10 @@ struct librados::IoCtxImpl {
                                   const std::string &key);
   int application_metadata_list(const std::string& app_name,
                                 std::map<std::string, std::string> *values);
+
+  void set_no_objver(bool _no_objver) {
+    no_objver = _no_objver;
+  }
 
 };
 
