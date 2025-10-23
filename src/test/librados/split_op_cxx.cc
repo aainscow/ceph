@@ -36,6 +36,19 @@ TEST_P(LibRadosSplitOpECPP, ReadWithVersion) {
   ASSERT_EQ("", exec_version.objv.tag);
 }
 
+TEST_P(LibRadosSplitOpECPP, SmallRead) {
+  SKIP_IF_CRIMSON();
+  bufferlist bl;
+  bl.append("ceph");
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &write1));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+}
+
 TEST_P(LibRadosSplitOpECPP, ReadWithIllegalClsOp) {
   SKIP_IF_CRIMSON();
   bufferlist bl;

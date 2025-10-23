@@ -4291,7 +4291,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     return;
   }
 
-  if (result == -EAGAIN) {
+  if (result == -EAGAIN && !ctx->op->ec_direct_read()) {
     // clean up after the ctx
     close_op_ctx(ctx);
     return;

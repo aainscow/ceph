@@ -1009,11 +1009,11 @@ int ECBackend::objects_read_sync(
     bufferlist *bl) {
 
   if (!sinfo.supports_direct_reads()) {
-    return -EOPNOTSUPP;
+    return -EOPNOTSUPP; // Should never happen.
   }
 
   if (get_parent()->get_local_missing().is_missing(hoid)) {
-    return -EIO;  // Permission denied (cos its missing)
+    return -EAGAIN; // Shard is missing - need to retry from the primary
   }
 
   auto [shard_offset, shard_len] = extent_to_shard_extent(off, len);
@@ -1063,12 +1063,11 @@ int ECBackend::objects_readv_sync(const hobject_t &hoid,
      uint32_t op_flags,
      ceph::buffer::list *bl) {
   if (get_parent()->get_local_missing().is_missing(hoid)) {
-    return -EACCES;  // Permission denied (cos its missing)
+    return -EAGAIN;
   }
 
-  // Not using extent set, since we need the one used by readv.
-
   auto shard = get_parent()->whoami_shard().shard;
+  // Not using extent set, since we need the one used by readv.
   interval_set im(std::move(m));
   m.clear(); // Make m safe to write to again.
   auto r = switcher->store->readv(switcher->ch, ghobject_t(hoid, ghobject_t::NO_GEN, shard), im, *bl, op_flags);

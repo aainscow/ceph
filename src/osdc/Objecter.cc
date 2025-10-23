@@ -3737,7 +3737,7 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
     }
   }
 
-  if (rc == -EAGAIN && !op->target.force_shard) {
+  if (rc == -EAGAIN && (op->target.flags & CEPH_OSD_FLAG_FAIL_ON_EAGAIN) == 0) {
     ldout(cct, 7) << " got -EAGAIN, resubmitting" << dendl;
     if (op->has_completion())
       num_in_flight--;
@@ -3745,8 +3745,12 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
     sl.unlock();
 
     op->tid = 0;
-    op->target.flags &= ~(CEPH_OSD_FLAG_BALANCE_READS |
-			  CEPH_OSD_FLAG_LOCALIZE_READS);
+    op->target.flags &= ~CEPH_OSD_FLAGS_DIRECT_READ;
+
+    // If IGNORE_EAGAIN is not set and force_shard is set, the implication is
+    // that it is safe to redrive the IO to the primary, without any balanced
+    // read flag.
+    op->target.force_shard.reset();
     op->target.pgid = pg_t();
     _op_submit(op, sul, NULL);
     m->put();

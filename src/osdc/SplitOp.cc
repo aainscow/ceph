@@ -359,52 +359,6 @@ static bool validate_call(const OSDOp &op, std::string_view cls, std::string_vie
   return true;
 }
 
-static bool validate(Objecter::Op *op, bool is_erasure, CephContext *cct) {
-
-  if ((op->target.flags & CEPH_OSD_FLAG_BALANCE_READS) == 0 ) {
-    ldout(cct, DBG_LVL) << __func__ <<" REJECT: Client rejects balanced read" << dendl;
-    return false;
-  }
-
-  uint64_t suitable_read_found = false;
-  for (auto & o : op->ops) {
-    switch (o.op.op) {
-      case CEPH_OSD_OP_READ:
-      case CEPH_OSD_OP_SPARSE_READ: {
-        uint64_t length = o.op.extent.length;
-        if ((is_erasure && length > 0) ||
-            (!is_erasure && length >= kReplicaMinReadSize)) {
-          suitable_read_found = true;
-        }
-        break;
-      }
-      case CEPH_OSD_OP_GETXATTRS:
-      case CEPH_OSD_OP_CHECKSUM:
-      case CEPH_OSD_OP_GETXATTR:
-      case CEPH_OSD_OP_STAT:
-      case CEPH_OSD_OP_CMPXATTR: {
-        break; // Do not block validate.
-      }
-      case CEPH_OSD_OP_CALL: {
-        // Mostly calls should not be passed through. However, here we add
-        // special cases.
-        // FIXME: A "good" list here is not a great implementation. We want to
-        //        add a "CALL_R" op which is a read-only-call op instead.
-        if (!validate_call(o, "version", "read")) {
-          return false;
-        }
-        break;
-      }
-      default: {
-        ldout(cct, DBG_LVL) << __func__ <<" REJECT: unsupported op" << dendl;
-        return false;
-      }
-    }
-  }
-
-  return suitable_read_found;
-}
-
 void SplitOp::init(OSDOp &op, int ops_index) {
   switch (op.op.op) {
     case CEPH_OSD_OP_SPARSE_READ: {
@@ -426,6 +380,94 @@ void SplitOp::init(OSDOp &op, int ops_index) {
 }
 
 namespace {
+bool is_single_chunk(const pg_pool_t *pi, uint64_t offset, uint64_t len) {
+  if (pi->is_erasure()) {
+    return false;
+  }
+
+  uint64_t stripe_width = pi->get_stripe_width();
+
+  // k is a minimum of 2
+  if (len > stripe_width / 2) {
+    return false;
+  }
+  uint64_t data_chunk_count = pi->nonprimary_shards.size() + 1;
+  uint32_t chunk_size = pi->get_stripe_width() / data_chunk_count;
+
+  // Chunk_size should never be zero, so this is paranoia.
+  if (len > chunk_size || chunk_size == 0) {
+    return false;
+  }
+
+  uint64_t offset_to_end_of_chunk;
+
+  // Chunk size is normally, but not always a power of 2.
+  if (std::has_single_bit(chunk_size)) {
+    offset_to_end_of_chunk = chunk_size - (offset & (chunk_size - 1));
+  } else {
+    offset_to_end_of_chunk = chunk_size - (offset % chunk_size);
+  }
+
+  return len <= offset_to_end_of_chunk;
+}
+
+std::pair<bool, bool> validate(Objecter::Op *op, const pg_pool_t *pi, CephContext *cct) {
+
+  bool is_erasure = pi->is_erasure();
+  bool single_direct_op = is_erasure && op->ops.size() == 1 && nullptr == op->objver;
+
+  if ((op->target.flags & CEPH_OSD_FLAG_BALANCE_READS) == 0 ) {
+    ldout(cct, DBG_LVL) << __func__ <<" REJECT: Client rejects balanced read" << dendl;
+    return {false, false};
+  }
+
+  uint64_t suitable_read_found = false;
+  for (auto & o : op->ops) {
+    switch (o.op.op) {
+      case CEPH_OSD_OP_READ:
+      case CEPH_OSD_OP_SPARSE_READ: {
+        uint64_t length = o.op.extent.length;
+        if (length == 0) {
+          // length of zero actually means "the whole object". This code cannot
+          // know the size of the object efficiently, so reject the op.
+          ldout(cct, DBG_LVL) << __func__ <<" REJECT: Zero length read" << dendl;
+          return {false, false};
+        }
+        if ((is_erasure && length > 0) ||
+            (!is_erasure && length >= kReplicaMinReadSize)) {
+          suitable_read_found = true;
+        }
+        single_direct_op = single_direct_op &&
+          is_single_chunk(pi, o.op.extent.offset, o.op.extent.length);
+        break;
+      }
+      case CEPH_OSD_OP_GETXATTRS:
+      case CEPH_OSD_OP_CHECKSUM:
+      case CEPH_OSD_OP_GETXATTR:
+      case CEPH_OSD_OP_STAT:
+      case CEPH_OSD_OP_CMPXATTR: {
+        break; // Do not block validate.
+      }
+      case CEPH_OSD_OP_CALL: {
+        // Mostly calls should not be passed through. However, here we add
+        // special cases.
+        // FIXME: A "good" list here is not a great implementation. We want to
+        //        add a "CALL_R" op which is a read-only-call op instead.
+        if (!validate_call(o, "version", "read")) {
+          return {false, false};
+        }
+        break;
+      }
+      default: {
+        ldout(cct, DBG_LVL) << __func__ <<" REJECT: unsupported op" << dendl;
+        return {false, false};
+      }
+    }
+  }
+
+  return {suitable_read_found, single_direct_op};
+}
+
 void debug_op_summary(const std::string &str, Objecter::Op *op, CephContext *cct) {
   auto &t = op->target;
   ldout(cct, DBG_LVL) << str
@@ -451,6 +493,10 @@ void debug_op_summary(const std::string &str, Objecter::Op *op, CephContext *cct
   }
   *_dout << dendl;
 }
+
+void single_op(Objecter::Op *op,  const pg_pool_t *pi) {
+
+}
 }
 
 
@@ -473,9 +519,25 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     return false;
   }
 
-  bool validated = validate(op, pi->is_erasure(), cct);
+  auto [validated, single_op] = validate(op, pi, cct);
 
   if (!validated) {
+    return false;
+  }
+
+  if (single_op) {
+    objecter._calc_target(&op->target, op);
+    uint64_t data_chunk_count = pi->nonprimary_shards.size() + 1;
+    uint32_t chunk_size = pi->get_stripe_width() / data_chunk_count;
+
+    //FIXME: Raw shard calculation.
+    shard_id_t shard((op->ops[0].op.extent.offset) / chunk_size % data_chunk_count);
+
+    if (objecter.osdmap->exists(op->target.acting[(int)shard])) {
+      op->target.flags |= CEPH_OSD_FLAG_EC_DIRECT_READ;
+      t.force_shard.emplace(shard);
+    }
+
     return false;
   }
 
@@ -508,8 +570,6 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     return false;
   }
 
-  ldout(cct, DBG_LVL) << __func__ <<" sub_reads ready. count=" << split_read->sub_reads.size() << dendl;
-
   // We are committed to doing a split read. Any re-attempts should not be either
   // split or balanced.
   for (auto && [shard, sub_read] : split_read->sub_reads) {
@@ -524,6 +584,7 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
       t.base_oid, t.base_oloc, split_read->sub_reads.at(shard).rd, op->snapid,
       nullptr, split_read->flags, -1, fin, objver);
     sub_op->target.force_shard.emplace(shard);
+    sub_op->target.flags |= CEPH_OSD_FLAG_FAIL_ON_EAGAIN;
     if (pi->is_erasure()) {
       sub_op->target.flags |= CEPH_OSD_FLAG_EC_DIRECT_READ;
     } else {
