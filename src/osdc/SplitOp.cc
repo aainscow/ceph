@@ -538,6 +538,8 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
       t.force_shard.emplace(shard);
     }
 
+    ldout(cct, DBG_LVL) << __func__ <<" Re-use split OP" << dendl;
+
     return false;
   }
 
