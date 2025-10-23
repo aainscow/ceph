@@ -1344,6 +1344,7 @@ struct pg_pool_t {
     case FLAG_BULK: return "bulk";
     case FLAG_CRIMSON: return "crimson";
     case FLAG_EC_OPTIMIZATIONS: return "ec_optimizations";
+    case FLAG_CLIENT_SPLIT_READS: return "split_reads";
     default: return "???";
     }
   }
@@ -1402,6 +1403,8 @@ struct pg_pool_t {
       return FLAG_CRIMSON;
     if (name == "ec_optimizations")
       return FLAG_EC_OPTIMIZATIONS;
+    if (name == "split_reads")
+      return FLAG_CLIENT_SPLIT_READS;
     return 0;
   }
 
