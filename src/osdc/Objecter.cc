@@ -2343,8 +2343,6 @@ void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
 
   if (!was_split) {
     _op_submit_with_budget(op, rl, ptid, ctx_budget);
-  } else {
-    logger->inc(l_osdc_split_op_reads);
   }
 }
 
@@ -2353,6 +2351,9 @@ void Objecter::_op_submit_with_budget(Op *op,
 				      ceph_tid_t *ptid,
 				      int *ctx_budget)
 {
+  if (op->target.force_shard) {
+    logger->inc(l_osdc_split_op_reads);
+  }
   ceph_assert(initialized);
 
   ceph_assert(op->ops.size() == op->out_bl.size());
