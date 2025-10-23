@@ -3103,7 +3103,7 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
         return RECALC_OP_TARGET_POOL_DNE;
       }
       if (pi->is_erasure()) {
-        spgid.reset_shard(osdmap->pgtemp_undo_primaryfirst(*pi, actual_pgid, *t->force_shard));
+        spgid.reset_shard(*t->force_shard);
       }
     } else if (pi->is_erasure()) {
       // Optimized EC pools need to be careful when calculating the shard
