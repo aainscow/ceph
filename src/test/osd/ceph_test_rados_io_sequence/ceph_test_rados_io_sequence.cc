@@ -999,7 +999,7 @@ void ceph::io_sequence::tester::SelectErasurePool::configureServices(
           set_direct_reads_flag_request{pool_name,
                                         "set_pool_flags",
                                         std::to_string(1<<20),
-                                        std::nullopt};
+                                        true};
 
       rc = send_mon_command(set_direct_reads_flag_request, rados,
                             "OSDPoolSetRequest", inbl, &outbl, formatter.get());
