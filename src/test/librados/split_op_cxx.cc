@@ -51,6 +51,49 @@ TEST_P(LibRadosSplitOpECPP, SmallRead) {
   ioctx.set_no_objver(true);
 }
 
+TEST_P(LibRadosSplitOpECPP, ReadTwoShards) {
+  SKIP_IF_CRIMSON();
+  bufferlist bl;
+  bl.append_zero(8*1024);
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &write1));
+
+  ioctx.set_no_objver(true);
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl));
+  ioctx.set_no_objver(true);
+}
+
+TEST_P(LibRadosSplitOpECPP, ReadSecondShard) {
+  SKIP_IF_CRIMSON();
+  bufferlist bl;
+  bl.append_zero(8*1024);
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &write1));
+
+  ioctx.set_no_objver(true);
+  ObjectReadOperation read;
+  read.read(4*1024, 4*1024, NULL, NULL);
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+  ioctx.set_no_objver(true);
+}
+
+TEST_P(LibRadosSplitOpECPP, ReadSecondShardWithVersion) {
+  SKIP_IF_CRIMSON();
+  bufferlist bl;
+  bl.append_zero(8*1024);
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &write1));
+
+  ObjectReadOperation read;
+  read.read(4*1024, 4*1024, NULL, NULL);
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl));
+}
+
 TEST_P(LibRadosSplitOpECPP, ReadWithIllegalClsOp) {
   SKIP_IF_CRIMSON();
   bufferlist bl;
@@ -88,7 +131,7 @@ TEST_P(LibRadosSplitOpECPP, XattrReads) {
 
   int getxattr_rval, getxattrs_rval;
   read.getxattr(attr_key.c_str(), &attr_read_bl, &getxattr_rval);
-  std::map<string, bufferlist> pattrs{ {"_", {}}, {attr_key, {}}};
+  std::map<string, bufferlist> pattrs{ {"", {}}, {attr_key, {}}};
   read.getxattrs(&pattrs, &getxattrs_rval);
   read.cmpxattr(attr_key.c_str(), CEPH_OSD_CMPXATTR_OP_EQ, attr_bl);
 

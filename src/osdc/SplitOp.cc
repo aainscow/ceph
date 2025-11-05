@@ -2,6 +2,8 @@
 #include "osdc/SplitOp.h"
 #include "osd/osd_types.h"
 
+using namespace std::literals;
+
 #define dout_subsys ceph_subsys_objecter
 #define DBG_LVL 0
 
@@ -120,7 +122,7 @@ void ECSplitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
       return;
     }
     if (!sub_reads.contains(shard)) {
-      sub_reads.emplace(shard, orig_op->ops.size());
+      sub_reads.emplace(shard, orig_op->ops.size() + 1);
     }
     auto &d = sub_reads.at(shard).details[ops_index];
     if (sparse) {
@@ -135,7 +137,7 @@ void ECSplitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
     for (unsigned i=0; i < t.acting.size(); ++i) {
       if (t.acting[i] == t.acting_primary) {
         primary_shard.emplace(i);
-        sub_reads.emplace(*primary_shard, orig_op->ops.size());
+        sub_reads.emplace(*primary_shard, orig_op->ops.size() + 1);
       }
     }
 
@@ -208,7 +210,7 @@ void ReplicaSplitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
 
     shard_id_t shard(i);
     if (!sub_reads.contains(shard)) {
-      sub_reads.emplace(shard, orig_op->ops.size());
+      sub_reads.emplace(shard, orig_op->ops.size() + 1);
     }
     auto &sr = sub_reads.at(shard);
     auto bl = &sr.details[ops_index].bl;
@@ -333,6 +335,28 @@ void SplitOp::complete() {
   } else {
     ldout(cct, DBG_LVL) << __func__ << " retry this=" << this << " rc=" << rc << dendl;
     objecter.op_post_submit(orig_op);
+  }
+}
+
+void SplitOp::SubRead::read_oi() {
+  details.emplace(details.max_size()-1);
+  auto &d = details[details.max_size()-1];
+  // Temporary HACK... using a sneaky quirk of the way the OI is encoded in the
+  // OSD, we can read it by requesting an empty attribute. I don't think we
+  // actually want to read the OI directly - we need some fields from it and
+  // want to avoid creating a dependency of the client on the object_info_t type.
+  rd.getxattr(""sv, &d.ec, &d.bl);
+}
+
+
+void SplitOp::protect_torn_reads() {
+  // If multiple reads are emitted from objecter, then it is essential that
+  // each read reads the same version. It is not possible to efficiently
+  // guarantee this, so instead read the version along with the data and if they
+  // are different, then repeat the read to the primary. Such version mismatches
+  // should be rare enough that this is not a significant performance impact.
+  for (auto [_, sr] : sub_reads) {
+    sr.read_oi();
   }
 }
 
@@ -570,6 +594,10 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
   if (split_read->abort) {
     ldout(cct, DBG_LVL) << __func__ <<" ABORTED 2" << dendl;
     return false;
+  }
+
+  if (split_read->sub_reads.size() > 1) {
+    split_read->protect_torn_reads();
   }
 
   // We are committed to doing a split read. Any re-attempts should not be either

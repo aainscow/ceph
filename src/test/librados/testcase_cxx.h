@@ -89,10 +89,12 @@ protected:
   uint64_t get_perf_counter_by_path(std::string_view path);
 
   template<typename... Args>
-  ::testing::AssertionResult AssertOperateSplitOp(bool splits, int rc, Args... args)
+  ::testing::AssertionResult AssertOperateSplitOp(int split_ios, int rc, Args... args)
   {
     auto split_op_stat =  "objecter.split_op_reads"sv;
+    auto op_reply_stat =  "objecter.op_reply"sv;
     int64_t before_count = get_perf_counter_by_path(split_op_stat);
+    int64_t before_op_reply_count = get_perf_counter_by_path(op_reply_stat);
 
     // Perform the I/O operation
     int ret = ioctx.operate(std::forward<Args>(args)...);
@@ -101,27 +103,43 @@ protected:
              << "ioctx.operate() Incorrect rc " << rc << " != " << ret;
     }
 
-    int64_t actual_count = get_perf_counter_by_path(split_op_stat);
-    int64_t expected_count = before_count + ((splits && split_ops) ? 1 : 0);
+    int64_t actual_count = get_perf_counter_by_path(split_op_stat) - before_count;
+    int64_t expected_count = split_ops ? split_ios : 0;
 
-    if (actual_count == expected_count) {
-      return ::testing::AssertionSuccess();
+    int64_t actual_op_reply_count = get_perf_counter_by_path(op_reply_stat) - before_op_reply_count;
+    int64_t expected_op_reply_count = (split_ops && split_ios) ? split_ios : 1;
+
+    // This stat being incorrect implies an op was not split when it should
+    // have been... Or that an op was split when it should not.
+    if (actual_count != expected_count) {
+      return ::testing::AssertionFailure()
+             << "Perf counter '" << split_op_stat << "' has incorrect value after operate().\n"
+             << "       Expected: " << expected_count
+             << "         Actual: " << actual_count;
     }
-
-    return ::testing::AssertionFailure()
-           << "Perf counter '" << split_op_stat << "' has incorrect value after operate().\n"
-           << "       Expected: " << expected_count
-           << " (before: " << before_count << ", split_ops: " << split_ops << ")\n"
-           << "         Actual: " << actual_count;
+    // If this is failing, it could be split ops sending the incorrect number of
+    // ops, or it could be the OSD rejecting one of the split OPs causing
+    // the original IO to be retried.
+    if (actual_op_reply_count != expected_op_reply_count) {
+      return ::testing::AssertionFailure()
+        << "Perf counter '" << op_reply_stat << "' has incorrect value after operate().\n"
+        << "       Expected: " << expected_op_reply_count
+        << "         Actual: " << actual_op_reply_count;
+    }
+    return ::testing::AssertionSuccess();
   }
 
   template<typename... Args>
   ::testing::AssertionResult AssertOperateWithSplitOp(int rc, Args... args) {
-    return AssertOperateSplitOp(true, rc, std::forward<Args>(args)...);
+    return AssertOperateSplitOp(1, rc, std::forward<Args>(args)...);
+  }
+  template<typename... Args>
+  ::testing::AssertionResult AssertOperateWithSplitOp(int rc, int split_ios, Args... args) {
+    return AssertOperateSplitOp(split_ios, rc, std::forward<Args>(args)...);
   }
   template<typename... Args>
   ::testing::AssertionResult AssertOperateWithoutSplitOp(int rc, Args... args) {
-    return AssertOperateSplitOp(false, rc, std::forward<Args>(args)...);
+    return AssertOperateSplitOp(0, rc, std::forward<Args>(args)...);
   }
 };
 

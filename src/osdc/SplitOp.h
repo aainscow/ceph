@@ -149,6 +149,8 @@ class SplitOp {
     int rc = -EIO;
 
     SubRead(int count) : details(count) {}
+
+    void read_oi();
   };
 
   // This structure self-destructs on each IO completions, using a legacy
@@ -186,6 +188,7 @@ class SplitOp {
   void complete();
   static bool create(Objecter::Op *op, Objecter &objecter,
     shunique_lock<ceph::shared_mutex>& sul, ceph_tid_t *ptid, int *ctx_budget, CephContext *cct);
+  void protect_torn_reads();
 };
 
 class ECSplitOp : public SplitOp{
