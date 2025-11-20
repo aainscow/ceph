@@ -143,10 +143,16 @@ class SplitOp {
     std::optional<extents_map> e;
   };
 
+  struct InternalVersion {
+    boost::system::error_code ec;
+    bufferlist bl;
+  };
+
   struct SubRead {
     ::ObjectOperation rd;
     mini_flat_map<int, Details> details;
     int rc = -EIO;
+    InternalVersion internal_version;
 
     SubRead(int count) : details(count) {}
 

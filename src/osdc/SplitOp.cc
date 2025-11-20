@@ -232,15 +232,41 @@ void ReplicaSplitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
 
 int SplitOp::assemble_rc() {
   int rc = 0;
+  std::map<shard_id_t,std::pair<eversion_t, eversion_t>> primary_and_shard_versions{};
+
   // Pick the first bad RC, otherwise return 0.
   for (auto & [shard, sub_read] : sub_reads) {
     if (sub_read.rc < 0) {
       return sub_read.rc;
     }
 
+    std::map<shard_id_t, eversion_t> out_map;
+    decode(out_map, sub_read.internal_version.bl);
+
     // The non-primary shards only get reads, which only ever have zero RCs.
     if (shard == primary_shard) {
       rc = sub_read.rc;
+      for (const auto& [out_shard, eversion] : out_map) {
+        primary_and_shard_versions[out_shard].first = eversion;
+        if (shard == out_shard) {
+          primary_and_shard_versions[out_shard].second = eversion;
+        }
+      }
+    } else {
+      for (const auto& [shard, eversion] : out_map) {
+        primary_and_shard_versions[shard].second = eversion;
+      }
+    }
+  }
+
+  for (const auto& [shard, version_pair] : primary_and_shard_versions) {
+    if (sub_reads.contains(shard) && version_pair.first != version_pair.second) {
+      rc = -EIO;
+      ldout(cct, 20) << __func__ << ": "
+                     << "Primary version (" << version_pair.first << ") != "
+                     << "shard version (" << version_pair.second <<") "
+                     << "for shard " << shard << ". "
+                     << "Returning " << rc << dendl;
     }
   }
 
@@ -338,17 +364,6 @@ void SplitOp::complete() {
   }
 }
 
-void SplitOp::SubRead::read_oi() {
-  details.emplace(details.max_size()-1);
-  auto &d = details[details.max_size()-1];
-  // Temporary HACK... using a sneaky quirk of the way the OI is encoded in the
-  // OSD, we can read it by requesting an empty attribute. I don't think we
-  // actually want to read the OI directly - we need some fields from it and
-  // want to avoid creating a dependency of the client on the object_info_t type.
-  rd.getxattr(""sv, &d.ec, &d.bl);
-}
-
-
 void SplitOp::protect_torn_reads() {
   // If multiple reads are emitted from objecter, then it is essential that
   // each read reads the same version. It is not possible to efficiently
@@ -356,7 +371,8 @@ void SplitOp::protect_torn_reads() {
   // are different, then repeat the read to the primary. Such version mismatches
   // should be rare enough that this is not a significant performance impact.
   for (auto [_, sr] : sub_reads) {
-    sr.read_oi();
+    auto &internal_version = sr.internal_version;
+    sr.rd.get_internal_versions(&internal_version.ec, &internal_version.bl);
   }
 }
 
