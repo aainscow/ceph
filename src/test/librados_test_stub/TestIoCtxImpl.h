@@ -105,10 +105,18 @@ public:
 
   virtual int create(const std::string& oid, bool exclusive,
                      const SnapContext &snapc) = 0;
-  virtual int exec(const std::string& oid, TestClassHandler *handler,
+  virtual int exec_rw(const std::string& oid, TestClassHandler *handler,
                    const char *cls, const char *method,
                    bufferlist& inbl, bufferlist* outbl,
                    uint64_t snap_id, const SnapContext &snapc);
+  virtual int exec_ro(const std::string& oid, TestClassHandler *handler,
+                 const char *cls, const char *method,
+                 bufferlist& inbl, bufferlist* outbl,
+                 uint64_t snap_id, const SnapContext &snapc);
+  virtual int exec_internal(const std::string& oid, TestClassHandler *handler,
+                 const char *cls, const char *method,
+                 bufferlist& inbl, bufferlist* outbl,
+                 uint64_t snap_id, const SnapContext &snapc);
   virtual int list_snaps(const std::string& o, snap_set_t *out_snaps) = 0;
   virtual int list_watchers(const std::string& o,
                             std::list<obj_watch_t> *out_watchers);

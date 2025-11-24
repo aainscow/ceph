@@ -160,7 +160,21 @@ int TestIoCtxImpl::aio_unwatch(uint64_t handle, AioCompletionImpl *c) {
   return 0;
 }
 
-int TestIoCtxImpl::exec(const std::string& oid, TestClassHandler *handler,
+int TestIoCtxImpl::exec_rw(const std::string& oid, TestClassHandler *handler,
+                        const char *cls, const char *method,
+                        bufferlist& inbl, bufferlist* outbl,
+                        uint64_t snap_id, const SnapContext &snapc) {
+  return exec_internal(oid, handler, cls, method, inbl, outbl, snap_id, snapc);
+}
+
+int TestIoCtxImpl::exec_ro(const std::string& oid, TestClassHandler *handler,
+                        const char *cls, const char *method,
+                        bufferlist& inbl, bufferlist* outbl,
+                        uint64_t snap_id, const SnapContext &snapc) {
+  return exec_internal(oid, handler, cls, method, inbl, outbl, snap_id, snapc);
+}
+
+int TestIoCtxImpl::exec_internal(const std::string& oid, TestClassHandler *handler,
                         const char *cls, const char *method,
                         bufferlist& inbl, bufferlist* outbl,
                         uint64_t snap_id, const SnapContext &snapc) {
