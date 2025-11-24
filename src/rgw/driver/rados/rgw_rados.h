@@ -414,8 +414,8 @@ class RGWRados
   int update_placement_map();
 
   void remove_rgw_head_obj(librados::ObjectWriteOperation& op);
-  void cls_obj_check_prefix_exist(librados::ObjectOperation& op, const std::string& prefix, bool fail_if_exist);
-  void cls_obj_check_mtime(librados::ObjectOperation& op, const real_time& mtime, bool high_precision_time, RGWCheckMTimeType type);
+  void cls_obj_check_prefix_exist(librados::ObjectWriteOperation& op, const std::string& prefix, bool fail_if_exist);
+  void cls_obj_check_mtime(librados::ObjectWriteOperation& op, const real_time& mtime, bool high_precision_time, RGWCheckMTimeType type);
 protected:
   CephContext* cct{nullptr};
 

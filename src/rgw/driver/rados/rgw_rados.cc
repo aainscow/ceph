@@ -6394,12 +6394,12 @@ void RGWRados::remove_rgw_head_obj(ObjectWriteOperation& op)
   cls_rgw_remove_obj(op, prefixes);
 }
 
-void RGWRados::cls_obj_check_prefix_exist(ObjectOperation& op, const string& prefix, bool fail_if_exist)
+void RGWRados::cls_obj_check_prefix_exist(ObjectWriteOperation& op, const string& prefix, bool fail_if_exist)
 {
   cls_rgw_obj_check_attrs_prefix(op, prefix, fail_if_exist);
 }
 
-void RGWRados::cls_obj_check_mtime(ObjectOperation& op, const real_time& mtime, bool high_precision_time, RGWCheckMTimeType type)
+void RGWRados::cls_obj_check_mtime(ObjectWriteOperation& op, const real_time& mtime, bool high_precision_time, RGWCheckMTimeType type)
 {
   cls_rgw_obj_check_mtime(op, mtime, high_precision_time, type);
 }
