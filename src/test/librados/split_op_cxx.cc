@@ -26,7 +26,7 @@ TEST_P(LibRadosSplitOpECPP, ReadWithVersion) {
   bufferlist exec_inbl, exec_outbl;
   int exec_rval;
   read.exec("version", "read", exec_inbl, &exec_outbl, &exec_rval);
-  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl, librados::OPERATION_BALANCE_READS));
   ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
   ASSERT_EQ(0, exec_rval);
   cls_version_read_ret exec_version;
@@ -47,7 +47,7 @@ TEST_P(LibRadosSplitOpECPP, SmallRead) {
   ioctx.set_no_objver(true);
   ObjectReadOperation read;
   read.read(0, bl.length(), NULL, NULL);
-  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl, librados::OPERATION_BALANCE_READS));
   ioctx.set_no_objver(true);
 }
 
@@ -62,7 +62,7 @@ TEST_P(LibRadosSplitOpECPP, ReadTwoShards) {
   ioctx.set_no_objver(true);
   ObjectReadOperation read;
   read.read(0, bl.length(), NULL, NULL);
-  ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl));
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl, librados::OPERATION_BALANCE_READS));
   ioctx.set_no_objver(true);
 }
 
@@ -77,7 +77,7 @@ TEST_P(LibRadosSplitOpECPP, ReadSecondShard) {
   ioctx.set_no_objver(true);
   ObjectReadOperation read;
   read.read(4*1024, 4*1024, NULL, NULL);
-  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl, librados::OPERATION_BALANCE_READS));
   ioctx.set_no_objver(true);
 }
 
@@ -91,7 +91,7 @@ TEST_P(LibRadosSplitOpECPP, ReadSecondShardWithVersion) {
 
   ObjectReadOperation read;
   read.read(4*1024, 4*1024, NULL, NULL);
-  ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl));
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl, librados::OPERATION_BALANCE_READS));
 }
 
 TEST_P(LibRadosSplitOpECPP, ReadWithIllegalClsOp) {
@@ -135,7 +135,7 @@ TEST_P(LibRadosSplitOpECPP, XattrReads) {
   read.getxattrs(&pattrs, &getxattrs_rval);
   read.cmpxattr(attr_key.c_str(), CEPH_OSD_CMPXATTR_OP_EQ, attr_bl);
 
-  ASSERT_TRUE(AssertOperateWithSplitOp(1, "foo", &read, &bl));
+  ASSERT_TRUE(AssertOperateWithSplitOp(1, "foo", &read, &bl, librados::OPERATION_BALANCE_READS));
   ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
   ASSERT_EQ(0, getxattr_rval);
   ASSERT_EQ(0, getxattrs_rval);
@@ -164,7 +164,7 @@ TEST_P(LibRadosSplitOpECPP, Stat) {
   int stat_rval;
   read.stat2(&size, &time, &stat_rval);
 
-  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl));
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl, librados::OPERATION_BALANCE_READS));
   ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
   ASSERT_EQ(0, stat_rval);
   ASSERT_EQ(4, size);

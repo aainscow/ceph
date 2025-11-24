@@ -130,7 +130,7 @@ std::string create_ec_pool_pp(const std::string &pool_name, Rados &cluster, bool
     ret = cluster.mon_command(
       "{\"prefix\": \"osd pool set\", \"pool\": \"" + pool_name +
       "\", \"var\": \"allow_ec_optimizations\", \"val\": \"true\"}",
-      inbl, NULL, NULL);
+      {}, NULL, NULL);
     if (ret) {
       destroy_ec_pool_pp(pool_name, cluster);
       destroy_ec_profile_pp(cluster, pool_name, oss);
@@ -157,8 +157,7 @@ std::string set_pool_flags_pp(const std::string &pool_name, librados::Rados &clu
   cmd[0] = (char *)cmdstr.c_str();
   cmd[1] = NULL;
 
-  bufferlist inbl;
-  int ret = cluster.mon_command(cmdstr, inbl, NULL, NULL);
+  int ret = cluster.mon_command(std::move(cmdstr), {}, NULL, NULL);
   if (ret) {
     oss << "rados_mon_command osd pool set set_pool_flags_pp failed with error " << ret;
   }
