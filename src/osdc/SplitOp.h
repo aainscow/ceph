@@ -152,7 +152,7 @@ class SplitOp {
     ::ObjectOperation rd;
     mini_flat_map<int, Details> details;
     int rc = -EIO;
-    InternalVersion internal_version;
+    std::optional<InternalVersion> internal_version;
 
     SubRead(int count) : details(count) {}
 

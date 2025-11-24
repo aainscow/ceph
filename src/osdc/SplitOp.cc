@@ -234,27 +234,32 @@ int SplitOp::assemble_rc() {
   int rc = 0;
   std::map<shard_id_t,std::pair<eversion_t, eversion_t>> primary_and_shard_versions{};
 
+  size_t sub_reads_count = sub_reads.size();
+
   // Pick the first bad RC, otherwise return 0.
   for (auto & [shard, sub_read] : sub_reads) {
     if (sub_read.rc < 0) {
       return sub_read.rc;
     }
 
-    std::map<shard_id_t, eversion_t> out_map;
-    decode(out_map, sub_read.internal_version.bl);
+    ceph_assert(sub_reads.size() > 1 == sub_read.internal_version.has_value());
+    if (sub_reads_count > 1) {
+      std::map<shard_id_t, eversion_t> out_map;
+      decode(out_map, sub_read.internal_version->bl);
 
-    // The non-primary shards only get reads, which only ever have zero RCs.
-    if (shard == primary_shard) {
-      rc = sub_read.rc;
-      for (const auto& [out_shard, eversion] : out_map) {
-        primary_and_shard_versions[out_shard].first = eversion;
-        if (shard == out_shard) {
-          primary_and_shard_versions[out_shard].second = eversion;
+      // The non-primary shards only get reads, which only ever have zero RCs.
+      if (shard == primary_shard) {
+        rc = sub_read.rc;
+        for (const auto& [out_shard, eversion] : out_map) {
+          primary_and_shard_versions[out_shard].first = eversion;
+          if (shard == out_shard) {
+            primary_and_shard_versions[out_shard].second = eversion;
+          }
         }
-      }
-    } else {
-      for (const auto& [shard, eversion] : out_map) {
-        primary_and_shard_versions[shard].second = eversion;
+      } else {
+        for (const auto& [shard, eversion] : out_map) {
+          primary_and_shard_versions[shard].second = eversion;
+        }
       }
     }
   }
@@ -372,7 +377,8 @@ void SplitOp::protect_torn_reads() {
   // should be rare enough that this is not a significant performance impact.
   for (auto [_, sr] : sub_reads) {
     auto &internal_version = sr.internal_version;
-    sr.rd.get_internal_versions(&internal_version.ec, &internal_version.bl);
+    internal_version = std::make_optional<InternalVersion>();
+    sr.rd.get_internal_versions(&internal_version->ec, &internal_version->bl);
   }
 }
 
