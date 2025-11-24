@@ -2046,6 +2046,20 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
+  if (0 == (op->get_flags() & CEPH_OSD_RMW_FLAG_CLASS_WRITE) != 0 &&
+      !m->has_flag(CEPH_OSD_FLAG_WRITE)) {
+    // A non-write has been received containing a class write. This should be
+    // impossible with new clients, however it was not blocked by older clients
+    // so we must take care what to do with this scenario.
+    if (!is_primary()) {
+      // A non-primary will attempt a write? This clearly won't work.
+      osd->reply_op_error(op, -EIO);
+      osd->handle_misdirected_op(this, op);
+      return;
+    }
+    osd->handle_misdirected_op(this, op);
+  }
+
   // check for op with rwordered and rebalance or localize reads
   if (m->has_flag(CEPH_OSD_FLAGS_DIRECT_READ) && op->rwordered()) {
     dout(4) << __func__ << ": rebelance or localized reads with rwordered not allowed "

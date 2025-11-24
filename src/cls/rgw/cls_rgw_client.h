@@ -150,9 +150,31 @@ void cls_rgw_bucket_complete_op(librados::ObjectWriteOperation& o, RGWModifyOp o
 
 void cls_rgw_remove_obj(librados::ObjectWriteOperation& o, std::list<std::string>& keep_attr_prefixes);
 void cls_rgw_obj_store_pg_ver(librados::ObjectWriteOperation& o, const std::string& attr);
+[[deprecated("in favor of read/write variants")]]
 void cls_rgw_obj_check_attrs_prefix(librados::ObjectOperation& o, const std::string& prefix, bool fail_if_exist);
+template <typename ObjectOperation>
+void cls_rgw_obj_check_attrs_prefix(ObjectOperation& o, const std::string& prefix, bool fail_if_exist)
+{
+  bufferlist in;
+  rgw_cls_obj_check_attrs_prefix call;
+  call.check_prefix = prefix;
+  call.fail_if_exist = fail_if_exist;
+  encode(call, in);
+  o.exec(cls::rgw::method::obj_check_attrs_prefix, in);
+}
+[[deprecated("in favor of read/write variants")]]
 void cls_rgw_obj_check_mtime(librados::ObjectOperation& o, const ceph::real_time& mtime, bool high_precision_time, RGWCheckMTimeType type);
-
+template <typename ObjectOperation>
+void cls_rgw_obj_check_mtime(ObjectOperation& o, const real_time& mtime, bool high_precision_time, RGWCheckMTimeType type)
+{
+  bufferlist in;
+  rgw_cls_obj_check_mtime call;
+  call.mtime = mtime;
+  call.high_precision_time = high_precision_time;
+  call.type = type;
+  encode(call, in);
+  o.exec(cls::rgw::method::obj_check_mtime, in);
+}
 int cls_rgw_bi_get(librados::IoCtx& io_ctx, const std::string oid,
                    BIIndexType index_type, const cls_rgw_obj_key& key,
                    rgw_cls_bi_entry *entry);
@@ -294,7 +316,18 @@ int cls_rgw_reshard_get(librados::IoCtx& io_ctx, const std::string& oid, cls_rgw
 // themselves. RGW can stop issuing this call in the T+2 (V) release once it
 // knows that OSDs are running T at least. The call can be safely removed from
 // cls_rgw in the T+4 (X) release.
+[[deprecated("in favor of read/write variants")]]
 void cls_rgw_guard_bucket_resharding(librados::ObjectOperation& op, int ret_err);
+
+template <typename ObjectOperation>
+void cls_rgw_guard_bucket_resharding(ObjectOperation& op, int ret_err)
+{
+  bufferlist in, out;
+  cls_rgw_guard_bucket_resharding_op call;
+  call.ret_err = ret_err;
+  encode(call, in);
+  op.exec(cls::rgw::method::guard_bucket_resharding, in);
+}
 
 void cls_rgw_set_bucket_resharding(librados::ObjectWriteOperation& op,
                                    cls_rgw_reshard_status status);

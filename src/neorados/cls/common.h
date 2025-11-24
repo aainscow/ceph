@@ -112,11 +112,13 @@ auto maybecat(boost::system::error_code ec,
 // matching `operator new`, returning its result.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+IGNORE_DEPRECATED
 template<std::default_initializable Rep, typename Req,
 	 std::invocable<Rep&&> F,
 	 std::default_initializable Ret = std::invoke_result_t<F&&, Rep&&>,
 	 boost::asio::completion_token_for<
 	   detail::return_sig_t<Ret>> CompletionToken>
+[[deprecated("in favor of compile-time safe ops")]]
 auto exec(
   RADOS& r,
   Object oid,
@@ -162,5 +164,57 @@ auto exec(
      token, std::ref(r), std::move(oid), std::move(ioc), std::move(cls),
      std::move(method), std::move(in), std::forward<F>(f));
 }
+END_IGNORE_DEPRECATED
+template<std::default_initializable Rep, typename Req,
+         std::invocable<Rep&&> F,
+         std::default_initializable Ret = std::invoke_result_t<F&&, Rep&&>,
+         boost::asio::completion_token_for<
+           detail::return_sig_t<Ret>> CompletionToken,
+         typename Tag, typename ClassID>
+auto exec(
+  RADOS& r,
+  Object oid,
+  IOContext ioc,
+  const ClsMethod<Tag, ClassID>& method,
+  const Req& req,
+  F&& f,
+  CompletionToken&& token)
+{
+  namespace asio = boost::asio;
+  namespace buffer = ceph::buffer;
+  using boost::system::error_code;
+  using boost::system::system_error;
+
+  buffer::list in;
+  if (!std::is_same_v<Req, std::nullptr_t>) {
+    encode(req, in);
+  }
+  return asio::async_initiate<CompletionToken, detail::return_sig_t<Ret>>
+    (asio::experimental::co_composed<detail::return_sig_t<Ret>>
+     ([](auto state, RADOS& r, Object oid, IOContext ioc,
+         const ClsMethod<Tag, ClassID>& method, buffer::list in, F&& f) -> void {
+       try {
+         ReadOp op;
+         buffer::list out;
+         error_code ec;
+         op.exec(method, std::move(in), &out, &ec);
+         co_await r.execute(std::move(oid), std::move(ioc), std::move(op),
+                            nullptr, asio::deferred);
+         if (ec) {
+           co_return detail::maybecat(ec, Ret{});
+         }
+         Rep rep;
+         decode(rep, out);
+         co_return detail::maybecat(error_code{},
+                                    std::invoke(std::forward<F>(f),
+                                                std::move(rep)));
+       } catch (const system_error& e) {
+         co_return detail::maybecat(e.code(), Ret{});
+       }
+     }, r.get_executor()),
+     token, std::ref(r), std::move(oid), std::move(ioc),
+     method, std::move(in), std::forward<F>(f));
+}
+
 #pragma GCC diagnostic pop
 } // namespace neorados::cls
