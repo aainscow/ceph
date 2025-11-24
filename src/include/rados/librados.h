@@ -377,7 +377,7 @@ typedef void *rados_write_op_t;
  *   rados_read_op_assert_version()
  * - IO on objects: rados_read_op_read(), rados_read_op_checksum(),
  *   rados_read_op_cmpext()
- * - Custom operations: rados_read_op_exec(), rados_read_op_exec_user_buf()
+ * - Deprecated operations: rados_read_op_exec(), rados_read_op_exec_user_buf()
  * - Request properties: rados_read_op_set_flags()
  * - Performing the operation: rados_read_op_operate(),
  *   rados_aio_read_op_operate()
@@ -3439,6 +3439,11 @@ CEPH_RADOS_API void rados_read_op_checksum(rados_read_op_t read_op,
 					   size_t checksum_len, int *prval);
 
 /**
+ * Deprecated because this op does not prevent the client specifying a cls op
+ * that includes a write operation. This could allow the op to be routed to
+ * invalid OSD. Reads are permitted as part of write ops. If performance is a
+ * concern, consider moving to the C++ interface, which provides safety.
+ *
  * Execute an OSD class method on an object
  * See rados_exec() for general description.
  *
@@ -3463,9 +3468,15 @@ CEPH_RADOS_API void rados_read_op_exec(rados_read_op_t read_op,
 			               size_t in_len,
 			               char **out_buf,
 			               size_t *out_len,
-			               int *prval);
+			               int *prval)
+  __attribute__((deprecated("Use write ops instead")));
 
 /**
+  * * Deprecated because this op does not prevent the client specifying a cls op
+   * that includes a write operation. This could allow the op to be routed to
+   * invalid OSD. Reads are permitted as part of write ops. If performance is a
+   * concern, consider moving to the C++ interface, which provides safety.
+   *
  * Execute an OSD class method on an object
  * See rados_exec() for general description.
  *
@@ -3490,7 +3501,8 @@ CEPH_RADOS_API void rados_read_op_exec_user_buf(rados_read_op_t read_op,
 				                char *out_buf,
 				                size_t out_len,
 				                size_t *used_len,
-				                int *prval);
+				                int *prval)
+  __attribute__((deprecated("Use write ops instead")));
 
 /**
  * Start iterating over key/value pairs on an object.

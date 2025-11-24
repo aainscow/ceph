@@ -14,6 +14,18 @@
 #include "test/librados/TestCase.h"
 #include "test/librados/test.h"
 
+// Some tests are performed on deprecated interfaces that have not yet
+// been removed and form part of the ABI/API.
+#define IGNORE_DEPRECATED \
+_Pragma("GCC diagnostic push") \
+_Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\" ") \
+_Pragma("clang diagnostic push") \
+_Pragma("clang diagnostic ignored \"-Wdeprecated-declarations\"")
+
+#define END_IGNORE_DEPRECATED \
+_Pragma("clang pop") \
+_Pragma("GCC pop")
+
 const char *data = "testdata";
 const char *obj = "testobj";
 const size_t len = strlen(data);
@@ -187,6 +199,7 @@ TEST_F(CReadOpsTest, NewDelete) {
   rados_release_read_op(op);
 }
 
+IGNORE_DEPRECATED
 TEST_F(CReadOpsTest, SetOpFlags) {
   write_object();
 
@@ -205,6 +218,7 @@ TEST_F(CReadOpsTest, SetOpFlags) {
 
   remove_object();
 }
+END_IGNORE_DEPRECATED
 
 TEST_F(CReadOpsTest, AssertExists) {
   rados_read_op_t op = rados_create_read_op();
@@ -511,6 +525,7 @@ TEST_F(CReadOpsTest, ShortRead) {
   remove_object();
 }
 
+IGNORE_DEPRECATED
 TEST_F(CReadOpsTest, Exec) {
   // create object so we don't get -ENOENT
   write_object();
@@ -574,6 +589,7 @@ TEST_F(CReadOpsTest, ExecUserBuf) {
 
   remove_object();
 }
+END_IGNORE_DEPRECATED
 
 TEST_F(CReadOpsTest, Stat) {
   rados_read_op_t op = rados_create_read_op();
