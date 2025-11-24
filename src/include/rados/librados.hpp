@@ -14,6 +14,8 @@
 #include "librados_fwd.hpp"
 #include "rados_types.hpp"
 
+#include "include/rados/cls_traits.h"
+
 namespace libradosstriper
 {
   class RadosStriper;
@@ -340,9 +342,28 @@ inline namespace v14_2_0 {
     void cmpext(uint64_t off, const bufferlist& cmp_bl, int *prval);
     void cmpxattr(const char *name, uint8_t op, const bufferlist& val);
     void cmpxattr(const char *name, uint8_t op, uint64_t v);
+
+    [[deprecated("in favor of compile-time safe ops")]]
     void exec(const char *cls, const char *method, bufferlist& inbl);
+    [[deprecated("in favor of compile-time safe ops")]]
     void exec(const char *cls, const char *method, bufferlist& inbl, bufferlist *obl, int *prval);
+    [[deprecated("in favor of compile-time safe ops")]]
     void exec(const char *cls, const char *method, bufferlist& inbl, ObjectOperationCompletion *completion);
+   protected:
+    void exec_impl(const char *cls, const char *method, bufferlist& inbl);
+    void exec_impl(const char *cls, const char *method, bufferlist& inbl, bufferlist *obl, int *prval);
+    void exec_impl(const char *cls, const char *method, bufferlist& inbl, ObjectOperationCompletion *completion);
+   public:
+
+    // By default only allow READ operations. ObjectWriteOperation overrides this
+    // to allow writes.
+    template <typename Tag, typename ClassID, typename... Args>
+    void exec(const ClsMethod<Tag, ClassID>& method, Args&&... args) {
+      static_assert(FlagTraits<Tag>::is_readonly,
+          "Attempt to call a non-readonly class method as part of read. ");
+      exec_impl(method.cls, method.name, std::forward<Args>(args)...);
+    }
+
     /**
      * Guard operation with a check that object version == ver
      *
@@ -530,6 +551,14 @@ inline namespace v14_2_0 {
     void unset_manifest();
 
     friend class IoCtx;
+
+    using ObjectOperation::exec; // For deprecated rw operations.
+
+    template <typename Tag, typename ClassID, typename... Args>
+    void exec(const ClsMethod<Tag, ClassID>& method, Args&&... args) {
+      // Read or write operations are permitted, so allow this.
+      exec_impl(method.cls, method.name, std::forward<Args>(args)...);
+    }
   };
 
   /*
@@ -888,8 +917,24 @@ inline namespace v14_2_0 {
     int rmxattr(const std::string& oid, const char *name);
     int stat(const std::string& oid, uint64_t *psize, time_t *pmtime);
     int stat2(const std::string& oid, uint64_t *psize, struct timespec *pts);
+   private:
+    // IoCtx needs a distinction between ro and rw to pick the correct flags
+    // for the operate call.
+    int exec_ro(const std::string& oid, const char *cls, const char *method,
+             bufferlist& inbl, bufferlist& outbl);
+    int exec_rw(const std::string& oid, const char *cls, const char *method,
+             bufferlist& inbl, bufferlist& outbl);
+   public:
+    template <typename Tag, typename ClassID>
+    int exec(const std::string& oid, const ClsMethod<Tag, ClassID>& method, bufferlist& inbl, bufferlist& outbl) {
+      if constexpr (FlagTraits<Tag>::is_readonly) {
+        return exec_ro(oid, method.cls, method.name, inbl, outbl);
+      }
+      return exec_rw(oid, method.cls, method.name, inbl, outbl);
+    }
+    [[deprecated("in favor of compile-time safe ops")]]
     int exec(const std::string& oid, const char *cls, const char *method,
-	     bufferlist& inbl, bufferlist& outbl);
+         bufferlist& inbl, bufferlist& outbl);
     /**
      * modify object tmap based on encoded update sequence
      *
@@ -1178,8 +1223,25 @@ inline namespace v14_2_0 {
      */
     int aio_cancel(AioCompletion *c);
 
+
+  private:
+    int aio_exec_ro(const std::string& oid, AioCompletion *c, const char *cls, const char *method,
+            bufferlist& inbl, bufferlist *outbl);
+    int aio_exec_rw(const std::string& oid, AioCompletion *c, const char *cls, const char *method,
+             bufferlist& inbl, bufferlist *outbl);
+
+  public:
+    template <typename Tag, typename ClassID>
+    int aio_exec(const std::string& oid, AioCompletion *c,
+          const ClsMethod<Tag, ClassID>& method, bufferlist& inbl, bufferlist *outbl) {
+      if constexpr (FlagTraits<Tag>::is_readonly) {
+        return aio_exec_ro(oid, c, method.cls, method.name, inbl, outbl);
+      }
+      return aio_exec_rw(oid, c, method.cls, method.name, inbl, outbl);
+    }
+    [[deprecated("in favor of compile-time safe ops")]]
     int aio_exec(const std::string& oid, AioCompletion *c, const char *cls, const char *method,
-	         bufferlist& inbl, bufferlist *outbl);
+             bufferlist& inbl, bufferlist *outbl);
 
     /*
      * asynchronous version of unlock

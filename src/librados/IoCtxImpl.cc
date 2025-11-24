@@ -1321,6 +1321,21 @@ int librados::IoCtxImpl::exec(const object_t& oid,
   ::ObjectOperation rd;
   prepare_assert_ops(&rd);
   rd.call(cls, method, inbl);
+  // If used through the non-deprecated exec interface, this will always be
+  // a write, but class execs can be both read AND write, so we call the read
+  // method, but tell it is a write too. The RWORDERED flag is to prevent the
+  // balanced read flag from being set.
+  return operate_read(oid, &rd, &outbl, CEPH_OSD_FLAG_WRITE|CEPH_OSD_FLAG_RWORDERED,
+      objclass_flags_mask & ~(CEPH_OSD_FLAG_BALANCE_READS|CEPH_OSD_FLAG_LOCALIZE_READS));
+}
+
+int librados::IoCtxImpl::exec_ro(const object_t& oid,
+                              const char *cls, const char *method,
+                              bufferlist& inbl, bufferlist& outbl)
+{
+  ::ObjectOperation rd;
+  prepare_assert_ops(&rd);
+  rd.call(cls, method, inbl);
   return operate_read(oid, &rd, &outbl, 0, objclass_flags_mask);
 }
 
@@ -1340,8 +1355,16 @@ int librados::IoCtxImpl::aio_exec(const object_t& oid, AioCompletionImpl *c,
   ::ObjectOperation rd;
   prepare_assert_ops(&rd);
   rd.call(cls, method, inbl);
+  // The prepare_read_op interface is used to allow for any data returned by the
+  // exec to be populated in outbl. If using the non-deprecated interface, this
+  // is also a write, so the WRITE and RWORDERED flags are added.
+  // Belt-and-brances, make sure that the BALANCE_READ and LOCALIZE_READ flags
+  // are never set.
   Objecter::Op *o = objecter->prepare_read_op(
-    oid, oloc, rd, snap_seq, outbl, extra_op_flags, objclass_flags_mask, oncomplete, &c->objver);
+    oid, oloc, rd, snap_seq, outbl,
+    extra_op_flags|CEPH_OSD_COPY_FROM_FLAG_RWORDERED|CEPH_OSD_FLAG_WRITE,
+    objclass_flags_mask & ~(CEPH_OSD_FLAG_BALANCE_READS|CEPH_OSD_FLAG_LOCALIZE_READS),
+    oncomplete, &c->objver);
   objecter->op_submit(o, &c->tid);
   return 0;
 }
@@ -1366,8 +1389,66 @@ int librados::IoCtxImpl::aio_exec(const object_t& oid, AioCompletionImpl *c,
   ::ObjectOperation rd;
   prepare_assert_ops(&rd);
   rd.call(cls, method, inbl);
+  // The prepare_read_op interface is used to allow for any data returned by the
+  // exec to be populated in outbl. If using the non-deprecated interface, this
+  // is also a write, so the WRITE and RWORDERED flags are added.
+  // Belt-and-brances, make sure that the BALANCE_READ and LOCALIZE_READ flags
+  // are never set.
   Objecter::Op *o = objecter->prepare_read_op(
-    oid, oloc, rd, snap_seq, &c->bl, extra_op_flags, objclass_flags_mask, oncomplete, &c->objver);
+    oid, oloc, rd, snap_seq, &c->bl,
+    extra_op_flags|CEPH_OSD_COPY_FROM_FLAG_RWORDERED|CEPH_OSD_FLAG_WRITE,
+    objclass_flags_mask & ~(CEPH_OSD_FLAG_BALANCE_READS|CEPH_OSD_FLAG_LOCALIZE_READS),
+    oncomplete, &c->objver);
+  objecter->op_submit(o, &c->tid);
+  return 0;
+}
+
+int librados::IoCtxImpl::aio_exec_ro(const object_t& oid, AioCompletionImpl *c,
+                                  const char *cls, const char *method,
+                                  bufferlist& inbl, bufferlist *outbl)
+{
+  FUNCTRACE(client->cct);
+  Context *oncomplete = new C_aio_Complete(c);
+
+#if defined(WITH_EVENTTRACE)
+  ((C_aio_Complete *) oncomplete)->oid = oid;
+#endif
+  c->is_read = true;
+  c->io = this;
+
+  ::ObjectOperation rd;
+  prepare_assert_ops(&rd);
+  rd.call(cls, method, inbl);
+  Objecter::Op *o = objecter->prepare_read_op(
+    oid, oloc, rd, snap_seq, outbl, extra_op_flags, objclass_flags_mask,
+    oncomplete, &c->objver);
+  objecter->op_submit(o, &c->tid);
+  return 0;
+}
+
+int librados::IoCtxImpl::aio_exec_ro(const object_t& oid, AioCompletionImpl *c,
+                                  const char *cls, const char *method,
+                                  bufferlist& inbl, char *buf, size_t out_len)
+{
+  FUNCTRACE(client->cct);
+  Context *oncomplete = new C_aio_Complete(c);
+
+#if defined(WITH_EVENTTRACE)
+  ((C_aio_Complete *) oncomplete)->oid = oid;
+#endif
+  c->is_read = true;
+  c->io = this;
+  c->bl.clear();
+  c->bl.push_back(buffer::create_static(out_len, buf));
+  c->blp = &c->bl;
+  c->out_buf = buf;
+
+  ::ObjectOperation rd;
+  prepare_assert_ops(&rd);
+  rd.call(cls, method, inbl);
+  Objecter::Op *o = objecter->prepare_read_op(
+    oid, oloc, rd, snap_seq, &c->bl, extra_op_flags, objclass_flags_mask,
+    oncomplete, &c->objver);
   objecter->op_submit(o, &c->tid);
   return 0;
 }
