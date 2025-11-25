@@ -193,6 +193,20 @@ ClientRequest::interruptible_future<> ClientRequest::with_pg_process_interruptib
     co_return;
   }
 
+  if (0 == (op_info.get_flags() & CEPH_OSD_RMW_FLAG_CLASS_WRITE) != 0 &&
+    !m->has_flag(CEPH_OSD_FLAG_WRITE)) {
+    // A non-write has been received containing a class write. This should be
+    // impossible with new clients, however it was not blocked by older clients
+    // so we must take care what to do with this scenario.
+    DEBUGDPP("{}.{}: with_pg_process_interruptible exec write flag mismatch",
+             pg, *this, this_instance_id);
+    if (!pg.is_primary()) {
+      co_await reply_op_error(pgref, -EIO);
+      co_return;
+    }
+    // Legacy clients may rely on this behaviour, so do not drop or fail.
+  }
+
   if (!pg.is_primary()) {
     // primary can handle both normal ops and balanced reads
     if (is_misdirected_replica_read(pg)) {
