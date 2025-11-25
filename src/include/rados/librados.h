@@ -3066,6 +3066,10 @@ CEPH_RADOS_API void rados_write_op_zero(rados_write_op_t write_op,
  * Execute an OSD class method on an object
  * See rados_exec() for general description.
  *
+ * Use this for reads as well as writes. The rados_read_op_exec has been
+ * deprecated as there is no client-side checking for the chosen cls method
+ * actually being a read vs write.
+ *
  * @param write_op operation to add this action to
  * @param cls the name of the class
  * @param method the name of the method
@@ -3444,6 +3448,9 @@ CEPH_RADOS_API void rados_read_op_checksum(rados_read_op_t read_op,
  * invalid OSD. Reads are permitted as part of write ops. If performance is a
  * concern, consider moving to the C++ interface, which provides safety.
  *
+ * NOTE: At the time this function was deprecated, it was unused within the
+ *       ceph code base.
+ *
  * Execute an OSD class method on an object
  * See rados_exec() for general description.
  *
@@ -3472,11 +3479,14 @@ CEPH_RADOS_API void rados_read_op_exec(rados_read_op_t read_op,
   __attribute__((deprecated("Use write ops instead")));
 
 /**
-  * * Deprecated because this op does not prevent the client specifying a cls op
-   * that includes a write operation. This could allow the op to be routed to
-   * invalid OSD. Reads are permitted as part of write ops. If performance is a
-   * concern, consider moving to the C++ interface, which provides safety.
-   *
+ * Deprecated because this op does not prevent the client specifying a cls op
+ * that includes a write operation. This could allow the op to be routed to
+ * invalid OSD. Reads are permitted as part of write ops. If performance is a
+ * concern, consider moving to the C++ interface, which provides safety.
+ *
+ * NOTE: At the time this function was deprecated, it was unused within the
+ *       ceph code base.
+ *
  * Execute an OSD class method on an object
  * See rados_exec() for general description.
  *

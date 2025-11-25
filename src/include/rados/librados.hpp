@@ -355,8 +355,19 @@ inline namespace v14_2_0 {
     void exec_impl(const char *cls, const char *method, bufferlist& inbl, ObjectOperationCompletion *completion);
    public:
 
-    // By default only allow READ operations. ObjectWriteOperation overrides this
-    // to allow writes.
+    /**
+     * Execute an OSD class method on an object
+     * See IoCtx::exec() for general description.
+     *
+     * Add an exec to read OR write operation. Only read-only methods may be
+     * added this way. Use ObjectWriteOperation::exec() for write methods.
+     *
+     * @param method the method as defined in cls/<class>/cls_<class>_ops.h
+     * @param inbl where to find input
+     * @param obl (optional) where to store output
+     * @param prval (optional) storage for return value.
+     * @param completion (optional) completion callback.
+     */
     template <typename Tag, typename ClassID, typename... Args>
     void exec(const ClsMethod<Tag, ClassID>& method, Args&&... args) {
       static_assert(FlagTraits<Tag>::is_readonly,
@@ -554,6 +565,18 @@ inline namespace v14_2_0 {
 
     using ObjectOperation::exec; // For deprecated rw operations.
 
+    /**
+     * Execute an OSD class method on an object
+     * See IoCtx::exec() for general description.
+     *
+     * Add an exec to write operation. Read or Write exec methods are permitted.
+     *
+     * @param method the method as defined in cls/<class>/cls_<class>_ops.h
+     * @param inbl where to find input
+     * @param obl (optional) where to store output
+     * @param prval (optional) storage for return value.
+     * @param completion (optional) completion callback.
+     */
     template <typename Tag, typename ClassID, typename... Args>
     void exec(const ClsMethod<Tag, ClassID>& method, Args&&... args) {
       // Read or write operations are permitted, so allow this.
@@ -925,6 +948,24 @@ inline namespace v14_2_0 {
     int exec_rw(const std::string& oid, const char *cls, const char *method,
              bufferlist& inbl, bufferlist& outbl);
    public:
+    /**
+     * Execute an OSD class method on an object
+     *
+     * The OSD has a plugin mechanism for performing complicated
+     * operations on an object atomically. These plugins are called
+     * classes. This function allows librados users to call the custom
+     * methods. The input and output formats are defined by the class.
+     * Classes in ceph.git can be found in src/cls subdirectories
+     *
+     * Synchronous variant of exec. Op will be routed as read if the method
+     * is not flagged as a write.
+     *
+     * @param oid the object name
+     * @param method the method as defined in cls/<class>/cls_<class>_ops.h
+     * @param inbl where to find input
+     * @param outbl where to store output
+     * @returns return code (>=0 for success, otherwise stanard OSD errors)
+     */
     template <typename Tag, typename ClassID>
     int exec(const std::string& oid, const ClsMethod<Tag, ClassID>& method, bufferlist& inbl, bufferlist& outbl) {
       if constexpr (FlagTraits<Tag>::is_readonly) {
@@ -1231,6 +1272,19 @@ inline namespace v14_2_0 {
              bufferlist& inbl, bufferlist *outbl);
 
   public:
+    /**
+     * Execute an OSD class method on an object
+     * See exec() for general description.
+     *
+     * Asynchronous variant of exec. Op will be routed as read if the exec
+     * method is not flagged as a write.
+     *
+     * @param oid the object name
+     * @param c aio completion
+     * @param method the method as defined in cls/<class>/cls_<class>_ops.h
+     * @param inbl where to find input
+     * @param outbl where to store output
+     */
     template <typename Tag, typename ClassID>
     int aio_exec(const std::string& oid, AioCompletion *c,
           const ClsMethod<Tag, ClassID>& method, bufferlist& inbl, bufferlist *outbl) {
