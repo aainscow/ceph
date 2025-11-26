@@ -242,6 +242,10 @@ int SplitOp::assemble_rc() {
       return sub_read.rc;
     }
 
+    if (shard == primary_shard) {
+      rc = sub_read.rc;
+    }
+
     ceph_assert(sub_reads.size() > 1 == sub_read.internal_version.has_value());
     if (sub_reads_count > 1) {
       std::map<shard_id_t, eversion_t> out_map;
@@ -249,7 +253,6 @@ int SplitOp::assemble_rc() {
 
       // The non-primary shards only get reads, which only ever have zero RCs.
       if (shard == primary_shard) {
-        rc = sub_read.rc;
         for (const auto& [out_shard, eversion] : out_map) {
           primary_and_shard_versions[out_shard].first = eversion;
           if (shard == out_shard) {
