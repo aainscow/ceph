@@ -248,7 +248,8 @@ struct ECCrimsonOp : ECCommon::RMWPipeline::Op {
       shard_id_map<ceph::os::Transaction> *transactions,
       DoutPrefixProvider *dpp,
       const OSDMapRef &osdmap,
-      bool &first_write_in_interval) final
+      bool &first_write_in_interval,
+      ECOmapJournal &ec_omap_journal) final
   {
     assert(t);
     ECTransaction::generate_transactions(
@@ -265,7 +266,8 @@ struct ECCrimsonOp : ECCommon::RMWPipeline::Op {
       &temp_cleared,
       dpp,
       osdmap,
-      first_write_in_interval);
+      first_write_in_interval,
+      ec_omap_journal);
   }
 
   bool skip_transaction(
