@@ -3291,7 +3291,7 @@ void PeeringState::rewind_divergent_log(
   PGLog::LogEntryHandlerRef rollbacker{pl->get_log_handler(t)};
   pg_log.rewind_divergent_log(
     newhead, info, rollbacker.get(), dirty_info, dirty_big_info,
-    pool.info.allows_ecoptimizations());
+    pool.info.allows_ecoptimizations(), pg_whoami);
 }
 
 

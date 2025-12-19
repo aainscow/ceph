@@ -33,6 +33,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <optional>
 
 #ifdef WITH_CRIMSON
 #include <seastar/core/future.hh>
@@ -1097,10 +1098,13 @@ protected:
     missing_type &missing,               ///< [in,out] missing to adjust, use
     LogEntryHandler *rollbacker,         ///< [in] optional rollbacker object
     bool ec_optimizations_enabled,       ///< [in] relax asserts for allow_ec_optimzations pools
+    std::optional<shard_id_t> orig_shard, ///< [in] Which shard has orig_entries
     const DoutPrefixProvider *dpp        ///< [in] logging provider
     ) {
     ldpp_dout(dpp, 20) << __func__ << ": merging hoid " << hoid
 		       << " entries: " << orig_entries << dendl;
+
+    ceph_assert(orig_shard || rollbacker == nullptr);
 
     if (hoid > info.last_backfill) {
       ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid << " after last_backfill"
@@ -1201,12 +1205,17 @@ protected:
       missing.revise_have(hoid, eversion_t());
       missing.mark_fully_dirty(hoid);
       if (rollbacker) {
-	if (!object_not_in_store) {
-	  rollbacker->remove(hoid);
-	}
-	for (auto &&i: entries) {
-	  rollbacker->trim(i);
-	}
+        if (!object_not_in_store) {
+          for (auto &&i: entries) {
+            if (i.written_shards.empty() || i.written_shards.contains(*orig_shard)) {
+              rollbacker->remove(hoid);
+              break;
+            }
+          }
+        }
+        for (auto &&i: entries) {
+          rollbacker->trim(i);
+        }
       }
       return;
     }
@@ -1300,8 +1309,14 @@ protected:
       ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid << " cannot roll back, "
 			 << "removing and adding to missing" << dendl;
       if (rollbacker) {
-	if (!object_not_in_store)
-	  rollbacker->remove(hoid);
+        if (!object_not_in_store) {
+          for (auto &&i: entries) {
+            if (i.written_shards.empty() || i.written_shards.contains(*orig_shard)) {
+              rollbacker->remove(hoid);
+              break;
+            }
+          }
+        }
 	for (auto &&i: entries) {
 	  rollbacker->trim(i);
 	}
@@ -1326,6 +1341,7 @@ protected:
     missing_type &omissing,              ///< [in,out] missing to adjust, use
     LogEntryHandler *rollbacker,         ///< [in] optional rollbacker object
     bool ec_optimizations_enabled,       ///< [in] relax asserts for allow_ec_optimzations pools
+    std::optional<shard_id_t> orig_shard, ///< [in] Which shard is this (for detecting partial writes)
     const DoutPrefixProvider *dpp        ///< [in] logging provider
     ) {
     std::map<hobject_t, mempool::osd_pglog::list<pg_log_entry_t> > split;
@@ -1340,6 +1356,7 @@ protected:
 	omissing,
 	rollbacker,
 	ec_optimizations_enabled,
+	orig_shard,
 	dpp);
     }
   }
@@ -1364,6 +1381,7 @@ protected:
       missing,
       rollbacker,
       false, // not allow_ec_optimizations pool
+      shard_id_t(0), // Test doesn't care about this value.
       this);
   }
 
@@ -1376,7 +1394,8 @@ public:
                             LogEntryHandler *rollbacker,
                             bool &dirty_info,
                             bool &dirty_big_info,
-			    bool ec_optimizations_enabled);
+			    bool ec_optimizations_enabled,
+			    const pg_shard_t &shard);
 
   void merge_log(pg_info_t &oinfo,
 		 pg_log_t&& olog,
