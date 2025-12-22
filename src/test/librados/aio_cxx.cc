@@ -1358,7 +1358,7 @@ public:
     int ret;
     auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_info()->name());
     m_pool_name = get_temp_pool_name(pool_prefix);
-    std::string err = create_one_ec_pool_pp(m_pool_name, m_cluster);
+    std::string err = create_one_ec_pool_pp(m_pool_name, m_cluster, false);
     if (!err.empty()) {
       ostringstream oss;
       oss << "create_one_ec_pool(" << m_pool_name << ") failed: error " << err;
@@ -2094,7 +2094,7 @@ TEST(LibRadosAioEC, OmapPP) {
   Rados cluster;
   auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_info()->name());
   std::string pool_name = get_temp_pool_name(pool_prefix);
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, cluster));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, cluster, false));
   IoCtx ioctx;
   cluster.ioctx_create(pool_name.c_str(), ioctx);
 

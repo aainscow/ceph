@@ -6230,11 +6230,11 @@ protected:
   static void SetUpTestCase() {
     SKIP_IF_CRIMSON();
     pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
+    ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster, false));
   }
   static void TearDownTestCase() {
     SKIP_IF_CRIMSON();
-    ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, s_cluster));
+    ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, s_cluster, false));
   }
   static std::string cache_pool_name;
 
@@ -8186,7 +8186,7 @@ TEST_F(LibRadosTierECPP, CallForcesPromote) {
   Rados cluster;
   std::string pool_name = get_temp_pool_name();
   std::string cache_pool_name = pool_name + "-cache";
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, cluster));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, cluster, false));
   ASSERT_EQ(0, cluster.pool_create(cache_pool_name.c_str()));
   IoCtx cache_ioctx;
   ASSERT_EQ(0, cluster.ioctx_create(cache_pool_name.c_str(), cache_ioctx));

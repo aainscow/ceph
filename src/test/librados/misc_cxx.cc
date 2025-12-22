@@ -478,7 +478,7 @@ protected:
   static void SetUpTestCase() {
     SKIP_IF_CRIMSON();
     pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
+    ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster, false));
     src_pool_name = get_temp_pool_name();
     ASSERT_EQ(0, s_cluster.pool_create(src_pool_name.c_str()));
 

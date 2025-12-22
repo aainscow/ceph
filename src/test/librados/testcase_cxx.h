@@ -130,3 +130,25 @@ protected:
   std::string nspace;
   uint64_t alignment = 0;
 };
+
+class RadosTestECOptimisedPP : public RadosTestPP {
+public:
+  RadosTestECOptimisedPP(bool c=false) : cluster(s_cluster), cleanup(c) {}
+  ~RadosTestECOptimisedPP() override {}
+
+protected:
+  static void SetUpTestCase();
+  static void TearDownTestCase();
+  static librados::Rados s_cluster;
+  static std::string pool_name;
+
+  void SetUp() override;
+  void TearDown() override;
+  librados::Rados &cluster;
+  librados::IoCtx ioctx;
+  bool cleanup;
+  std::string nspace;
+  uint64_t alignment = 0;
+
+  static std::string optimised_pool_name;
+};

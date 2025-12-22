@@ -163,7 +163,7 @@ void RadosTestECPPNS::SetUpTestCase()
 {
   auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
   pool_name = get_temp_pool_name(pool_prefix);
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster, false));
 }
 
 void RadosTestECPPNS::TearDownTestCase()
@@ -371,7 +371,7 @@ void RadosTestECPP::SetUpTestCase()
   SKIP_IF_CRIMSON();
   auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
   pool_name = get_temp_pool_name(pool_prefix);
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster, false));
 }
 
 void RadosTestECPP::TearDownTestCase()
@@ -402,7 +402,7 @@ void RadosTestECPP::TearDown()
   }
   if (ec_overwrites_set) {
     ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, s_cluster));
-    ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
+    ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster, false));
     ec_overwrites_set = false;
   }
   ioctx.close();
@@ -428,4 +428,44 @@ void RadosTestECPP::set_allow_ec_overwrites()
     ASSERT_LT(std::chrono::steady_clock::now(), end);
     std::this_thread::sleep_for(std::chrono::seconds(2));
   }
+}
+
+std::string RadosTestECOptimisedPP::pool_name;
+Rados RadosTestECOptimisedPP::s_cluster;
+
+void RadosTestECOptimisedPP::SetUpTestCase()
+{
+  SKIP_IF_CRIMSON();
+  auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
+  pool_name = get_temp_pool_name(pool_prefix);
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster, true));
+}
+
+void RadosTestECOptimisedPP::TearDownTestCase()
+{
+  SKIP_IF_CRIMSON();
+  ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, s_cluster));
+}
+
+void RadosTestECOptimisedPP::SetUp()
+{
+  SKIP_IF_CRIMSON();
+  ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
+  nspace = get_temp_pool_name();
+  ioctx.set_namespace(nspace);
+  bool req;
+  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&req));
+  ASSERT_TRUE(req);
+  ASSERT_EQ(0, ioctx.pool_required_alignment2(&alignment));
+  ASSERT_NE(0U, alignment);
+}
+
+void RadosTestECOptimisedPP::TearDown()
+{
+  SKIP_IF_CRIMSON();
+  if (cleanup) {
+    cleanup_default_namespace(ioctx);
+    cleanup_namespace(ioctx, nspace);
+  }
+  ioctx.close();
 }

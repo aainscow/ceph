@@ -404,7 +404,7 @@ TEST(cls_refcount, test_implicit_ec) /* test refcount using implicit referencing
   string pool_name = get_temp_pool_name();
 
   /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
   ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   /* add chains */
@@ -505,7 +505,7 @@ TEST(cls_refcount, test_implicit_idempotent_ec) /* test refcount using implicit 
   string pool_name = get_temp_pool_name();
 
   /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
   ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   /* add chains */
@@ -602,7 +602,7 @@ TEST(cls_refcount, test_put_snap_ec) {
   string pool_name = get_temp_pool_name();
 
   /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
   ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   bufferlist bl;
@@ -636,7 +636,7 @@ TEST(cls_refcount, test_explicit_ec) /* test refcount using implicit referencing
   string pool_name = get_temp_pool_name();
 
   /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
   ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   /* add chains */
@@ -712,7 +712,7 @@ TEST(cls_refcount, set_ec) /* test refcount using implicit referencing of newly 
   string pool_name = get_temp_pool_name();
 
   /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
   ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   /* add chains */
