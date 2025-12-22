@@ -153,20 +153,20 @@ TEST_F(LibRadosOmapECPP, OmapReads) {
 
   // OMAP REMOVE RANGE TESTING
 
-  // std::set<std::string> returned_keys_with_removed_range;
-  //
-  // write1.omap_rm_range("omap_key_3_bay", "omap_key_5_black");
-  //
-  // ret = ioctx.operate("my_object", &write1);
-  // EXPECT_EQ(ret, 0);
-  //
-  // read.omap_get_keys2("", 10, &returned_keys_with_removed_range, nullptr, &err);
-  //
-  // ret = ioctx.operate("my_object", &read, nullptr);
-  // EXPECT_EQ(ret, 0);
-  //
-  // ASSERT_EQ(0, err);
-  // ASSERT_EQ(3u, returned_keys_with_removed_range.size());
+  std::set<std::string> returned_keys_with_removed_range;
+
+  write1.omap_rm_range("omap_key_3_bay", "omap_key_5_black");
+
+  ret = ioctx.operate("my_object", &write1);
+  EXPECT_EQ(ret, 0);
+
+  read.omap_get_keys2("", 10, &returned_keys_with_removed_range, nullptr, &err);
+
+  ret = ioctx.operate("my_object", &read, nullptr);
+  EXPECT_EQ(ret, 0);
+
+  ASSERT_EQ(0, err);
+  ASSERT_EQ(3u, returned_keys_with_removed_range.size());
 
   // OMAP CLEAR TESTING
 
