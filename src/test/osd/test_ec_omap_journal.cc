@@ -314,3 +314,200 @@ TEST(ecomapjournal, get_updated_header_multiple_entries)
   ASSERT_TRUE(header.has_value());
   ASSERT_TRUE(*header == omap_header_bl_2);
 }
+
+std::string make_key(int i) {
+  std::stringstream ss;
+  ss << "key_" << std::setw(3) << std::setfill('0') << i;
+  return ss.str();
+}
+
+// Encodes a map of keys for OmapUpdateType::Insert
+ceph::buffer::list encode_map(const std::map<std::string, ceph::buffer::list>& keys) {
+  ceph::buffer::list bl;
+  encode(keys, bl);
+  return bl;
+}
+
+// Encodes start/end strings for OmapUpdateType::RemoveRange
+ceph::buffer::list encode_range(const std::string& start, const std::string& end) {
+  ceph::buffer::list bl;
+  encode(start, bl);
+  encode(end, bl);
+  return bl;
+}
+
+// Create an insert entry
+ECOmapJournalEntry create_insert_entry(const eversion_t v, const int start_key, const int end_key) {
+  std::map<std::string, ceph::buffer::list> key_map;
+  for (int i = start_key; i <= end_key; ++i) {
+    ceph::buffer::list val_bl;
+    val_bl.append("val");
+    key_map[make_key(i)] = val_bl;
+  }
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> updates;
+  updates.push_back({OmapUpdateType::Insert, encode_map(key_map)});
+
+  return ECOmapJournalEntry(v, false, std::nullopt, updates);
+}
+
+TEST(ecomapjournal, RemoveOneRange) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_rm_range", CEPH_NOSNAP, 1, 0, "nspace");
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 1), 1, 100));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> rm_updates;
+  rm_updates.push_back({
+    OmapUpdateType::RemoveRange,
+    encode_range(make_key(20), make_key(41))
+  });
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 2), false, std::nullopt, rm_updates));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  ASSERT_EQ(1u, ranges.size());
+  auto it = ranges.begin();
+  EXPECT_EQ(make_key(20), it->first);
+  ASSERT_TRUE(it->second.has_value());
+  EXPECT_EQ(make_key(41), *it->second);
+}
+
+TEST(ecomapjournal, RemoveTwoRanges) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_rm_two_ranges", CEPH_NOSNAP, 1, 0, "nspace");
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 1), 1, 100));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> rm_updates;
+  rm_updates.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(20), make_key(41))});
+  rm_updates.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(60), make_key(81))});
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 2), false, std::nullopt, rm_updates));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  ASSERT_EQ(2u, ranges.size());
+  auto it = ranges.begin();
+  EXPECT_EQ(make_key(20), it->first);
+  EXPECT_EQ(make_key(41), *it->second);
+  ++it;
+  EXPECT_EQ(make_key(60), it->first);
+  EXPECT_EQ(make_key(81), *it->second);
+}
+
+TEST(ecomapjournal, OverlappingRanges) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_overlap", CEPH_NOSNAP, 1, 0, "nspace");
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 1), 1, 100));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> rm_updates;
+  rm_updates.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(10), make_key(21))});
+  rm_updates.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(15), make_key(31))});
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 2), false, std::nullopt, rm_updates));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  ASSERT_EQ(1u, ranges.size());
+  EXPECT_EQ(make_key(10), ranges.begin()->first);
+  EXPECT_EQ(make_key(31), *ranges.begin()->second);
+}
+
+TEST(ecomapjournal, RemoveWithNullStart) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_null_start", CEPH_NOSNAP, 1, 0, "nspace");
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 1), 1, 100));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> rm_updates;
+  rm_updates.push_back({OmapUpdateType::RemoveRange, encode_range("", make_key(21))});
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 2), false, std::nullopt, rm_updates));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  ASSERT_EQ(1u, ranges.size());
+  EXPECT_EQ("", ranges.begin()->first);
+  EXPECT_EQ(make_key(21), *ranges.begin()->second);
+}
+
+TEST(ecomapjournal, RemoveRangeThenInsert) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_rm_ins", CEPH_NOSNAP, 1, 0, "nspace");
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 1), 1, 100));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> ops;
+  ops.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(30), make_key(61))});
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 2), false, std::nullopt, ops));
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 3), 45, 45));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  ASSERT_EQ(1u, ranges.size());
+  EXPECT_EQ(make_key(30), ranges.begin()->first);
+  EXPECT_EQ(make_key(61), *ranges.begin()->second);
+  ASSERT_TRUE(updates.count(make_key(45)));
+  EXPECT_TRUE(updates.at(make_key(45)).value.has_value());
+}
+
+TEST(ecomapjournal, RemoveInsertRemove) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_rm_ins_rm", CEPH_NOSNAP, 1, 0, "nspace");
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 1), 1, 100));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> ops1;
+  ops1.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(30), make_key(61))});
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 2), false, std::nullopt, ops1));
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 3), 45, 45));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> ops2;
+  ops2.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(30), make_key(61))});
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 4), false, std::nullopt, ops2));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  ASSERT_EQ(1u, ranges.size());
+  EXPECT_EQ(make_key(30), ranges.begin()->first);
+  EXPECT_EQ(make_key(61), *ranges.begin()->second);
+  ASSERT_TRUE(updates.count(make_key(45)));
+  EXPECT_FALSE(updates.at(make_key(45)).value.has_value());
+}
+
+TEST(ecomapjournal, AdjacentRanges) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_adjacent", CEPH_NOSNAP, 1, 0, "nspace");
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 1), 1, 100));
+
+  std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> rm_updates;
+  rm_updates.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(10), make_key(20))});
+  rm_updates.push_back({OmapUpdateType::RemoveRange, encode_range(make_key(20), make_key(30))});
+  journal.add_entry(hoid, ECOmapJournalEntry(eversion_t(1, 2), false, std::nullopt, rm_updates));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  EXPECT_EQ(make_key(10), ranges.begin()->first);
+  EXPECT_EQ(make_key(30), *ranges.begin()->second);
+}
+
+TEST(ecomapjournal, ClearOmap) {
+  ECOmapJournal journal;
+  const hobject_t hoid("obj_clear", CEPH_NOSNAP, 1, 0, "nspace");
+
+  ceph::buffer::list header_bl;
+  header_bl.append("header_v1");
+  auto entry_ins = create_insert_entry(eversion_t(1, 1), 1, 100);
+  entry_ins.omap_header = header_bl;
+  journal.add_entry(hoid, entry_ins);
+
+  ECOmapJournalEntry entry_clear(eversion_t(1, 2), true, std::nullopt, {});
+  journal.add_entry(hoid, entry_clear);
+
+  journal.add_entry(hoid, create_insert_entry(eversion_t(1, 3), 50, 50));
+
+  auto [updates, ranges] = journal.get_value_updates(hoid);
+  auto header = journal.get_updated_header(hoid);
+  ASSERT_TRUE(updates.contains(make_key(50)));
+  EXPECT_TRUE(updates.at(make_key(50)).value.has_value());
+  ASSERT_TRUE(header.has_value());
+  EXPECT_EQ(0u, header->length());
+  ASSERT_EQ(1u, ranges.size());
+  EXPECT_TRUE(ranges.contains(""));
+  EXPECT_TRUE(ranges.at("") == std::nullopt);
+}
