@@ -8982,6 +8982,11 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       }
     }
   } else if (var == "supports_omap") {
+    // Change tentacle to umbrella once it is available
+    if ((val == "true") && osdmap.require_osd_release < ceph_release_t::tentacle) {
+      ss << "supports_omap cannot be enabled until require_osd_release is set to tentacle or later";
+      return -EPERM;
+    }
     if ((val == "true") && (p.has_flag(pg_pool_t::FLAG_OMAP))) {
       ss << "supports_omap is already enabled for pool " << pool;
       return 0;
