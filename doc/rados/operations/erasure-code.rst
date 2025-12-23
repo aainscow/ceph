@@ -197,7 +197,8 @@ should be migrated to BlueStore.
 There is no downside to enabling EC overwrites, so it is best practice to
 routinely do so.
 
-Erasure-coded pools do not support omap, so to use them with RBD and
+Erasure-coded pools can support omap if the ``supports_omap`` flag is enabled.
+However, this support is not enabled by default, so to use ec overwrites with RBD and
 CephFS you must instruct them and their clients to store their data in an EC pool and
 their metadata in a replicated pool. For RBD, this means using the
 erasure-coded pool as the ``--data-pool`` during image creation:
@@ -500,9 +501,9 @@ Erasure-coded pools and cache tiering
 .. note:: Cache tiering was deprecated in Reef.  We strongly advise not deploying new cache tiers, and working to remove them from existing deployments.
 
 Erasure-coded pools require more resources than replicated pools and
-lack some of the functionality supported by replicated pools (for example, omap).
-To overcome these limitations, one can set up a `cache tier <../cache-tiering>`_
-before setting up the erasure-coded pool.
+lack some of the functionality supported by replicated pools (for example, omap
+is not supported by default). To overcome these limitations, one can set up a
+`cache tier <../cache-tiering>`_ before setting up the erasure-coded pool.
 
 For example, if the pool *hot-storage* is made of fast storage, the following commands
 will place the *hot-storage* pool as a tier of *ecpool* in *writeback*
