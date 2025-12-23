@@ -22,6 +22,7 @@ typedef RadosTestECOptimisedPP LibRadosOmapECPP;
 
 TEST_F(LibRadosOmapECPP, OmapReads) {
   SKIP_IF_CRIMSON();
+  enable_omap();
   bufferlist bl_write, omap_val_bl, omap_header_bl;
   const std::string omap_key_1 = "omap_key_1_palomino";
   const std::string omap_key_2 = "omap_key_2_chestnut";
@@ -189,6 +190,7 @@ TEST_F(LibRadosOmapECPP, OmapReads) {
 // Do not merge this into the main branch
 TEST_F(LibRadosOmapECPP, OmapRecovery) {
   SKIP_IF_CRIMSON();
+  enable_omap();
   turn_balancing_off();
   bufferlist bl_write, omap_val_bl, xattr_val_bl;
   const std::string omap_key_1 = "key_a";
@@ -297,6 +299,7 @@ TEST_F(LibRadosOmapECPP, OmapRecovery) {
 
 TEST_F(LibRadosOmapECPP, ChangeUpmap) {
   SKIP_IF_CRIMSON();
+  enable_omap();
   turn_balancing_off();
   bufferlist bl_write, omap_val_bl, xattr_val_bl;
   const std::string omap_key_1 = "key_a";
@@ -362,6 +365,7 @@ TEST_F(LibRadosOmapECPP, ChangeUpmap) {
 
 TEST_F(LibRadosOmapECPP, NoOmapRecovery) {
   SKIP_IF_CRIMSON();
+  enable_omap();
   turn_balancing_off();
   bufferlist bl_write;
   bl_write.append("ceph");
@@ -417,6 +421,7 @@ TEST_F(LibRadosOmapECPP, NoOmapRecovery) {
 
 TEST_F(LibRadosOmapECPP, LargeOmapRecovery) {
   SKIP_IF_CRIMSON();
+  enable_omap();
   turn_balancing_off();
   bufferlist bl_write, header_bl;
   const std::string huge_val(1024, 'x');
