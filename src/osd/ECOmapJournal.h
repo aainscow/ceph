@@ -123,7 +123,6 @@ class ECOmapJournal {
   iterator begin_entries_mutable(const hobject_t &hoid);
   iterator end_entries_mutable(const hobject_t &hoid);
   void process_entries(const hobject_t &hoid);
-  void process_headers(const hobject_t &hoid);
   bool remove_processed_entry(const hobject_t &hoid, const ECOmapJournalEntry &entry);
   bool remove_processed_entry_by_version(const hobject_t &hoid, const eversion_t version);
   UpdateMapType get_key_map(const hobject_t &hoid);

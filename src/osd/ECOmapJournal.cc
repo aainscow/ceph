@@ -178,7 +178,7 @@ ECOmapJournal::iterator ECOmapJournal::end_entries_mutable(const hobject_t& hoid
 }
 
 std::optional<ceph::buffer::list> ECOmapJournal::get_updated_header(const hobject_t &hoid) {
-  process_headers(hoid);
+  process_entries(hoid);
   if (!header_map.contains(hoid)) {
     return std::nullopt;
   }
@@ -189,21 +189,6 @@ std::tuple<ECOmapJournal::UpdateMapType, ECOmapJournal::RangeMapType>
 ECOmapJournal::get_value_updates(const hobject_t &hoid) {
   process_entries(hoid);
   return {get_key_map(hoid), get_removed_ranges(hoid)};
-}
-
-void ECOmapJournal::process_headers(const hobject_t& hoid) {
-  for (auto entry_iter = begin_entries_mutable(hoid);
-        entry_iter != end_entries_mutable(hoid); ++entry_iter) {
-    // Update header if present
-    if (entry_iter->omap_header) {
-      if (!header_map.contains(hoid)) {
-        header_map[hoid] = ECOmapHeader(entry_iter->version, entry_iter->omap_header);
-      } else {
-        header_map[hoid].update_header(entry_iter->version, entry_iter->omap_header);
-      }
-      entry_iter->omap_header = std::nullopt;
-    }
-  }
 }
 
 void ECOmapJournal::process_entries(const hobject_t &hoid) {
@@ -217,8 +202,19 @@ void ECOmapJournal::process_entries(const hobject_t &hoid) {
       for (auto [_, value] : key_map[hoid]) {
         value.update_value(entry_iter->version, std::nullopt);
       }
+
       // Mark entire range as removed
       removed_ranges.clear_omap();
+
+      if (!entry_iter->omap_header) {
+        // Set the header to an empty bufferlist
+        bufferlist bl;
+        if (!header_map.contains(hoid)) {
+          header_map[hoid] = ECOmapHeader(entry_iter->version, bl);
+        } else {
+          header_map[hoid].update_header(entry_iter->version, bl);
+        }
+      }
     }
 
     // Update header if present
