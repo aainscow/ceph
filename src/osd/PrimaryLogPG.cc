@@ -23,6 +23,7 @@
 
 #include <boost/intrusive_ptr.hpp>
 #include <boost/tuple/tuple.hpp>
+#include <boost/asio/spawn.hpp>
 
 #include "PrimaryLogPG.h"
 
@@ -1995,33 +1996,36 @@ void PrimaryLogPG::do_request(
   }
 }
 
-/** do_op - do an op
- * pg lock will be held (if multithreaded)
- * osd_lock NOT held.
- */
-void PrimaryLogPG::do_op(OpRequestRef& op)
+bool PrimaryLogPG::should_use_coroutine(MOSDOp* m)
 {
-  FUNCTRACE(cct);
-  // NOTE: take a non-const pointer here; we must be careful not to
-  // change anything that will break other reads on m (operator<<).
-  MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
-  ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
-  if (m->finish_decode()) {
-    op->reset_desc();   // for TrackedOp
-    m->clear_payload();
+  if (!pool.info.is_erasure()) {
+    return false;
+  }
+  if (!pool.info.allows_ecoptimizations()) {
+    return false;
   }
 
-  dout(20) << __func__ << ": op " << *m << dendl;
+  for (const auto& osd_op : m->ops) {
+    if (osd_op.op.op == CEPH_OSD_OP_CALL) {
+      return true;
+    }
+  }
 
+  return false;
+}
+
+void PrimaryLogPG::do_op_impl(OpRequestRef op, optional_yield y)
+{
+  MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   const hobject_t head = m->get_hobj().get_head();
 
   if (!info.pgid.pgid.contains(
-	info.pgid.pgid.get_split_bits(pool.info.get_pg_num()), head)) {
+        info.pgid.pgid.get_split_bits(pool.info.get_pg_num()), head)) {
     derr << __func__ << " " << info.pgid.pgid << " does not contain "
-	 << head << " pg_num " << pool.info.get_pg_num() << " hash "
-	 << std::hex << head.get_hash() << std::dec << dendl;
+         << head << " pg_num " << pool.info.get_pg_num() << " hash "
+         << std::hex << head.get_hash() << std::dec << dendl;
     osd->clog->warn() << info.pgid.pgid << " does not contain " << head
-		      << " op " << *m;
+                      << " op " << *m;
     ceph_assert(!cct->_conf->osd_debug_misdirected_ops);
     return;
   }
@@ -2287,7 +2291,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       block_write_on_full_cache(head, op);
       return;
     }
-  }
+    }
 
   // dup/resent?
   if (op->may_write() || op->may_cache()) {
@@ -2500,6 +2504,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   dout(25) << __func__ << " oi " << obc->obs.oi << dendl;
 
   OpContext *ctx = new OpContext(op, m->get_reqid(), &m->ops, obc, this);
+  ctx->y = y;
 
   if (m->has_flag(CEPH_OSD_FLAG_SKIPRWLOCKS)) {
     dout(20) << __func__ << ": skipping rw locks" << dendl;
@@ -2577,6 +2582,41 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // force recovery of the oldest missing object if too many logs
   maybe_force_recovery();
+}
+
+/** do_op - do an op
+ * pg lock will be held (if multithreaded)
+ * osd_lock NOT held.
+ */
+void PrimaryLogPG::do_op(OpRequestRef& op)
+{
+  FUNCTRACE(cct);
+  MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
+  ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
+  if (m->finish_decode()) {
+    op->reset_desc();
+    m->clear_payload();
+  }
+
+  dout(20) << __func__ << ": op " << *m << dendl;
+
+  if (should_use_coroutine(m)) {
+    dout(0) << __func__ << ": spawning a coroutine for EC optimized CALL op" << dendl;
+    boost::asio::io_context local_context;
+
+    // Spawn a coroutine to handle the message
+    (void)boost::asio::spawn(local_context,
+    [this, op](boost::asio::yield_context yield) {
+      dout(0) << "Inside the coroutine" << dendl;
+      do_op_impl(op , optional_yield(yield));
+      dout(0) << "Done with the coroutine" << dendl;
+    });
+
+    local_context.run();
+  } else {
+    // Handle the message directly in the current thread
+    do_op_impl(op, null_yield);
+  }
 }
 
 PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_manifest_detail(
@@ -5906,10 +5946,11 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
       maybe_crc = oi.data_digest;
 
     if (ctx->op->ec_direct_read()) {
+      pg_unlock();
       result = pgbackend->objects_read_sync(
-        soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata);
-
-        dout(20) << " EC sync read for " << soid << " result=" << result << dendl;
+        soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata, oi.size, ctx->y);
+      pg_lock();
+      dout(20) << " EC sync read for " << soid << " result=" << result << dendl;
     } else {
     ctx->pending_async_reads.push_back(
       make_pair(
@@ -5925,7 +5966,7 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
     }
   } else {
     int r = pgbackend->objects_read_sync(
-      soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata);
+      soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata, oi.size, ctx->y);
     // whole object?  can we verify the checksum?
     if (r >= 0 && op.extent.offset == 0 &&
         (uint64_t)r == oi.size && oi.is_data_digest()) {
@@ -6158,10 +6199,11 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       break;
 
     case CEPH_OSD_OP_SYNC_READ:
-      if (pool.info.is_erasure()) {
+      if (pool.info.is_erasure() && !pool.info.allows_ecoptimizations()) {
 	result = -EOPNOTSUPP;
 	break;
       }
+      ctx->op->set_ec_direct_read();
       // fall through
     case CEPH_OSD_OP_READ:
       ++ctx->num_read;
@@ -9414,7 +9456,7 @@ int PrimaryLogPG::do_copy_get(OpContext *ctx, bufferlist::const_iterator& bp,
 	dout(10) << __func__ << ": async_read noted for " << soid << dendl;
       } else {
 	result = pgbackend->objects_read_sync(
-	  oi.soid, cursor.data_offset, max_read, osd_op.op.flags, &bl);
+	  oi.soid, cursor.data_offset, max_read, osd_op.op.flags, &bl, oi.size, ctx->y);
 	if (result < 0)
 	  return result;
       }
@@ -10725,7 +10767,7 @@ int PrimaryLogPG::do_cdc(const object_info_t& oi,
    * As s result, we leave this as a future work.
    */
   int r = pgbackend->objects_read_sync(
-      oi.soid, 0, oi.size, 0, &bl);
+      oi.soid, 0, oi.size, 0, &bl, oi.size, null_yield);
   if (r < 0) {
     dout(0) << __func__ << " read fail " << oi.soid
             << " len: " << oi.size << " r: " << r << dendl;

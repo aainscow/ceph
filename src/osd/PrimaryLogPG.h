@@ -18,22 +18,25 @@
 #define CEPH_REPLICATEDPG_H
 
 #include <boost/tuple/tuple.hpp>
+
+#include "cls/cas/cls_cas_ops.h"
+#include "common/Checksummer.h"
+#include "common/admin_finisher.h"
+#include "common/async/yield_context.h"
+#include "common/intrusive_timer.h"
+#include "common/shared_cache.hpp"
+#include "common/sharedptr_registry.hpp"
 #include "include/ceph_assert.h"
 #include "include/types.h" // for client_t
+#include "messages/MOSDOpReply.h"
+
 #include "DynamicPerfStats.h"
 #include "OSD.h"
 #include "PG.h"
-#include "Watch.h"
-#include "TierAgentState.h"
-#include "messages/MOSDOpReply.h"
-#include "common/admin_finisher.h"
-#include "common/Checksummer.h"
-#include "common/intrusive_timer.h"
-#include "common/sharedptr_registry.hpp"
-#include "common/shared_cache.hpp"
-#include "ReplicatedBackend.h"
 #include "PGTransaction.h"
-#include "cls/cas/cls_cas_ops.h"
+#include "ReplicatedBackend.h"
+#include "TierAgentState.h"
+#include "Watch.h"
 
 class CopyFromCallback;
 class PromoteCallback;
@@ -697,6 +700,8 @@ public:
     bool ignore_log_op_stats;  // don't log op stats
     bool update_log_only; ///< this is a write that returned an error - just record in pg log for dup detection
     ObjectCleanRegions clean_regions;
+
+    optional_yield y = null_yield;
 
     // side effects
     std::list<std::pair<watch_info_t,bool> > watch_connects; ///< new watch + will_ping flag
@@ -1562,6 +1567,8 @@ public:
   void do_request(
     OpRequestRef& op,
     ThreadPool::TPHandle &handle) override;
+  bool should_use_coroutine(MOSDOp* m);
+  void do_op_impl(OpRequestRef op, optional_yield y);
   void do_op(OpRequestRef& op);
   void record_write_error(OpRequestRef op, const hobject_t &soid,
 			  MOSDOpReply *orig_reply, int r,

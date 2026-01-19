@@ -56,7 +56,7 @@ TEST(ClsHello, SayHello) {
 TEST(ClsHello, RecordHello) {
   Rados cluster;
   std::string pool_name = get_temp_pool_name();
-  ASSERT_EQ("", create_one_pool_pp(pool_name, cluster));
+  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, cluster, true));
   IoCtx ioctx;
   cluster.ioctx_create(pool_name.c_str(), ioctx);
 
@@ -77,7 +77,7 @@ TEST(ClsHello, RecordHello) {
   ASSERT_EQ(0, ioctx.exec("myobject2", "hello", "replay", in, out));
   ASSERT_EQ(std::string("Hello, Tester!"), std::string(out.c_str(), out.length()));
 
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, cluster));
+  ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, cluster));
 }
 
 static std::string _get_required_osd_release(Rados& cluster)
