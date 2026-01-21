@@ -1138,12 +1138,9 @@ int ECBackend::objects_read_sync(
 
   objects_read_async(hoid, object_size, to_read, on_finish, true);
 
+  // Yield and wait for the async read to complete
   if (!done && yield) {
-    get_parent()->pg_unlock();
-
     (*yield)();
-
-    get_parent()->pg_lock();
   }
 
   return result;
