@@ -5954,6 +5954,10 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
       maybe_crc = oi.data_digest;
 
     if (ctx->op->ec_direct_read()) {
+      result = pgbackend->objects_read_local(
+        soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata);
+      dout(20) << " EC local read for " << soid << " result=" << result << dendl;
+    } else if (ctx->op->ec_sync_read()) {
       result = pgbackend->objects_read_sync(
         soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata,
         oi.size, ctx->op->yield, ctx->op->coro_resumer.get());
@@ -6210,8 +6214,9 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       if (pool.info.is_erasure() && !pool.info.allows_ecoptimizations()) {
 	result = -EOPNOTSUPP;
 	break;
+      } else if (pool.info.is_erasure() && pool.info.allows_ecoptimizations()) {
+        ctx->op->set_ec_sync_read();
       }
-      ctx->op->set_ec_direct_read();
       // fall through
     case CEPH_OSD_OP_READ:
       ++ctx->num_read;
