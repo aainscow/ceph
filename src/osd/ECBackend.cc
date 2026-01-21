@@ -1114,44 +1114,39 @@ void ECBackend::submit_transaction(
   rmw_pipeline.start_rmw(std::move(op));
 }
 
-template <typename CompletionToken>
-auto async_read_bridge(ECBackend *ecbackend,
-                          const hobject_t &hoid,
-                          uint64_t object_size,
-                          const list<pair<ec_align_t, pair<bufferlist*, Context*>>> &to_read,
-                          CompletionToken&& token)
-{
-  return boost::asio::async_initiate<CompletionToken, void(int)>(
-      [ecbackend, hoid, object_size, to_read](auto handler) {
-
-          auto executor = boost::asio::get_associated_executor(handler);
-          auto handler_ptr = std::make_shared<std::decay_t<decltype(handler)>>(std::move(handler));
-          Context *on_finish = new LambdaContext([handler_ptr, executor](int r) mutable {
-              boost::asio::post(executor, [handler_ptr, r]() mutable {
-                  (*handler_ptr)(r);
-              });
-          });
-
-          ecbackend->objects_read_async(
-              hoid,
-              object_size,
-              to_read,
-              on_finish,
-              true
-          );
-      },
-      token);
-}
-
 int ECBackend::objects_read_sync(
   const hobject_t &hoid,
   uint64_t object_size,
   const std::list<std::pair<ec_align_t,
   std::pair<ceph::buffer::list*, Context*>>> &to_read,
-  boost::asio::yield_context yield)
+  yield_token_t *yield,
+  resume_token_t *coro_resumer)
 {
-  dout(0) << __func__ << ": about to start async read" << dendl;
-  return async_read_bridge(this, hoid, object_size, to_read, yield);
+  int result = 0;
+  bool done = false;
+
+  // Callback for the async read
+  Context *on_finish = new LambdaContext([&result, &done, coro_resumer](int r) {
+      result = r;
+      done = true;
+
+      // Resume the coroutine
+      if (coro_resumer) {
+          (*coro_resumer)();
+      }
+  });
+
+  objects_read_async(hoid, object_size, to_read, on_finish, true);
+
+  if (!done && yield) {
+    get_parent()->pg_unlock();
+
+    (*yield)();
+
+    get_parent()->pg_lock();
+  }
+
+  return result;
 }
 
 int ECBackend::objects_read_local(

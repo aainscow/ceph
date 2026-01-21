@@ -173,7 +173,9 @@ public:
     uint32_t op_flags,
     ceph::buffer::list *bl,
     uint64_t object_size,
-    optional_yield y) override;
+    yield_token_t *yield,
+    resume_token_t *coro_resumer
+  ) override;
 
   int objects_read_local(
    const hobject_t &hoid,

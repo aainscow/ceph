@@ -2014,7 +2014,7 @@ bool PrimaryLogPG::should_use_coroutine(MOSDOp* m)
   return false;
 }
 
-void PrimaryLogPG::do_op_impl(OpRequestRef op, optional_yield y)
+void PrimaryLogPG::do_op_impl(OpRequestRef op)
 {
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   const hobject_t head = m->get_hobj().get_head();
@@ -2504,7 +2504,6 @@ void PrimaryLogPG::do_op_impl(OpRequestRef op, optional_yield y)
   dout(25) << __func__ << " oi " << obc->obs.oi << dendl;
 
   OpContext *ctx = new OpContext(op, m->get_reqid(), &m->ops, obc, this);
-  ctx->y = y;
 
   if (m->has_flag(CEPH_OSD_FLAG_SKIPRWLOCKS)) {
     dout(20) << __func__ << ": skipping rw locks" << dendl;
@@ -2602,20 +2601,29 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   if (should_use_coroutine(m)) {
     dout(0) << __func__ << ": spawning a coroutine for EC optimized CALL op" << dendl;
-    boost::asio::io_context local_context;
 
     // Spawn a coroutine to handle the message
-    (void)boost::asio::spawn(local_context,
-    [this, op](boost::asio::yield_context yield) {
-      dout(0) << "Inside the coroutine" << dendl;
-      do_op_impl(op , optional_yield(yield));
-      dout(0) << "Done with the coroutine" << dendl;
-    });
+    op->coro_resumer = std::make_unique<resume_token_t>(
+      [this, op](yield_token_t& yield) {
+        dout(0) << "Inside the coroutine" << dendl;
 
-    local_context.run();
+        op->yield = &yield;
+
+        do_op_impl(op);
+
+        dout(0) << "Done with the coroutine" << dendl;
+
+        // Cleanup
+        op->yield = nullptr;
+      });
+
+    // Startup the coroutine
+    if (op->coro_resumer && *op->coro_resumer) {
+      (*op->coro_resumer)();
+    }
   } else {
     // Handle the message directly in the current thread
-    do_op_impl(op, null_yield);
+    do_op_impl(op);
   }
 }
 
@@ -5946,10 +5954,9 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
       maybe_crc = oi.data_digest;
 
     if (ctx->op->ec_direct_read()) {
-      pg_unlock();
       result = pgbackend->objects_read_sync(
-        soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata, oi.size, ctx->y);
-      pg_lock();
+        soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata,
+        oi.size, ctx->op->yield, ctx->op->coro_resumer.get());
       dout(20) << " EC sync read for " << soid << " result=" << result << dendl;
     } else {
     ctx->pending_async_reads.push_back(
@@ -5966,7 +5973,8 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
     }
   } else {
     int r = pgbackend->objects_read_sync(
-      soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata, oi.size, ctx->y);
+      soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata,
+      oi.size, ctx->op->yield, ctx->op->coro_resumer.get());
     // whole object?  can we verify the checksum?
     if (r >= 0 && op.extent.offset == 0 &&
         (uint64_t)r == oi.size && oi.is_data_digest()) {
@@ -9455,8 +9463,9 @@ int PrimaryLogPG::do_copy_get(OpContext *ctx, bufferlist::const_iterator& bp,
 
 	dout(10) << __func__ << ": async_read noted for " << soid << dendl;
       } else {
-	result = pgbackend->objects_read_sync(
-	  oi.soid, cursor.data_offset, max_read, osd_op.op.flags, &bl, oi.size, ctx->y);
+ result = pgbackend->objects_read_sync(
+   oi.soid, cursor.data_offset, max_read, osd_op.op.flags, &bl,
+   oi.size, ctx->op->yield, ctx->op->coro_resumer.get());
 	if (result < 0)
 	  return result;
       }
@@ -10767,7 +10776,7 @@ int PrimaryLogPG::do_cdc(const object_info_t& oi,
    * As s result, we leave this as a future work.
    */
   int r = pgbackend->objects_read_sync(
-      oi.soid, 0, oi.size, 0, &bl, oi.size, null_yield);
+      oi.soid, 0, oi.size, 0, &bl, oi.size, nullptr, nullptr);
   if (r < 0) {
     dout(0) << __func__ << " read fail " << oi.soid
             << " len: " << oi.size << " r: " << r << dendl;

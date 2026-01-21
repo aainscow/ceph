@@ -259,20 +259,20 @@ public:
   }
 
   int objects_read_sync(const hobject_t &hoid, uint64_t off, uint64_t len,
-                        uint32_t op_flags, ceph::buffer::list *bl,
-                        uint64_t object_size, optional_yield y) override
+                        uint32_t op_flags, ceph::buffer::list *bl, uint64_t object_size,
+                        yield_token_t *yield, resume_token_t *coro_resumer) override
   {
     if (!is_optimized()) {
       ceph_abort_msg("Sync read attempted in legacy EC");
     }
-    if (!y) {
+    if (!yield || !coro_resumer) {
       ceph_abort_msg("Sync read attempted in fast EC without coroutine");
     }
 
     ec_align_t align{off, len, op_flags};
     std::list<std::pair<ec_align_t, std::pair<bufferlist*, Context*>>> to_read;
     to_read.push_back({ align, { bl, nullptr } });
-    return optimized.objects_read_sync(hoid, object_size, to_read, y.get_yield_context());
+    return optimized.objects_read_sync(hoid, object_size, to_read, yield, coro_resumer);
   }
 
   int objects_read_local(const hobject_t &hoid, uint64_t off, uint64_t len,

@@ -19,6 +19,7 @@
 #include "osd/osd_types.h"
 #include "common/TrackedOp.h"
 #include "common/tracer.h"
+#include <boost/coroutine2/all.hpp>
 /**
  * The OpRequest takes in a Message* and takes over a single reference
  * to it, which it puts() when destroyed.
@@ -30,6 +31,12 @@ private:
   OpInfo op_info;
 
 public:
+  using coro_t = boost::coroutines2::coroutine<void>;
+  using yield_token_t = coro_t::pull_type;
+  using resume_token_t = coro_t::push_type;
+  std::unique_ptr<resume_token_t> coro_resumer;
+  yield_token_t* yield = nullptr;
+
   int maybe_init_op_info(const OSDMap &osdmap);
 
   auto get_flags() const { return op_info.get_flags(); }

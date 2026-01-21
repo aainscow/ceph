@@ -18,6 +18,7 @@
 #define CEPH_REPLICATEDPG_H
 
 #include <boost/tuple/tuple.hpp>
+#include <boost/coroutine2/all.hpp>
 
 #include "cls/cas/cls_cas_ops.h"
 #include "common/Checksummer.h"
@@ -77,6 +78,9 @@ public:
   struct OpContext;
   class CopyCallback;
 
+  using coro_t = boost::coroutines2::coroutine<void>;
+  using resume_token_t = coro_t::push_type;
+  using yield_token_t = coro_t::pull_type;
   /**
    * CopyResults stores the object metadata of interest to a copy initiator.
    */
@@ -700,8 +704,6 @@ public:
     bool ignore_log_op_stats;  // don't log op stats
     bool update_log_only; ///< this is a write that returned an error - just record in pg log for dup detection
     ObjectCleanRegions clean_regions;
-
-    optional_yield y = null_yield;
 
     // side effects
     std::list<std::pair<watch_info_t,bool> > watch_connects; ///< new watch + will_ping flag
@@ -1568,7 +1570,7 @@ public:
     OpRequestRef& op,
     ThreadPool::TPHandle &handle) override;
   bool should_use_coroutine(MOSDOp* m);
-  void do_op_impl(OpRequestRef op, optional_yield y);
+  void do_op_impl(OpRequestRef op);
   void do_op(OpRequestRef& op);
   void record_write_error(OpRequestRef op, const hobject_t &soid,
 			  MOSDOpReply *orig_reply, int r,

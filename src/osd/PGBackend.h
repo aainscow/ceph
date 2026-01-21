@@ -20,6 +20,7 @@
 #define PGBACKEND_H
 
 #include <string>
+#include <boost/coroutine2/all.hpp>
 
 #include "common/LogClient.h"
 #include "common/WorkQueue.h"
@@ -71,6 +72,10 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
    ObjectStore *store;
    const coll_t coll;
    ObjectStore::CollectionHandle &ch;
+
+   using coro_t = boost::coroutines2::coroutine<void>;
+   using yield_token_t = coro_t::pull_type;
+   using resume_token_t = coro_t::push_type;
    /**
     * Provides interfaces for PGBackend callbacks
     *
@@ -636,13 +641,15 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      std::map<std::string, ceph::buffer::list, std::less<>> *out);
 
    virtual int objects_read_sync(
-       const hobject_t &hoid,
-       uint64_t off,
-       uint64_t len,
-       uint32_t op_flags,
-       ceph::buffer::list *bl,
-       uint64_t object_size,
-       optional_yield y) = 0;
+     const hobject_t &hoid,
+     uint64_t off,
+     uint64_t len,
+     uint32_t op_flags,
+     ceph::buffer::list *bl,
+     uint64_t object_size,
+     yield_token_t *yield,
+     resume_token_t *coro_resumer
+   ) = 0;
 
    virtual int objects_read_local(
       const hobject_t &hoid,

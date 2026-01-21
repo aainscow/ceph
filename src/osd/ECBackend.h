@@ -44,6 +44,10 @@ class ECSwitch;
 
 class ECBackend : public ECCommon {
  public:
+  using coro_t = boost::coroutines2::coroutine<void>;
+  using yield_token_t = coro_t::pull_type;
+  using resume_token_t = coro_t::push_type;
+
   PGBackend::RecoveryHandle *open_recovery_op();
 
   void run_recovery_op(
@@ -134,8 +138,9 @@ class ECBackend : public ECCommon {
     const hobject_t &hoid,
     uint64_t object_size,
     const std::list<std::pair<ec_align_t,
-      std::pair<ceph::buffer::list*, Context*>>> &to_read,
-    boost::asio::yield_context yield
+    std::pair<ceph::buffer::list*, Context*>>> &to_read,
+    yield_token_t *yield,
+    resume_token_t *coro_resumer
   );
 
   int objects_read_local(

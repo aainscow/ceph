@@ -325,7 +325,8 @@ int ReplicatedBackend::objects_read_sync(
   uint32_t op_flags,
   bufferlist *bl,
   uint64_t object_size,
-  optional_yield y)
+  yield_token_t *yield,
+  resume_token_t *coro_resumer)
 {
   return store->read(ch, ghobject_t(hoid), off, len, *bl, op_flags);
 }
