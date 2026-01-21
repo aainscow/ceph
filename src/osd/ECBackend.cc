@@ -1123,23 +1123,32 @@ int ECBackend::objects_read_sync(
   resume_token_t *coro_resumer)
 {
   int result = 0;
-  bool done = false;
+  enum State { RUNNING, YIELDING, SUSPENDED };
+  auto state_guard = std::make_shared<std::atomic<State>>(RUNNING);
 
   // Callback for the async read
-  Context *on_finish = new LambdaContext([&result, &done, coro_resumer](int r) {
+  Context *on_finish = new LambdaContext([&result, coro_resumer, state_guard](int r) {
       result = r;
-      done = true;
 
+    State expected = SUSPENDED;
+    if (state_guard->compare_exchange_strong(expected, RUNNING)) {
       // Resume the coroutine
       if (coro_resumer) {
           (*coro_resumer)();
       }
+    } else {
+      // The coroutine was not suspended before this
+      state_guard->store(RUNNING);
+    }
   });
+
+  state_guard->store(YIELDING);
 
   objects_read_async(hoid, object_size, to_read, on_finish, true);
 
-  // Yield and wait for the async read to complete
-  if (!done && yield) {
+  // If the async read is not yet complete, yield and wait for it to complete
+  State expected = YIELDING;
+  if (state_guard->compare_exchange_strong(expected, SUSPENDED) && yield) {
     (*yield)();
   }
 
