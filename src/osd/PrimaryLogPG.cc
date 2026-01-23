@@ -2602,19 +2602,23 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (should_use_coroutine(m)) {
     dout(0) << __func__ << ": spawning a coroutine for EC optimized CALL op" << dendl;
 
+    OpRequest* op_raw = op.get();
+
     // Spawn a coroutine to handle the message
     op->coro_resumer = std::make_unique<resume_token_t>(
-      [this, op](yield_token_t& yield) {
+      [this, op_raw](yield_token_t& yield) {
         dout(0) << "Inside the coroutine" << dendl;
 
-        op->yield = &yield;
-
-        do_op_impl(op);
+        op_raw->coro_handles.emplace(CoroHandles{ yield, *op_raw->coro_resumer });
+        {
+          const OpRequestRef op_ref(op_raw);
+          do_op_impl(op_ref);
+        }
 
         dout(0) << "Done with the coroutine" << dendl;
 
         // Cleanup
-        op->yield = nullptr;
+        op_raw->coro_handles = std::nullopt;
       });
 
     // Startup the coroutine
@@ -5960,7 +5964,7 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
     } else if (ctx->op->ec_sync_read()) {
       result = pgbackend->objects_read_sync(
         soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata,
-        oi.size, ctx->op->yield, ctx->op->coro_resumer.get());
+        oi.size, ctx->op->coro_handles);
       dout(20) << " EC sync read for " << soid << " result=" << result << dendl;
     } else {
     ctx->pending_async_reads.push_back(
@@ -5978,7 +5982,7 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
   } else {
     int r = pgbackend->objects_read_sync(
       soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata,
-      oi.size, ctx->op->yield, ctx->op->coro_resumer.get());
+      oi.size, ctx->op->coro_handles);
     // whole object?  can we verify the checksum?
     if (r >= 0 && op.extent.offset == 0 &&
         (uint64_t)r == oi.size && oi.is_data_digest()) {
@@ -9470,7 +9474,7 @@ int PrimaryLogPG::do_copy_get(OpContext *ctx, bufferlist::const_iterator& bp,
       } else {
  result = pgbackend->objects_read_sync(
    oi.soid, cursor.data_offset, max_read, osd_op.op.flags, &bl,
-   oi.size, ctx->op->yield, ctx->op->coro_resumer.get());
+   oi.size, ctx->op->coro_handles);
 	if (result < 0)
 	  return result;
       }
@@ -10781,7 +10785,7 @@ int PrimaryLogPG::do_cdc(const object_info_t& oi,
    * As s result, we leave this as a future work.
    */
   int r = pgbackend->objects_read_sync(
-      oi.soid, 0, oi.size, 0, &bl, oi.size, nullptr, nullptr);
+      oi.soid, 0, oi.size, 0, &bl, oi.size, std::nullopt);
   if (r < 0) {
     dout(0) << __func__ << " read fail " << oi.soid
             << " len: " << oi.size << " r: " << r << dendl;

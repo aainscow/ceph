@@ -37,6 +37,7 @@
 #include "PGTransaction.h"
 #include "osd_types.h"
 #include "pg_features.h"
+#include "Coroutines.h"
 
 
 class ECOmapJournalEntry;
@@ -73,9 +74,6 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
    const coll_t coll;
    ObjectStore::CollectionHandle &ch;
 
-   using coro_t = boost::coroutines2::coroutine<void>;
-   using yield_token_t = coro_t::pull_type;
-   using resume_token_t = coro_t::push_type;
    /**
     * Provides interfaces for PGBackend callbacks
     *
@@ -647,8 +645,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      uint32_t op_flags,
      ceph::buffer::list *bl,
      uint64_t object_size,
-     yield_token_t *yield,
-     resume_token_t *coro_resumer
+     std::optional<CoroHandles> coro
    ) = 0;
 
    virtual int objects_read_local(

@@ -1119,23 +1119,20 @@ int ECBackend::objects_read_sync(
   uint64_t object_size,
   const std::list<std::pair<ec_align_t,
   std::pair<ceph::buffer::list*, Context*>>> &to_read,
-  yield_token_t *yield,
-  resume_token_t *coro_resumer)
+  CoroHandles coro)
 {
   int result = 0;
   enum State { RUNNING, YIELDING, SUSPENDED };
   auto state_guard = std::make_shared<std::atomic<State>>(RUNNING);
 
   // Callback for the async read
-  Context *on_finish = new LambdaContext([&result, coro_resumer, state_guard](int r) {
+  Context *on_finish = new LambdaContext([&result, coro, state_guard](int r) {
       result = r;
 
     State expected = SUSPENDED;
     if (state_guard->compare_exchange_strong(expected, RUNNING)) {
       // Resume the coroutine
-      if (coro_resumer) {
-          (*coro_resumer)();
-      }
+      coro.resume();
     } else {
       // The coroutine was not suspended before this
       state_guard->store(RUNNING);
@@ -1148,8 +1145,8 @@ int ECBackend::objects_read_sync(
 
   // If the async read is not yet complete, yield and wait for it to complete
   State expected = YIELDING;
-  if (state_guard->compare_exchange_strong(expected, SUSPENDED) && yield) {
-    (*yield)();
+  if (state_guard->compare_exchange_strong(expected, SUSPENDED)) {
+    coro.yield();
   }
 
   return result;

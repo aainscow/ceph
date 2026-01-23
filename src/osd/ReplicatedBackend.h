@@ -173,8 +173,7 @@ public:
     uint32_t op_flags,
     ceph::buffer::list *bl,
     uint64_t object_size,
-    yield_token_t *yield,
-    resume_token_t *coro_resumer
+    std::optional<CoroHandles> coro
   ) override;
 
   int objects_read_local(

@@ -38,6 +38,7 @@
 #include "ReplicatedBackend.h"
 #include "TierAgentState.h"
 #include "Watch.h"
+#include "Coroutines.h"
 
 class CopyFromCallback;
 class PromoteCallback;
@@ -78,9 +79,6 @@ public:
   struct OpContext;
   class CopyCallback;
 
-  using coro_t = boost::coroutines2::coroutine<void>;
-  using resume_token_t = coro_t::push_type;
-  using yield_token_t = coro_t::pull_type;
   /**
    * CopyResults stores the object metadata of interest to a copy initiator.
    */

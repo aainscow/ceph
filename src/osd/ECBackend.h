@@ -28,6 +28,7 @@
 #include "erasure-code/ErasureCodeInterface.h"
 #include "include/buffer.h"
 #include "osd/scrubber/scrub_backend.h"
+#include "Coroutines.h"
 
 /* This file is soon going to be replaced (before next release), so we are going
  * to simply ignore all deprecated warnings.
@@ -44,10 +45,6 @@ class ECSwitch;
 
 class ECBackend : public ECCommon {
  public:
-  using coro_t = boost::coroutines2::coroutine<void>;
-  using yield_token_t = coro_t::pull_type;
-  using resume_token_t = coro_t::push_type;
-
   PGBackend::RecoveryHandle *open_recovery_op();
 
   void run_recovery_op(
@@ -139,8 +136,7 @@ class ECBackend : public ECCommon {
     uint64_t object_size,
     const std::list<std::pair<ec_align_t,
     std::pair<ceph::buffer::list*, Context*>>> &to_read,
-    yield_token_t *yield,
-    resume_token_t *coro_resumer
+    CoroHandles coro
   );
 
   int objects_read_local(
