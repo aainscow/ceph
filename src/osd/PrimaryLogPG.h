@@ -79,8 +79,6 @@ public:
   struct OpContext;
   class CopyCallback;
 
-  std::map<OpRequest*, std::unique_ptr<resume_token_t>> active_coroutines;
-
   /**
    * CopyResults stores the object metadata of interest to a copy initiator.
    */
@@ -944,6 +942,10 @@ public:
 
 protected:
 
+  std::map<OpRequest*, std::unique_ptr<resume_token_t>> active_coroutines;
+  bool coro_op_in_flight = false;
+  std::list<OpRequestRef> waiting_for_coro_op;
+
   /**
    * Grabs locks for OpContext, should be cleaned up in close_op_ctx
    *
@@ -1572,6 +1574,7 @@ public:
   bool should_use_coroutine(MOSDOp* m);
   void do_op_impl(OpRequestRef op);
   void do_op(OpRequestRef& op);
+  void on_coroutine_complete();
   void record_write_error(OpRequestRef op, const hobject_t &soid,
 			  MOSDOpReply *orig_reply, int r,
 			  OpContext *ctx_for_op_returns=nullptr);

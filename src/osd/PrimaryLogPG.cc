@@ -2597,11 +2597,17 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     m->clear_payload();
   }
 
+  if (coro_op_in_flight) {
+    dout(10) << __func__ << ": coroutine op in flight, queuing " << op << dendl;
+    waiting_for_coro_op.push_back(op);
+    return;
+  }
+
   dout(20) << __func__ << ": op " << *m << dendl;
 
   if (should_use_coroutine(m)) {
     dout(0) << __func__ << ": spawning a coroutine for EC optimized CALL op" << dendl;
-
+    coro_op_in_flight = true;
     OpRequest* op_raw = op.get();
 
     // Spawn a coroutine to handle the message
@@ -2619,6 +2625,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
         // Cleanup
         active_coroutines.erase(op_raw);
+        on_coroutine_complete();
       });
 
     active_coroutines[op_raw] = std::move(resumer);
@@ -2628,6 +2635,16 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   } else {
     // Handle the message directly in the current thread
     do_op_impl(op);
+  }
+}
+
+void PrimaryLogPG::on_coroutine_complete()
+{
+  coro_op_in_flight = false;
+
+  if (!waiting_for_coro_op.empty()) {
+    dout(10) << __func__ << "requeuing " << waiting_for_coro_op.size() << " ops" << dendl;
+    requeue_ops(waiting_for_coro_op);
   }
 }
 
