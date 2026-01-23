@@ -32,7 +32,6 @@ private:
   OpInfo op_info;
 
 public:
-  std::unique_ptr<resume_token_t> coro_resumer;
   std::optional<CoroHandles> coro_handles = std::nullopt;
 
   int maybe_init_op_info(const OSDMap &osdmap);

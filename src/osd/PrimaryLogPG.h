@@ -79,6 +79,8 @@ public:
   struct OpContext;
   class CopyCallback;
 
+  std::map<OpRequest*, std::unique_ptr<resume_token_t>> active_coroutines;
+
   /**
    * CopyResults stores the object metadata of interest to a copy initiator.
    */

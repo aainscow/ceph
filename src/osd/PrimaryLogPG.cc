@@ -2605,11 +2605,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     OpRequest* op_raw = op.get();
 
     // Spawn a coroutine to handle the message
-    op->coro_resumer = std::make_unique<resume_token_t>(
+    auto resumer = std::make_unique<resume_token_t>(
       [this, op_raw](yield_token_t& yield) {
         dout(0) << "Inside the coroutine" << dendl;
 
-        op_raw->coro_handles.emplace(CoroHandles{ yield, *op_raw->coro_resumer });
+        op_raw->coro_handles.emplace(CoroHandles{ yield, *active_coroutines[op_raw] });
         {
           const OpRequestRef op_ref(op_raw);
           do_op_impl(op_ref);
@@ -2618,13 +2618,13 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         dout(0) << "Done with the coroutine" << dendl;
 
         // Cleanup
-        op_raw->coro_handles = std::nullopt;
+        active_coroutines.erase(op_raw);
       });
 
+    active_coroutines[op_raw] = std::move(resumer);
+
     // Startup the coroutine
-    if (op->coro_resumer && *op->coro_resumer) {
-      (*op->coro_resumer)();
-    }
+    (*active_coroutines[op_raw])();
   } else {
     // Handle the message directly in the current thread
     do_op_impl(op);
@@ -13221,6 +13221,11 @@ void PrimaryLogPG::on_activate_complete()
 void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
 {
   dout(10) << __func__ << dendl;
+
+  if (!active_coroutines.empty()) {
+    dout(10) << "Cancelling " << active_coroutines.size() << " active coroutines" << dendl;
+    active_coroutines.clear();
+  }
 
   if (hit_set && hit_set->insert_count() == 0) {
     dout(20) << " discarding empty hit_set" << dendl;
