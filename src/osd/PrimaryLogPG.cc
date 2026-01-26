@@ -23,7 +23,6 @@
 
 #include <boost/intrusive_ptr.hpp>
 #include <boost/tuple/tuple.hpp>
-#include <boost/asio/spawn.hpp>
 
 #include "PrimaryLogPG.h"
 
@@ -1998,9 +1997,6 @@ void PrimaryLogPG::do_request(
 
 bool PrimaryLogPG::should_use_coroutine(MOSDOp* m)
 {
-  if (!pool.info.is_erasure()) {
-    return false;
-  }
   if (!pool.info.allows_ecoptimizations()) {
     return false;
   }
@@ -2598,7 +2594,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   if (coro_op_in_flight) {
-    dout(10) << __func__ << ": coroutine op in flight, queuing " << op << dendl;
+    dout(20) << __func__ << ": coroutine op in flight, queuing " << op << dendl;
     waiting_for_coro_op.push_back(op);
     return;
   }
@@ -2606,32 +2602,29 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   dout(20) << __func__ << ": op " << *m << dendl;
 
   if (should_use_coroutine(m)) {
-    dout(0) << __func__ << ": spawning a coroutine for EC optimized CALL op" << dendl;
+    dout(20) << __func__ << ": spawning a coroutine for EC optimized CALL op" << dendl;
     coro_op_in_flight = true;
+    active_coro_op = op;
     OpRequest* op_raw = op.get();
 
     // Spawn a coroutine to handle the message
     auto resumer = std::make_unique<resume_token_t>(
       [this, op_raw](yield_token_t& yield) {
-        dout(0) << "Inside the coroutine" << dendl;
-
-        op_raw->coro_handles.emplace(CoroHandles{ yield, *active_coroutines[op_raw] });
+        op_raw->coro_handles.emplace(CoroHandles{ yield, *coro_resumer });
         {
           const OpRequestRef op_ref(op_raw);
           do_op_impl(op_ref);
         }
 
-        dout(0) << "Done with the coroutine" << dendl;
-
         // Cleanup
-        active_coroutines.erase(op_raw);
+        coro_resumer = nullptr;
         on_coroutine_complete();
       });
 
-    active_coroutines[op_raw] = std::move(resumer);
+    coro_resumer = std::move(resumer);
 
     // Startup the coroutine
-    (*active_coroutines[op_raw])();
+    (*coro_resumer)();
   } else {
     // Handle the message directly in the current thread
     do_op_impl(op);
@@ -2640,10 +2633,12 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
 void PrimaryLogPG::on_coroutine_complete()
 {
+  ceph_assert(coro_op_in_flight);
   coro_op_in_flight = false;
+  active_coro_op = nullptr;
 
   if (!waiting_for_coro_op.empty()) {
-    dout(10) << __func__ << "requeuing " << waiting_for_coro_op.size() << " ops" << dendl;
+    dout(20) << __func__ << ": requeuing " << waiting_for_coro_op.size() << " ops" << dendl;
     requeue_ops(waiting_for_coro_op);
   }
 }
@@ -13239,9 +13234,10 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
 {
   dout(10) << __func__ << dendl;
 
-  if (!active_coroutines.empty()) {
-    dout(10) << "Cancelling " << active_coroutines.size() << " active coroutines" << dendl;
-    active_coroutines.clear();
+  if (coro_resumer != nullptr) {
+    dout(20) << __func__ << ": Stopping active coroutine" << dendl;
+    coro_resumer = nullptr;
+    coro_op_in_flight = false;
   }
 
   if (hit_set && hit_set->insert_count() == 0) {
@@ -13260,6 +13256,11 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
   requeue_ops(waiting_for_flush);
   requeue_ops(waiting_for_active);
   requeue_ops(waiting_for_readable);
+  requeue_ops(waiting_for_coro_op);
+  if (active_coro_op) {
+    requeue_op(active_coro_op);
+    active_coro_op = nullptr;
+  }
 
   vector<ceph_tid_t> tids;
   cancel_copy_ops(is_primary(), &tids);

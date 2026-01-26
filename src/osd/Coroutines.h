@@ -4,12 +4,21 @@
 /*
  * Ceph - scalable distributed file system
  *
- * Copyright (C) 2012 New Dream Network/Sage Weil <sage@newdream.net>
+ * Copyright (C) 2026 IBM
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License version 2.1, as published by the Free Software
  * Foundation.  See file COPYING.
+ */
+
+/*
+ * This header file contains types required to integrate boost coroutines into
+ * the OSD backend.
+ *
+ * - yield_token_t (pull_type): Is used by a coroutine to suspend execution (yield)
+ * while waiting for an I/O operation to complete.
+ * - resume_token_t (push_type): Is used by the completion callback to
  */
 
 #pragma once

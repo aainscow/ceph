@@ -365,20 +365,20 @@ inline std::ostream& operator<<(std::ostream& out, const request_redirect_t& red
 
 // Internal OSD op flags - set by the OSD based on the op types
 enum {
-  CEPH_OSD_RMW_FLAG_READ              = (1 << 1),
-  CEPH_OSD_RMW_FLAG_WRITE             = (1 << 2),
-  CEPH_OSD_RMW_FLAG_CLASS_READ        = (1 << 3),
-  CEPH_OSD_RMW_FLAG_CLASS_WRITE       = (1 << 4),
-  CEPH_OSD_RMW_FLAG_PGOP              = (1 << 5),
-  CEPH_OSD_RMW_FLAG_CACHE             = (1 << 6),
-  CEPH_OSD_RMW_FLAG_FORCE_PROMOTE     = (1 << 7),
+  CEPH_OSD_RMW_FLAG_READ        = (1 << 1),
+  CEPH_OSD_RMW_FLAG_WRITE       = (1 << 2),
+  CEPH_OSD_RMW_FLAG_CLASS_READ  = (1 << 3),
+  CEPH_OSD_RMW_FLAG_CLASS_WRITE = (1 << 4),
+  CEPH_OSD_RMW_FLAG_PGOP        = (1 << 5),
+  CEPH_OSD_RMW_FLAG_CACHE       = (1 << 6),
+  CEPH_OSD_RMW_FLAG_FORCE_PROMOTE   = (1 << 7),
   CEPH_OSD_RMW_FLAG_SKIP_HANDLE_CACHE = (1 << 8),
   CEPH_OSD_RMW_FLAG_SKIP_PROMOTE      = (1 << 9),
   CEPH_OSD_RMW_FLAG_RWORDERED         = (1 << 10),
-  CEPH_OSD_RMW_FLAG_RETURNVEC         = (1 << 11),
-  CEPH_OSD_RMW_FLAG_READ_DATA         = (1 << 12),
-  CEPH_OSD_RMW_FLAG_EC_DIRECT_READ    = (1 << 13),
-  CEPH_OSD_RMW_FLAG_EC_SYNC_READ      = (1 << 14),
+  CEPH_OSD_RMW_FLAG_RETURNVEC = (1 << 11),
+  CEPH_OSD_RMW_FLAG_READ_DATA  = (1 << 12),
+  CEPH_OSD_RMW_FLAG_EC_DIRECT_READ  = (1 << 13),
+  CEPH_OSD_RMW_FLAG_EC_SYNC_READ    = (1 << 14),
 };
 
 
@@ -4084,7 +4084,7 @@ public:
   public:
     virtual void append(uint64_t old_offset) {}
     virtual void setattrs(std::map<std::string, std::optional<ceph::buffer::list>> &attrs) {}
-    virtual void ec_omap(bool clear_omap, std::optional<ceph::buffer::list> omap_header, 
+    virtual void ec_omap(bool clear_omap, std::optional<ceph::buffer::list> omap_header,
       std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> &omap_updates) {}
     virtual void rmobject(version_t old_version) {}
     /**
@@ -4167,7 +4167,7 @@ public:
     encode(old_attrs, bl);
     ENCODE_FINISH(bl);
   }
-  void ec_omap(bool clear_omap, std::optional<ceph::buffer::list> omap_header, 
+  void ec_omap(bool clear_omap, std::optional<ceph::buffer::list> omap_header,
     std::vector<std::pair<OmapUpdateType, ceph::buffer::list>> &omap_updates) {
     if(!can_local_rollback) {
       return;

@@ -55,9 +55,7 @@ bool OpInfo::allows_returnvec() const {
 bool OpInfo::ec_direct_read() const {
   return check_rmw(CEPH_OSD_RMW_FLAG_EC_DIRECT_READ);
 }
-
-bool OpInfo::ec_sync_read() const
-{
+bool OpInfo::ec_sync_read() const {
   return check_rmw(CEPH_OSD_RMW_FLAG_EC_SYNC_READ);
 }
 /**
