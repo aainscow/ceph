@@ -966,6 +966,7 @@ class ServiceSpec(object):
         'alertmanager': {'user_cert_allowed': False, 'scope': 'host', 'requires_ca_cert': False},
         'ceph-exporter': {'user_cert_allowed': False, 'scope': 'host', 'requires_ca_cert': False},
         'node-exporter': {'user_cert_allowed': False, 'scope': 'host', 'requires_ca_cert': False},
+        'node-proxy': {'user_cert_allowed': False, 'scope': 'host', 'requires_ca_cert': False},
         # 'loki'        : {'user_cert_allowed': False, 'scope': 'host'},
         # 'promtail'    : {'user_cert_allowed': False, 'scope': 'host'},
         # 'jaeger-agent': {'user_cert_allowed': False, 'scope': 'host'},
@@ -1000,6 +1001,7 @@ class ServiceSpec(object):
             'promtail': MonitoringSpec,
             'alloy': MonitoringSpec,
             'snmp-gateway': SNMPGatewaySpec,
+            'node-proxy': NodeProxySpec,
             SMBSpec.service_type: SMBSpec,
         }.get(service_type, cls)
         if ret == ServiceSpec and not service_type:
@@ -4272,6 +4274,17 @@ class SMBSpec(ServiceSpec):
                 c.to_json() for c in spec['ceph_cluster_configs']
             ]
         return obj
+
+
+class NodeProxySpec(ServiceSpec):
+    def __init__(self,
+                 service_type: str,
+                 placement: Optional[PlacementSpec] = None,
+                 ) -> None:
+        assert service_type == 'node-proxy'
+        super(NodeProxySpec, self).__init__('node-proxy', placement=placement)
+        self.ssl: bool = True
+        self.validate()
 
 
 yaml.add_representer(SMBSpec, ServiceSpec.yaml_representer)
