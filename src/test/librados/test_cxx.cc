@@ -82,7 +82,7 @@ int destroy_ec_profile_and_rule_pp(Rados &cluster,
 }
 
 std::string create_one_ec_pool_pp(const std::string &pool_name,
-  Rados &cluster, bool optimised_ec)
+  Rados &cluster, bool optimised_ec, bool enable_omap)
 {
   std::string err = connect_cluster_pp(cluster);
   if (err.length())
@@ -115,6 +115,8 @@ std::string create_one_ec_pool_pp(const std::string &pool_name,
   }
 
   if (optimised_ec) {
+    set_allow_ec_overwrites_pp(pool_name, cluster, true);
+
     bufferlist inbl;
     ret = cluster.mon_command(
       "{\"prefix\": \"osd pool set\", \"pool\": \"" + pool_name +
@@ -125,6 +127,20 @@ std::string create_one_ec_pool_pp(const std::string &pool_name,
       destroy_ec_profile_pp(cluster, pool_name, oss);
       oss << "rados_mon_command osd pool set failed with error " << ret;
       return oss.str();
+    }
+
+    if (enable_omap) {
+      bufferlist inbl, outbl;
+      std::ostringstream oss;
+      oss << "{\"prefix\": \"osd pool set\", \"pool\": \"" << pool_name
+          << "\", \"var\": \"supports_omap\", \"val\": \"true\"}";
+      ret = cluster.mon_command(oss.str(), std::move(inbl), &outbl, nullptr);
+      if (ret) {
+        destroy_one_ec_pool_pp(pool_name, cluster);
+        destroy_ec_profile_pp(cluster, pool_name, oss);
+        oss << "rados_mon_command osd pool set failed with error " << ret;
+        return oss.str();
+      }
     }
   }
 

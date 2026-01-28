@@ -9,6 +9,7 @@
 
 #include "gtest/gtest.h"
 #include "test/librados/test_cxx.h"
+#include "test/librados/test_pool_types.h"
 #include "global/global_context.h"
 
 #include <errno.h>
@@ -19,20 +20,31 @@
 
 using namespace std;
 using namespace librados;
+using ceph::test::PoolType;
+using ceph::test::pool_type_name;
+using ceph::test::create_pool_by_type;
+using ceph::test::destroy_pool_by_type;
 
-librados::Rados rados;
-librados::IoCtx ioctx;
-string pool_name;
+class cls_rgw_gc : public ::testing::TestWithParam<PoolType> {
+ protected:
+  static librados::Rados rados;
+  librados::IoCtx ioctx;
+  std::string pool_name;
+  PoolType pool_type;
 
-
-/* must be the first test! */
-TEST(cls_rgw_gc, init)
-{
-  pool_name = get_temp_pool_name();
-  /* create pool */
-  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-}
+  void SetUp() override {
+    pool_type = GetParam();
+    pool_name = get_temp_pool_name();
+    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
+    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+  }
+  
+  void TearDown() override {
+    ioctx.close();
+    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
+  }
+};
+librados::Rados cls_rgw_gc::rados;
 
 
 string str_int(string s, int i)
@@ -57,7 +69,7 @@ static void create_obj(cls_rgw_obj& obj, int i, int j)
   obj.loc.append(buf);
 }
 
-TEST(cls_rgw_gc, gc_queue_ops1)
+TEST_P(cls_rgw_gc, gc_queue_ops1)
 {
   //Testing queue ops when data size is NOT a multiple of queue size
   string queue_name = "my-queue";
@@ -131,7 +143,7 @@ TEST(cls_rgw_gc, gc_queue_ops1)
   }
 }
 
-TEST(cls_rgw_gc, gc_queue_ops2)
+TEST_P(cls_rgw_gc, gc_queue_ops2)
 {
   //Testing list queue
   string queue_name = "my-second-queue";
@@ -208,7 +220,7 @@ TEST(cls_rgw_gc, gc_queue_ops2)
 }
 
 #if 0 // TODO: fix or remove defer_gc()
-TEST(cls_rgw_gc, gc_queue_ops3)
+TEST_P(cls_rgw_gc, gc_queue_ops3)
 {
   //Testing remove queue entries
   string queue_name = "my-third-queue";
@@ -287,7 +299,7 @@ TEST(cls_rgw_gc, gc_queue_ops3)
 
 }
 
-TEST(cls_rgw_gc, gc_queue_ops4)
+TEST_P(cls_rgw_gc, gc_queue_ops4)
 {
   //Testing remove queue entries
   string queue_name = "my-fourth-queue";
@@ -362,7 +374,7 @@ TEST(cls_rgw_gc, gc_queue_ops4)
 }
 #endif // defer_gc() disabled
 
-TEST(cls_rgw_gc, gc_queue_ops5)
+TEST_P(cls_rgw_gc, gc_queue_ops5)
 {
   //Testing remove queue entries
   string queue_name = "my-fifth-queue";
@@ -425,7 +437,7 @@ TEST(cls_rgw_gc, gc_queue_ops5)
 
 }
 
-TEST(cls_rgw_gc, gc_queue_ops6)
+TEST_P(cls_rgw_gc, gc_queue_ops6)
 {
   //Testing list queue, when data size is split at the end of the queue
   string queue_name = "my-sixth-queue";
@@ -497,7 +509,7 @@ TEST(cls_rgw_gc, gc_queue_ops6)
   }
 }
 
-TEST(cls_rgw_gc, gc_queue_ops7)
+TEST_P(cls_rgw_gc, gc_queue_ops7)
 {
   //Testing list queue, when data size is written at the end of queue and data is written after wrap around
   string queue_name = "my-seventh-queue";
@@ -569,7 +581,7 @@ TEST(cls_rgw_gc, gc_queue_ops7)
   }
 }
 
-TEST(cls_rgw_gc, gc_queue_ops8)
+TEST_P(cls_rgw_gc, gc_queue_ops8)
 {
   //Testing list queue, when data is split at the end of the queue
   string queue_name = "my-eighth-queue";
@@ -641,7 +653,7 @@ TEST(cls_rgw_gc, gc_queue_ops8)
   }
 }
 
-TEST(cls_rgw_gc, gc_queue_ops9)
+TEST_P(cls_rgw_gc, gc_queue_ops9)
 {
   //Testing remove queue entries
   string queue_name = "my-ninth-queue";
@@ -691,10 +703,5 @@ TEST(cls_rgw_gc, gc_queue_ops9)
   ASSERT_EQ(-ENOSPC, ioctx.operate(queue_name, &defer_op));
 }
 
-/* must be last test! */
-TEST(cls_rgw_gc, finalize)
-{
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
-}
+INSTANTIATE_TEST_SUITE_P(PoolTypes, cls_rgw_gc,
+                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));

@@ -6,26 +6,45 @@
 
 #include "gtest/gtest.h"
 #include "test/librados/test_cxx.h"
+#include "test/librados/test_pool_types.h"
 
 #include <errno.h>
 #include <string>
 #include <vector>
 
 using namespace std;
+using ceph::test::PoolType;
+using ceph::test::pool_type_name;
+using ceph::test::create_pool_by_type;
+using ceph::test::destroy_pool_by_type;
 
 static librados::ObjectWriteOperation *new_op() {
   return new librados::ObjectWriteOperation();
 }
 
-TEST(cls_refcount, test_implicit) /* test refcount using implicit referencing of newly created objects */
-{
-  librados::Rados rados;
+class cls_refcount : public ::testing::TestWithParam<PoolType> {
+ protected:
+  static librados::Rados rados;
   librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
+  std::string pool_name;
+  PoolType pool_type;
 
-  /* create pool */
-  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+  void SetUp() override {
+    pool_type = GetParam();
+    pool_name = get_temp_pool_name();
+    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
+    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+  }
+  
+  void TearDown() override {
+    ioctx.close();
+    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
+  }
+};
+librados::Rados cls_refcount::rados;
+
+TEST_P(cls_refcount, test_implicit) /* test refcount using implicit referencing of newly created objects */
+{
 
   /* add chains */
   string oid = "obj";
@@ -109,24 +128,15 @@ TEST(cls_refcount, test_implicit) /* test refcount using implicit referencing of
 
   delete op;
 
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
 }
 
 /*
  * similar to test_implicit, just changes the order of the tags removal
  * see issue #20107
  */
-TEST(cls_refcount, test_implicit_idempotent) /* test refcount using implicit referencing of newly created objects */
+TEST_P(cls_refcount, test_implicit_idempotent) /* test refcount using implicit referencing of newly created objects */
 {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
 
-  /* create pool */
-  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   /* add chains */
   string oid = "obj";
@@ -210,20 +220,11 @@ TEST(cls_refcount, test_implicit_idempotent) /* test refcount using implicit ref
 
   delete op;
 
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
 }
 
 
-TEST(cls_refcount, test_put_snap) {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
+TEST_P(cls_refcount, test_put_snap) {
 
-  /* create pool */
-  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   bufferlist bl;
   bl.append("hi there");
@@ -244,20 +245,11 @@ TEST(cls_refcount, test_put_snap) {
 
   delete op;
 
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
 }
 
-TEST(cls_refcount, test_explicit) /* test refcount using implicit referencing of newly created objects */
+TEST_P(cls_refcount, test_explicit) /* test refcount using implicit referencing of newly created objects */
 {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
 
-  /* create pool */
-  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   /* add chains */
   string oid = "obj";
@@ -320,20 +312,11 @@ TEST(cls_refcount, test_explicit) /* test refcount using implicit referencing of
 
   delete op;
 
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
 }
 
-TEST(cls_refcount, set) /* test refcount using implicit referencing of newly created objects */
+TEST_P(cls_refcount, set) /* test refcount using implicit referencing of newly created objects */
 {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
 
-  /* create pool */
-  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
 
   /* add chains */
   string oid = "obj";
@@ -392,21 +375,30 @@ TEST(cls_refcount, set) /* test refcount using implicit referencing of newly cre
 
   ASSERT_EQ(-ENOENT, ioctx.stat(oid, NULL, NULL));
 
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
 }
 
-TEST(cls_refcount, test_implicit_ec) /* test refcount using implicit referencing of newly created objects */
-{
-  librados::Rados rados;
+// EC-only test fixture
+class cls_refcount_ec : public ::testing::Test {
+ protected:
+  static librados::Rados rados;
   librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
+  std::string pool_name;
 
-  /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+  void SetUp() override {
+    pool_name = get_temp_pool_name();
+    ASSERT_EQ("", create_pool_by_type(pool_name, rados, PoolType::FAST_EC));
+    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+  }
+  
+  void TearDown() override {
+    ioctx.close();
+    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, PoolType::FAST_EC));
+  }
+};
+librados::Rados cls_refcount_ec::rados;
 
+TEST_F(cls_refcount_ec, test_implicit_ec) /* test refcount using implicit referencing of newly created objects */
+{
   /* add chains */
   string oid = "obj";
   string oldtag = "oldtag";
@@ -488,26 +480,14 @@ TEST(cls_refcount, test_implicit_ec) /* test refcount using implicit referencing
   ASSERT_EQ(-ENOENT, ioctx.stat(oid, NULL, NULL));
 
   delete op;
-
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, rados));
 }
 
 /*
  * similar to test_implicit, just changes the order of the tags removal
  * see issue #20107
  */
-TEST(cls_refcount, test_implicit_idempotent_ec) /* test refcount using implicit referencing of newly created objects */
+TEST_F(cls_refcount_ec, test_implicit_idempotent_ec) /* test refcount using implicit referencing of newly created objects */
 {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
-
-  /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-
   /* add chains */
   string oid = "obj";
   string oldtag = "oldtag";
@@ -589,22 +569,10 @@ TEST(cls_refcount, test_implicit_idempotent_ec) /* test refcount using implicit 
   ASSERT_EQ(-ENOENT, ioctx.stat(oid, NULL, NULL));
 
   delete op;
-
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, rados));
 }
 
 
-TEST(cls_refcount, test_put_snap_ec) {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
-
-  /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-
+TEST_F(cls_refcount_ec, test_put_snap_ec) {
   bufferlist bl;
   bl.append("hi there");
   ASSERT_EQ(0, ioctx.write("foo", bl, bl.length(), 0));
@@ -623,22 +591,10 @@ TEST(cls_refcount, test_put_snap_ec) {
   EXPECT_EQ(0, ioctx.snap_remove("snapbar"));
 
   delete op;
-
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, rados));
 }
 
-TEST(cls_refcount, test_explicit_ec) /* test refcount using implicit referencing of newly created objects */
+TEST_F(cls_refcount_ec, test_explicit_ec) /* test refcount using implicit referencing of newly created objects */
 {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
-
-  /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-
   /* add chains */
   string oid = "obj";
 
@@ -699,22 +655,10 @@ TEST(cls_refcount, test_explicit_ec) /* test refcount using implicit referencing
   ASSERT_EQ(-ENOENT, ioctx.stat(oid, NULL, NULL));
 
   delete op;
-
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, rados));
 }
 
-TEST(cls_refcount, set_ec) /* test refcount using implicit referencing of newly created objects */
+TEST_F(cls_refcount_ec, set_ec) /* test refcount using implicit referencing of newly created objects */
 {
-  librados::Rados rados;
-  librados::IoCtx ioctx;
-  string pool_name = get_temp_pool_name();
-
-  /* create pool */
-  ASSERT_EQ("", create_one_ec_pool_pp(pool_name, rados, false));
-  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-
   /* add chains */
   string oid = "obj";
 
@@ -771,8 +715,8 @@ TEST(cls_refcount, set_ec) /* test refcount using implicit referencing of newly 
   }
 
   ASSERT_EQ(-ENOENT, ioctx.stat(oid, NULL, NULL));
-
-  /* remove pool */
-  ioctx.close();
-  ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, rados));
 }
+
+
+INSTANTIATE_TEST_SUITE_P(PoolTypes, cls_refcount,
+                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));

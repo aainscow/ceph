@@ -2,32 +2,43 @@
 #include <errno.h>
 
 #include "test/librados/test_cxx.h"
+#include "test/librados/test_pool_types.h"
 #include "gtest/gtest.h"
 
 using namespace librados;
+using ceph::test::PoolType;
+using ceph::test::pool_type_name;
+using ceph::test::create_pool_by_type;
+using ceph::test::destroy_pool_by_type;
 
-TEST(ClsSDK, TestSDKCoverageWrite) {
+class ClsSDK : public ::testing::TestWithParam<PoolType> {
+protected:
   Rados cluster;
-  std::string pool_name = get_temp_pool_name();
-  ASSERT_EQ("", create_one_pool_pp(pool_name, cluster));
   IoCtx ioctx;
-  cluster.ioctx_create(pool_name.c_str(), ioctx);
+  std::string pool_name;
+  PoolType pool_type;
 
+  void SetUp() override {
+    pool_type = GetParam();
+    pool_name = get_temp_pool_name();
+    ASSERT_EQ("", create_pool_by_type(pool_name, cluster, pool_type));
+    ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
+  }
+
+  void TearDown() override {
+    ioctx.close();
+    ASSERT_EQ(0, destroy_pool_by_type(pool_name, cluster, pool_type));
+  }
+};
+
+TEST_P(ClsSDK, TestSDKCoverageWrite) {
   bufferlist in;
   librados::ObjectWriteOperation op;
   op.exec("sdk", "test_coverage_write", in);
   ASSERT_EQ(0, ioctx.operate("myobject", &op));
-
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, cluster));
 }
 
-TEST(ClsSDK, TestSDKCoverageReplay) {
-  Rados cluster;
-  std::string pool_name = get_temp_pool_name();
-  ASSERT_EQ("", create_one_pool_pp(pool_name, cluster));
-  IoCtx ioctx;
-  cluster.ioctx_create(pool_name.c_str(), ioctx);
-
+TEST_P(ClsSDK, TestSDKCoverageReplay) {
   bufferlist in;
   librados::ObjectWriteOperation op;
   op.exec("sdk", "test_coverage_write", in);
@@ -36,7 +47,15 @@ TEST(ClsSDK, TestSDKCoverageReplay) {
   librados::ObjectWriteOperation op2;
   op2.exec("sdk", "test_coverage_replay", in);
   ASSERT_EQ(0, ioctx.operate("myobject", &op2));
-
-  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, cluster));
 }
 
+INSTANTIATE_TEST_SUITE_P(
+    PoolTypes,
+    ClsSDK,
+    ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC),
+    [](const ::testing::TestParamInfo<PoolType>& info) {
+      return pool_type_name(info.param);
+    }
+);
+
+// Made with Bob
