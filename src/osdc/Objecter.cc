@@ -3890,14 +3890,16 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m) {
 
   logger->inc(l_osdc_op_reply);
   auto latency = ceph::coarse_mono_time::clock::now() - op->stamp;
-    logger->tinc(l_osdc_op_latency, latency);
+  logger->tinc(l_osdc_op_latency, latency);
   logger->set(l_osdc_op_inflight, num_in_flight);
 
   // Log latency for non-split read operations at log level 0
   // Split ops have FORCE_OSD flag set, so log only non-split reads
+  // Use high-resolution clock for accurate latency measurement
   if ((op->target.flags & CEPH_OSD_FLAG_READ) &&
       !(op->target.flags & CEPH_OSD_FLAG_FORCE_OSD)) {
-    auto latency_ms = std::chrono::duration<double, std::milli>(latency).count();
+    auto hires_latency = ceph::mono_clock::now() - ceph::mono_time(op->stamp.time_since_epoch());
+    auto latency_ms = std::chrono::duration<double, std::milli>(hires_latency).count();
     ldout(cct, 0) << "Non-split read latency: " << latency_ms << "ms osd." << op->target.osd << dendl;
   }
 

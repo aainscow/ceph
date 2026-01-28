@@ -162,8 +162,8 @@ class SplitOp {
     mini_flat_map<int, Details> details;
     int rc = -EIO;
     std::optional<InternalVersion> internal_version;
-    ceph::coarse_mono_time start_time;
-    ceph::coarse_mono_time end_time;
+    ceph::mono_time start_time;
+    ceph::mono_time end_time;
 
     SubRead(int count) : details(count) {}
   };
@@ -179,7 +179,7 @@ class SplitOp {
     Finisher(std::shared_ptr<SplitOp> split_read, SubRead &sub_read) : split_read(split_read), sub_read(sub_read) {}
     void finish(int r) override {
       sub_read.rc = r;
-      sub_read.end_time = ceph::coarse_mono_clock::now();
+      sub_read.end_time = ceph::mono_clock::now();
     }
   };
 
@@ -194,7 +194,7 @@ class SplitOp {
   Objecter &objecter;
   mini_flat_map<int, SubRead> sub_reads;
   CephContext *cct;
-  ceph::coarse_mono_time split_op_start_time;
+  ceph::mono_time split_op_start_time;
   bool abort = false; // Last minute abort... We want to keep this to a minimum.
   int flags = 0;
   int reference_sub_read = -1;
