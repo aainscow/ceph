@@ -3889,8 +3889,17 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m) {
   bs::error_code handler_error = process_op_reply_handlers(op, out_ops);
 
   logger->inc(l_osdc_op_reply);
-  logger->tinc(l_osdc_op_latency, ceph::coarse_mono_time::clock::now() - op->stamp);
+  auto latency = ceph::coarse_mono_time::clock::now() - op->stamp;
+    logger->tinc(l_osdc_op_latency, latency);
   logger->set(l_osdc_op_inflight, num_in_flight);
+
+  // Log latency for non-split read operations at log level 0
+  // Split ops have FORCE_OSD flag set, so log only non-split reads
+  if ((op->target.flags & CEPH_OSD_FLAG_READ) &&
+      !(op->target.flags & CEPH_OSD_FLAG_FORCE_OSD)) {
+    auto latency_ms = std::chrono::duration<double, std::milli>(latency).count();
+    ldout(cct, 0) << "Non-split read latency: " << latency_ms << "ms osd." << op->target.osd << dendl;
+  }
 
   // This function unlocks sl.
   complete_op_reply(op, handler_error, s, sl, rc);

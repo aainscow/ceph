@@ -346,6 +346,18 @@ void SplitOp::complete() {
   boost::system::error_code handler_error;
 
   int rc = assemble_rc();
+
+  // Log latency information for split operations at log level 0
+  auto overall_end_time = ceph::coarse_mono_clock::now();
+  auto overall_latency_ms = std::chrono::duration<double, std::milli>(overall_end_time - split_op_start_time).count();
+
+  ldout(cct, 0) << "SplitOp latency: overall=" << overall_latency_ms << "ms";
+  for (const auto& [index, sub_read] : sub_reads) {
+    auto sub_latency_ms = std::chrono::duration<double, std::milli>(sub_read.end_time - sub_read.start_time).count();
+    *_dout << " osd." << orig_op->target.acting[index] << "=" << sub_latency_ms << "ms";
+  }
+  *_dout << dendl;
+
   if (rc >= 0) {
 
     // In a "normal" completion, out_ops is generated in the MOSDOpReply reply
@@ -692,6 +704,8 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
 
   split_read->protect_torn_reads();
 
+  // Record the start time for the overall split operation
+  split_read->split_op_start_time = ceph::coarse_mono_clock::now();
 
   op->split_op_tids = std::make_unique<std::vector<ceph_tid_t>>(split_read->sub_reads.size());
   auto &tids = *op->split_op_tids;
@@ -701,6 +715,8 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
   // We are committed to doing a split read. Any re-attempts should not be either
   // split or balanced.
   for (auto && [index, sub_read] : split_read->sub_reads) {
+      // Record start time for this sub-read
+    sub_read.start_time = ceph::coarse_mono_clock::now();
     auto fin = new Finisher(split_read, sub_read); // Self-destructs when called.
 
     version_t *objver = nullptr;
