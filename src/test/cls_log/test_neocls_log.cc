@@ -473,6 +473,190 @@ CORO_TEST_F(neocls_log, trim_by_marker, NeoRadosTest)
   }
 }
 
+// FastEC versions of tests
+CORO_TEST_F(neocls_log_fastec, test_log_add_same_time, NeoRadosFastECTest)
+{
+  co_await create_obj(oid);
+
+  auto start_time = real_clock::now();
+  auto to_time = start_time + 1s;
+  co_await generate_log(rados(), oid, pool(), 10, start_time, false,
+  	asio::use_awaitable);
+
+  std::vector<l::entry> entries{neorados::cls::log::max_list_entries};
+  auto [res, marker] =
+    co_await neorados::cls::log::list(rados(), oid, pool(), start_time, to_time,
+  		      {}, entries, asio::use_awaitable);
+  EXPECT_EQ(10u, res.size());
+  EXPECT_TRUE(marker.empty());
+
+  /* need to sort returned entries, all were using the same time as key */
+  std::map<int, l::entry> check_ents;
+
+  for (const auto& entry : res) {
+    auto num = decode<int>(entry.data);
+    check_ents[num] = entry;
+  }
+
+  EXPECT_EQ(10u, check_ents.size());
+
+  decltype(check_ents)::iterator ei;
+  int i;
+
+  for (i = 0, ei = check_ents.begin(); i < 10; i++, ++ei) {
+    const auto& entry = ei->second;
+
+    EXPECT_EQ(i, ei->first);
+    check_entry(entry, start_time, i, false);
+  }
+
+
+  res = std::span{entries}.first(1);
+  co_await list(rados(), oid, pool(), start_time, to_time, {},
+  res, &res, &marker, asio::use_awaitable);
+
+  EXPECT_EQ(1u, res.size());
+  EXPECT_FALSE(marker.empty());
+}
+
+CORO_TEST_F(neocls_log_fastec, test_log_add_different_time, NeoRadosFastECTest)
+{
+  co_await create_obj(oid);
+
+  /* generate log */
+  auto start_time = real_clock::now();
+  co_await generate_log(rados(), oid, pool(), 10, start_time, true,
+  	asio::use_awaitable);
+
+  std::vector<l::entry> entries{neorados::cls::log::max_list_entries};
+  std::string marker;
+  std::span<l::entry> result;
+
+  auto to_time = start_time + (10 * 1s);
+
+  {
+    /* check list */
+    std::tie(result, marker) =
+      co_await neorados::cls::log::list(rados(), oid, pool(), start_time,
+  			to_time, {}, entries,
+  			asio::use_awaitable);
+    EXPECT_EQ(10u, result.size());
+    EXPECT_TRUE(marker.empty());
+  }
+
+  decltype(result)::iterator iter;
+  int i;
+
+  for (i = 0, iter = result.begin(); iter != result.end(); ++iter, ++i) {
+    auto& entry = *iter;
+    auto num = decode<int>(entry.data);
+    EXPECT_EQ(i, num);
+    check_entry(entry, start_time, i, true);
+  }
+
+  /* check list again with shifted time */
+  {
+    auto next_time = get_time(start_time, 1s, true);
+    std::tie(result, marker) =
+      co_await neorados::cls::log::list(rados(), oid, pool(), next_time,
+  			to_time, {}, entries,
+  			asio::use_awaitable);
+
+    EXPECT_EQ(9u, result.size());
+    EXPECT_TRUE(marker.empty());
+  }
+
+  i = 0;
+  marker.clear();
+  do {
+    auto old_marker = std::move(marker);
+    std::tie(result, marker) =
+      co_await neorados::cls::log::list(rados(), oid, pool(), start_time, to_time,
+  			old_marker, std::span{entries}.first(1),
+  			asio::use_awaitable);
+    EXPECT_NE(old_marker, marker);
+    EXPECT_EQ(1u, result.size());
+
+    ++i;
+    EXPECT_GE(10, i);
+  } while (!marker.empty());
+
+  EXPECT_EQ(10, i);
+}
+
+CORO_TEST_F(neocls_log_fastec, trim_by_time, NeoRadosFastECTest)
+{
+  co_await create_obj(oid);
+
+  /* generate log */
+  auto start_time = real_clock::now();
+  co_await generate_log(rados(), oid, pool(), 10, start_time, true,
+  	asio::use_awaitable);
+
+  std::vector<l::entry> entries{neorados::cls::log::max_list_entries};
+  std::string marker;
+
+  /* trim */
+  auto to_time = get_time(start_time, 10s, true);
+
+  for (int i = 0; i < 10; i++) {
+    auto trim_time = get_time(start_time, i * 1s, true);
+    co_await trim(rados(), oid, pool(), {}, trim_time, asio::use_awaitable);
+    error_code ec;
+    co_await trim(rados(), oid, pool(), {}, trim_time,
+    asio::redirect_error(asio::use_awaitable, ec));
+    EXPECT_EQ(no_message_available, ec);
+
+    std::span<l::entry> result;
+    co_await list(rados(), oid, pool(), start_time, to_time, {},
+    entries, &result, &marker, asio::use_awaitable);
+    EXPECT_EQ(9u - i, result.size());
+    EXPECT_TRUE(marker.empty());
+  }
+}
+
+CORO_TEST_F(neocls_log_fastec, trim_by_marker, NeoRadosFastECTest)
+{
+  co_await create_obj(oid);
+
+  auto start_time = real_clock::now();
+  co_await generate_log(rados(), oid, pool(), 10, start_time, true,
+  	asio::use_awaitable);
+  std::vector<l::entry> log1;
+  {
+    std::vector<l::entry> entries{neorados::cls::log::max_list_entries};
+    std::span<l::entry> result;
+    std::string marker;
+    auto to_time = get_time(start_time, 10s, true);
+    co_await list(rados(), oid, pool(), start_time, to_time, {},
+    entries, &result, &marker, asio::use_awaitable);
+    EXPECT_EQ(10u, result.size());
+    EXPECT_TRUE(marker.empty());
+    log1.assign(result.begin(), result.end());
+  }
+
+  for (int i = 0; i < 10; i++) {
+    auto& entry = log1[i];
+    co_await trim(rados(), oid, pool(), entry.id, {}, asio::use_awaitable);
+
+    std::vector<l::entry> entries{neorados::cls::log::max_list_entries};
+    std::span<l::entry> result;
+    std::string marker;
+    auto to_time = get_time(start_time, 10s, true);
+    co_await list(rados(), oid, pool(), start_time, to_time, {},
+    entries, &result, &marker, asio::use_awaitable);
+    EXPECT_EQ(9u - i, result.size());
+    EXPECT_TRUE(marker.empty());
+
+    error_code ec;
+    const std::string from = entry.id;
+    const std::string to{neorados::cls::log::end_marker};
+    co_await trim(rados(), oid, pool(), from, to,
+    asio::redirect_error(asio::use_awaitable, ec));
+    EXPECT_EQ(no_message_available, ec);
+  }
+}
+
 #if 0 // Disable until we get rid of GCC11
 TEST(neocls_log_bare, lambdata)
 {

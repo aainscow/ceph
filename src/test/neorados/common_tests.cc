@@ -73,3 +73,75 @@ asio::awaitable<void> NeoRadosECTest::clean_pool() {
 			       asio::use_awaitable);
   co_return;
 }
+
+asio::awaitable<uint64_t> NeoRadosFastECTest::create_pool() {
+  // Create EC profile with k=2, m=1
+  std::vector<std::string> profile_set = {
+    fmt::format(
+      R"({{"prefix": "osd erasure-code-profile set", "name": "testprofile-{}", )"
+      R"( "profile": [ "k=2", "m=1", "crush-failure-domain=osd"]}})",
+      pool_name())
+  };
+  co_await rados().mon_command(std::move(profile_set), {}, nullptr, nullptr,
+			       asio::use_awaitable);
+  
+  // Create EC pool
+  std::vector<std::string> pool_create = {
+    fmt::format(
+      R"({{"prefix": "osd pool create", "pool": "{}", "pool_type":"erasure", )"
+      R"("pg_num":8, "pgp_num":8, "erasure_code_profile":"testprofile-{}"}})",
+      pool_name(), pool_name())
+  };
+  co_await rados().mon_command(std::move(pool_create), {}, nullptr, nullptr,
+			       asio::use_awaitable);
+
+  // Enable ec_optimisations
+  std::vector<std::string> set_optimisations = {
+    fmt::format(
+      R"({{"prefix": "osd pool set", "pool": "{}", "var": "allow_ec_optimizations", "val": "true"}})",
+      pool_name())
+  };
+  co_await rados().mon_command(std::move(set_optimisations), {}, nullptr, nullptr,
+			       asio::use_awaitable);
+
+  // Enable omap
+  std::vector<std::string> set_omap = {
+    fmt::format(
+      R"({{"prefix": "osd pool set", "pool": "{}", "var": "supports_omap", "val": "true"}})",
+      pool_name())
+  };
+  co_await rados().mon_command(std::move(set_omap), {}, nullptr, nullptr,
+			       asio::use_awaitable);
+
+  // Enable ec_overwrites
+  std::vector<std::string> set_overwrites = {
+    fmt::format(
+      R"({{"prefix": "osd pool set", "pool": "{}", "var": "allow_ec_overwrites", "val": "true"}})",
+      pool_name())
+  };
+  co_await rados().mon_command(std::move(set_overwrites), {}, nullptr, nullptr,
+  	       asio::use_awaitable);
+
+  // Wait for OSD map to propagate to prevent race conditions
+  co_await rados().wait_for_latest_osd_map(asio::use_awaitable);
+
+  co_return co_await rados().lookup_pool(pool_name(), asio::use_awaitable);
+}
+
+asio::awaitable<void> NeoRadosFastECTest::clean_pool() {
+  co_await rados().delete_pool(pool().get_pool(), asio::use_awaitable);
+  std::vector<std::string> profile_rm = {
+    fmt::format(
+      R"({{"prefix": "osd erasure-code-profile rm", "name": "testprofile-{}"}})",
+      pool_name())
+  };
+  co_await rados().mon_command(std::move(profile_rm), {}, nullptr, nullptr, asio::use_awaitable);
+  std::vector<std::string> rule_rm = {
+    fmt::format(
+      R"({{"prefix": "osd crush rule rm", "name":"{}"}})",
+      pool_name())
+  };
+  co_await rados().mon_command(std::move(rule_rm), {}, nullptr, nullptr,
+			       asio::use_awaitable);
+  co_return;
+}

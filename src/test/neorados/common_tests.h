@@ -371,8 +371,18 @@ private:
 /// \brief C++20 coroutine test harness for NeoRados on erasure-coded
 /// pools
 ///
-/// The supplied pool is erasure coded
+/// The supplied pool is erasure coded (legacy, no ec_overwrites)
 class NeoRadosECTest : public NeoRadosTestBase {
+private:
+  boost::asio::awaitable<uint64_t> create_pool() override;
+  boost::asio::awaitable<void> clean_pool() override;
+};
+
+/// \brief C++20 coroutine test harness for NeoRados on fast erasure-coded
+/// pools
+///
+/// The supplied pool is erasure coded with ec_overwrites enabled
+class NeoRadosFastECTest : public NeoRadosTestBase {
 private:
   boost::asio::awaitable<uint64_t> create_pool() override;
   boost::asio::awaitable<void> clean_pool() override;
