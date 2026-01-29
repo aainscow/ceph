@@ -14,7 +14,8 @@ namespace test {
 // Pool type enumeration for parameterized tests
 enum class PoolType {
   REPLICATED,
-  FAST_EC  // Fast EC with k=2, m=1
+  FAST_EC,
+  LEGACY_EC
 };
 
 // Convert pool type to string for test naming
@@ -24,6 +25,8 @@ inline std::string pool_type_name(PoolType type) {
       return "Replicated";
     case PoolType::FAST_EC:
       return "FastEC";
+    case PoolType::LEGACY_EC:
+      return "LegacyEC";
     default:
       return "Unknown";
   }
@@ -46,6 +49,8 @@ inline std::string create_pool_by_type(
       cluster.wait_for_latest_osdmap();
       return result;
     }
+    case PoolType::LEGACY_EC:
+      return create_one_ec_pool_pp(pool_name, cluster, false, false);
     default:
       return "Unknown pool type";
   }
@@ -60,6 +65,7 @@ inline int destroy_pool_by_type(
     case PoolType::REPLICATED:
       return destroy_one_pool_pp(pool_name, cluster);
     case PoolType::FAST_EC:
+    case PoolType::LEGACY_EC:
       return destroy_one_ec_pool_pp(pool_name, cluster);
     default:
       return -EINVAL;
