@@ -39,7 +39,11 @@ inline std::string create_pool_by_type(
       return create_one_pool_pp(pool_name, cluster);
     case PoolType::FAST_EC: {
       std::string result = create_one_ec_pool_pp(pool_name, cluster, true, true);
-      result += set_allow_ec_overwrites_pp(pool_name, cluster, true);
+      if (result != "") {
+        return result;
+      }
+      result = set_allow_ec_overwrites_pp(pool_name, cluster, true);
+      cluster.wait_for_latest_osdmap();
       return result;
     }
     default:
