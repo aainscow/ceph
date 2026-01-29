@@ -6,6 +6,7 @@
 #include <string>
 #include "include/rados/librados.hpp"
 #include "test/librados/test_cxx.h"
+#include "gtest/gtest.h"
 
 namespace ceph {
 namespace test {
@@ -36,8 +37,11 @@ inline std::string create_pool_by_type(
   switch (type) {
     case PoolType::REPLICATED:
       return create_one_pool_pp(pool_name, cluster);
-    case PoolType::FAST_EC:
-      return create_one_ec_pool_pp(pool_name, cluster, true, true);
+    case PoolType::FAST_EC: {
+      std::string result = create_one_ec_pool_pp(pool_name, cluster, true, true);
+      result += set_allow_ec_overwrites_pp(pool_name, cluster, true);
+      return result;
+    }
     default:
       return "Unknown pool type";
   }
@@ -57,6 +61,46 @@ inline int destroy_pool_by_type(
       return -EINVAL;
   }
 }
+
+// Base class for parameterized CLS tests (both REPLICATED and FAST_EC pools)
+class ClsTestFixture : public ::testing::TestWithParam<PoolType> {
+ protected:
+  static librados::Rados rados;
+  librados::IoCtx ioctx;
+  std::string pool_name;
+  PoolType pool_type;
+
+  void SetUp() override {
+    pool_type = GetParam();
+    pool_name = get_temp_pool_name();
+    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
+    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+  }
+  
+  void TearDown() override {
+    ioctx.close();
+    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
+  }
+};
+
+// Base class for EC-only CLS tests
+class ClsTestFixtureEC : public ::testing::Test {
+ protected:
+  static librados::Rados rados;
+  librados::IoCtx ioctx;
+  std::string pool_name;
+
+  void SetUp() override {
+    pool_name = get_temp_pool_name();
+    ASSERT_EQ("", create_pool_by_type(pool_name, rados, PoolType::FAST_EC));
+    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+  }
+  
+  void TearDown() override {
+    ioctx.close();
+    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, PoolType::FAST_EC));
+  }
+};
 
 } // namespace test
 } // namespace ceph

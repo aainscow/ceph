@@ -27,25 +27,8 @@ using ceph::test::create_pool_by_type;
 using ceph::test::destroy_pool_by_type;
 
 /// creates a temporary pool and initializes an IoCtx for each test
-class cls_log : public ::testing::TestWithParam<PoolType> {
-  librados::Rados rados;
-  std::string pool_name;
-  PoolType pool_type;
- protected:
-  librados::IoCtx ioctx;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    /* create pool */
-    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
-    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-  }
-  void TearDown() override {
-    /* remove pool */
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
-  }
+class cls_log : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
 };
 
 static int read_bl(bufferlist& bl, int *i)

@@ -26,25 +26,9 @@ using ceph::test::create_pool_by_type;
 using ceph::test::destroy_pool_by_type;
 
 // test fixture with helper functions
-class ClsAccount : public ::testing::TestWithParam<PoolType> {
+class ClsAccount : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
  protected:
-  static librados::Rados rados;
-  librados::IoCtx ioctx;
-  std::string pool_name;
-  PoolType pool_type;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
-    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-  }
-  
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
-  }
-
   int add(const std::string& oid, const cls_user_account_resource& entry,
           bool exclusive, uint32_t limit)
   {
@@ -109,7 +93,6 @@ class ClsAccount : public ::testing::TestWithParam<PoolType> {
     return all_entries;
   }
 };
-librados::Rados ClsAccount::rados;
 
 template <typename ...Args>
 std::vector<cls_user_account_resource> make_list(Args&& ...args)
@@ -206,4 +189,8 @@ TEST_P(ClsAccount, list)
 
 
 INSTANTIATE_TEST_SUITE_P(PoolTypes, ClsAccount,
-                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));
+  ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC),
+  [](const ::testing::TestParamInfo<PoolType>& info) {
+  return pool_type_name(info.param);
+  }
+);

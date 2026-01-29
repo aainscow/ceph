@@ -26,25 +26,9 @@ using ceph::test::destroy_pool_by_type;
 namespace cls::cmpomap {
 
 // test fixture with helper functions
-class CmpOmap : public ::testing::TestWithParam<PoolType> {
+class CmpOmap : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
  protected:
-  librados::Rados rados;
-  std::string pool_name;
-  librados::IoCtx ioctx;
-  PoolType pool_type;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
-    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-  }
-
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
-  }
-
   int do_cmp_vals(const std::string& oid, Mode mode,
                   Op comparison, ComparisonMap values,
                   std::optional<bufferlist> def = std::nullopt)
@@ -711,6 +695,10 @@ TEST_P(CmpOmap, cmp_rm_keys_u64_empty)
 }
 
 INSTANTIATE_TEST_SUITE_P(PoolTypes, CmpOmap,
-                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));
+  ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC),
+  [](const ::testing::TestParamInfo<PoolType>& info) {
+  return pool_type_name(info.param);
+  }
+);
 
 } // namespace cls::cmpomap

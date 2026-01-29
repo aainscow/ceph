@@ -22,26 +22,9 @@ static librados::ObjectWriteOperation *new_op() {
   return new librados::ObjectWriteOperation();
 }
 
-class cls_refcount : public ::testing::TestWithParam<PoolType> {
- protected:
-  static librados::Rados rados;
-  librados::IoCtx ioctx;
-  std::string pool_name;
-  PoolType pool_type;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
-    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-  }
-  
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
-  }
+class cls_refcount : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
 };
-librados::Rados cls_refcount::rados;
 
 TEST_P(cls_refcount, test_implicit) /* test refcount using implicit referencing of newly created objects */
 {
@@ -378,24 +361,9 @@ TEST_P(cls_refcount, set) /* test refcount using implicit referencing of newly c
 }
 
 // EC-only test fixture
-class cls_refcount_ec : public ::testing::Test {
- protected:
-  static librados::Rados rados;
-  librados::IoCtx ioctx;
-  std::string pool_name;
-
-  void SetUp() override {
-    pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(pool_name, rados, PoolType::FAST_EC));
-    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-  }
-  
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, PoolType::FAST_EC));
-  }
+class cls_refcount_ec : public ceph::test::ClsTestFixtureEC {
+  // Inherits: rados, ioctx, pool_name, SetUp(), TearDown()
 };
-librados::Rados cls_refcount_ec::rados;
 
 TEST_F(cls_refcount_ec, test_implicit_ec) /* test refcount using implicit referencing of newly created objects */
 {
@@ -719,4 +687,8 @@ TEST_F(cls_refcount_ec, set_ec) /* test refcount using implicit referencing of n
 
 
 INSTANTIATE_TEST_SUITE_P(PoolTypes, cls_refcount,
-                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));
+  ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC),
+  [](const ::testing::TestParamInfo<PoolType>& info) {
+  return pool_type_name(info.param);
+  }
+);

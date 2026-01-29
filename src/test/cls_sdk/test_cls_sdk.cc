@@ -11,24 +11,8 @@ using ceph::test::pool_type_name;
 using ceph::test::create_pool_by_type;
 using ceph::test::destroy_pool_by_type;
 
-class ClsSDK : public ::testing::TestWithParam<PoolType> {
-protected:
-  Rados cluster;
-  IoCtx ioctx;
-  std::string pool_name;
-  PoolType pool_type;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(pool_name, cluster, pool_type));
-    ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
-  }
-
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, cluster, pool_type));
-  }
+class ClsSDK : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
 };
 
 TEST_P(ClsSDK, TestSDKCoverageWrite) {

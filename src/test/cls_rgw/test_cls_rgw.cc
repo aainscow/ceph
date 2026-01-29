@@ -25,28 +25,9 @@ using ceph::test::create_pool_by_type;
 using ceph::test::destroy_pool_by_type;
 
 // creates a temporary pool and initializes an IoCtx for each test
-class cls_rgw : public ::testing::TestWithParam<PoolType> {
- protected:
-  static librados::Rados rados;
-  librados::IoCtx ioctx;
-  std::string pool_name;
-  PoolType pool_type;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    /* create pool */
-    ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
-    ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
-  }
-  
-  void TearDown() override {
-    /* remove pool */
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
-  }
+class cls_rgw : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
 };
-librados::Rados cls_rgw::rados;
 
 
 string str_int(string s, int i)
@@ -1647,4 +1628,8 @@ TEST_P(cls_rgw, bi_put_entries)
 
 
 INSTANTIATE_TEST_SUITE_P(PoolTypes, cls_rgw,
-                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));
+  ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC),
+  [](const ::testing::TestParamInfo<PoolType>& info) {
+  return pool_type_name(info.param);
+  }
+);

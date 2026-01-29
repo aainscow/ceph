@@ -39,33 +39,16 @@ static bool is_sparse_read_supported(librados::IoCtx &ioctx,
           outbl.contents_equal(expected_outbl));
 }
 
-class TestClsJournal : public ::testing::TestWithParam<PoolType> {
+class TestClsJournal : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
 protected:
-  static librados::Rados _rados;
-  librados::IoCtx ioctx;
-  std::string _pool_name;
-  PoolType pool_type;
   uint64_t _image_number = 0;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    _pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(_pool_name, _rados, pool_type));
-    ASSERT_EQ(0, _rados.ioctx_create(_pool_name.c_str(), ioctx));
-  }
-
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(_pool_name, _rados, pool_type));
-  }
 
   std::string get_temp_image_name() {
     ++_image_number;
     return "image" + stringify(_image_number);
   }
 };
-
-librados::Rados TestClsJournal::_rados;
 
 TEST_P(TestClsJournal, Create) {
 
@@ -646,6 +629,9 @@ TEST_P(TestClsJournal, Append) {
   }
 }
 
-
 INSTANTIATE_TEST_SUITE_P(PoolTypes, TestClsJournal,
-                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));
+  ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC),
+  [](const ::testing::TestParamInfo<PoolType>& info) {
+  return pool_type_name(info.param);
+  }
+);

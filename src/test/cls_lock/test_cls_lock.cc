@@ -69,24 +69,11 @@ void lock_info(IoCtx *ioctx, string& oid, string& name, map<locker_id_t, locker_
   lock_info(ioctx, oid, name, lockers, NULL, NULL);
 }
 
-class ClsLock : public ::testing::TestWithParam<PoolType> {
+class ClsLock : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
 protected:
-  Rados cluster;
-  IoCtx ioctx;
-  std::string pool_name;
-  PoolType pool_type;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(pool_name, cluster, pool_type));
-    ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
-  }
-
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, cluster, pool_type));
-  }
+  // Use 'rados' instead of 'cluster' for consistency with base class
+  Rados& cluster = rados;
 };
 
 TEST_P(ClsLock, TestMultiLocking) {

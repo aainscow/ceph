@@ -115,8 +115,6 @@ std::string create_one_ec_pool_pp(const std::string &pool_name,
   }
 
   if (optimised_ec) {
-    set_allow_ec_overwrites_pp(pool_name, cluster, true);
-
     bufferlist inbl;
     ret = cluster.mon_command(
       "{\"prefix\": \"osd pool set\", \"pool\": \"" + pool_name +

@@ -534,20 +534,15 @@ objclass.register(current_subop_version)
  * Test harness uses single pool for the entire test case, and generates
  * unique object names for each test.
  */
-class ClsLua : public ::testing::TestWithParam<PoolType> {
+class ClsLua : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
   protected:
-    librados::Rados rados;
-    librados::IoCtx ioctx;
-    std::string pool_name;
-    PoolType pool_type;
     string oid;
     bufferlist reply_output;
 
     void SetUp() override {
-      pool_type = GetParam();
-      pool_name = get_temp_pool_name();
-      ASSERT_EQ("", create_pool_by_type(pool_name, rados, pool_type));
-      ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+      // Call base class SetUp first
+      ClsTestFixture::SetUp();
 
       /* Grab test names to build unique objects */
       const ::testing::TestInfo* const test_info =
@@ -560,11 +555,6 @@ class ClsLua : public ::testing::TestWithParam<PoolType> {
 
       /* Unique object for test to use */
       oid = ss_oid.str();
-    }
-
-    void TearDown() override {
-      ioctx.close();
-      ASSERT_EQ(0, destroy_pool_by_type(pool_name, rados, pool_type));
     }
 
     /*
@@ -1110,4 +1100,8 @@ TEST_P(ClsLua, Json) {
 
 
 INSTANTIATE_TEST_SUITE_P(PoolTypes, ClsLua,
-                         ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC));
+  ::testing::Values(PoolType::REPLICATED, PoolType::FAST_EC),
+  [](const ::testing::TestParamInfo<PoolType>& info) {
+  return pool_type_name(info.param);
+  }
+);

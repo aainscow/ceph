@@ -30,11 +30,11 @@ using ceph::test::pool_type_name;
 using ceph::test::create_pool_by_type;
 using ceph::test::destroy_pool_by_type;
 
-static std::string _get_required_osd_release(Rados& cluster)
+static std::string _get_required_osd_release(Rados& rados)
 {
   std::string cmd = std::string("{\"prefix\": \"osd dump\",\"format\":\"json\"}");
   bufferlist outbl;
-  int r = cluster.mon_command(std::move(cmd), {}, &outbl, NULL);
+  int r = rados.mon_command(std::move(cmd), {}, &outbl, NULL);
   ceph_assert(r >= 0);
   std::string outstr(outbl.c_str(), outbl.length());
   json_spirit::Value v;
@@ -55,24 +55,8 @@ static std::string _get_required_osd_release(Rados& cluster)
   return "";
 }
 
-class ClsHello : public ::testing::TestWithParam<PoolType> {
-protected:
-  Rados cluster;
-  IoCtx ioctx;
-  std::string pool_name;
-  PoolType pool_type;
-
-  void SetUp() override {
-    pool_type = GetParam();
-    pool_name = get_temp_pool_name();
-    ASSERT_EQ("", create_pool_by_type(pool_name, cluster, pool_type));
-    ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
-  }
-
-  void TearDown() override {
-    ioctx.close();
-    ASSERT_EQ(0, destroy_pool_by_type(pool_name, cluster, pool_type));
-  }
+class ClsHello : public ceph::test::ClsTestFixture {
+  // Inherits: rados, ioctx, pool_name, pool_type, SetUp(), TearDown()
 };
 
 TEST_P(ClsHello, SayHello) {
@@ -116,7 +100,7 @@ TEST_P(ClsHello, RecordHello) {
 
 TEST_P(ClsHello, WriteReturnData) {
   // skip test if not yet mimic
-  if (_get_required_osd_release(cluster) < "octopus") {
+  if (_get_required_osd_release(rados) < "octopus") {
     std::cout << "cluster is not yet octopus, skipping test" << std::endl;
     return;
   }
@@ -139,7 +123,7 @@ TEST_P(ClsHello, WriteReturnData) {
     int rval;
     ObjectWriteOperation o;
     o.exec("hello", "write_return_data", in, &out, &rval);
-    librados::AioCompletion *completion = cluster.aio_create_completion();
+    librados::AioCompletion *completion = rados.aio_create_completion();
     ASSERT_EQ(0, ioctx.aio_operate("foo", completion, &o,
 				   librados::OPERATION_RETURNVEC));
     completion->wait_for_complete();
@@ -157,7 +141,7 @@ TEST_P(ClsHello, WriteReturnData) {
     int rval;
     ObjectWriteOperation o;
     o.exec("hello", "write_return_data", in, &out, &rval);
-    librados::AioCompletion *completion = cluster.aio_create_completion();
+    librados::AioCompletion *completion = rados.aio_create_completion();
     ASSERT_EQ(0, ioctx.aio_operate("foo", completion, &o,
 				 librados::OPERATION_RETURNVEC));
     completion->wait_for_complete();
@@ -187,7 +171,7 @@ TEST_P(ClsHello, WriteReturnData) {
     int rval;
     ObjectWriteOperation o;
     o.exec("hello", "write_too_much_return_data", in, &out, &rval);
-    librados::AioCompletion *completion = cluster.aio_create_completion();
+    librados::AioCompletion *completion = rados.aio_create_completion();
     ASSERT_EQ(0, ioctx.aio_operate("foo", completion, &o,
 				   librados::OPERATION_RETURNVEC));
     completion->wait_for_complete();
