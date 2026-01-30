@@ -283,14 +283,31 @@ public:
   }
   
   /**
-   * Plan a write operation for a new small object
+   * Plan a write operation from an existing Transaction Op
+   * 
+   * @param op The write Op from an existing transaction (must be OP_WRITE)
+   * @param cid Collection containing the logical object
+   * @param logical_obj The logical object being written
+   * @param write_data The data buffer from the write operation
+   * @param current_container Current active container (if any)
+   * @return PackResult with transaction to splice into caller's transaction
+   */
+  PackResult plan_write(
+    const ceph::os::Transaction::Op& op,
+    const coll_t& cid,
+    const ghobject_t& logical_obj,
+    const ceph::buffer::list& write_data,
+    const std::optional<ContainerInfo>& current_container) const;
+
+  /**
+   * Plan a write operation for a new small object (raw data interface)
    * 
    * @param logical_obj The logical object being written
    * @param data The data to write
    * @param current_container Current active container (if any)
    * @return PackResult with operations to execute
    */
-  PackResult plan_write(
+  PackResult plan_write_raw(
     const hobject_t& logical_obj,
     const ceph::buffer::list& data,
     const std::optional<ContainerInfo>& current_container) const;

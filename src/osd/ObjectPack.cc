@@ -163,6 +163,75 @@ void ObjectPackEngine::encode_omap_entry(
 // ============================================================================
 
 PackResult ObjectPackEngine::plan_write(
+  const ceph::os::Transaction::Op& op,
+  const coll_t& cid,
+  const ghobject_t& logical_obj,
+  const ceph::buffer::list& write_data,
+  const std::optional<ContainerInfo>& current_container) const
+{
+  using ceph::encode;
+  
+  // Validate this is a write operation
+  if (op.op != ceph::os::Transaction::OP_WRITE) {
+    return PackResult::error("Op must be OP_WRITE");
+  }
+  
+  uint64_t op_len = op.len;
+  
+  // Validate data matches op
+  if (write_data.length() != op_len) {
+    return PackResult::error("Write data length does not match op length");
+  }
+  
+  // Check if object should be packed
+  if (!should_pack_object(op_len)) {
+    return PackResult::error("Object size exceeds packing threshold");
+  }
+  
+  // Determine target container
+  uint64_t container_index;
+  uint64_t write_offset;
+  
+  if (current_container.has_value() &&
+      !current_container->is_sealed &&
+      current_container->available_space() >= op_len) {
+    // Use existing container
+    container_index = current_container->container_index;
+    write_offset = calculate_aligned_offset(
+      current_container->next_offset,
+      op_len);
+    
+    // Check if aligned offset still fits
+    if (write_offset + op_len > current_container->total_size) {
+      return PackResult::error("Current container full - caller must allocate new container");
+    }
+  } else {
+    return PackResult::error("No current container - caller must allocate container");
+  }
+  
+  // Build transaction
+  ceph::os::Transaction t;
+  
+  // Generate container hobject from index
+  hobject_t container_hobj = container_hobject_from_index(
+    container_index, logical_obj.hobj.pool, logical_obj.hobj.nspace);
+  
+  // 1. Write data to container at calculated packing offset
+  t.write(cid, ghobject_t(container_hobj), write_offset, op_len, write_data);
+  
+  // 2. Return packed_info for the caller to update the logical object's OI
+  PackedObjectInfo packed_info(container_index, write_offset, op_len);
+  
+  // 3. Update container's reverse map (OMAP)
+  ContainerReverseMapEntry reverse_entry(logical_obj.hobj, op_len, false);
+  std::map<std::string, ceph::buffer::list> omap_updates;
+  encode_omap_entry(omap_updates, write_offset, reverse_entry);
+  t.omap_setkeys(cid, ghobject_t(container_hobj), omap_updates);
+  
+  return PackResult::ok_with_info(std::move(t), packed_info);
+}
+
+PackResult ObjectPackEngine::plan_write_raw(
   const hobject_t& logical_obj,
   const ceph::buffer::list& data,
   const std::optional<ContainerInfo>& current_container) const
@@ -237,7 +306,7 @@ PackResult ObjectPackEngine::plan_read(
   
   // Return read specification - caller will perform the actual read
   PackReadSpec read_spec(
-    packed_info.container_object_id,
+    packed_info.container_index,
     packed_info.offset,
     packed_info.length);
   
@@ -269,10 +338,12 @@ PackResult ObjectPackEngine::plan_modify(
     coll_t cid;  // Placeholder
     
     // Mark old location as garbage in OMAP
+    hobject_t container_hobj = container_hobject_from_index(
+      packed_info.container_index, logical_obj.pool, logical_obj.nspace);
     ContainerReverseMapEntry garbage_entry(logical_obj, packed_info.length, true);
     std::map<std::string, ceph::buffer::list> omap_updates;
     encode_omap_entry(omap_updates, packed_info.offset, garbage_entry);
-    t.omap_setkeys(cid, ghobject_t(packed_info.container_object_id), omap_updates);
+    t.omap_setkeys(cid, ghobject_t(container_hobj), omap_updates);
     
     return PackResult::ok(std::move(t));
   }
@@ -282,13 +353,15 @@ PackResult ObjectPackEngine::plan_modify(
   coll_t cid;  // Placeholder
   
   // 1. Mark old location as garbage
+  hobject_t old_container_hobj = container_hobject_from_index(
+    packed_info.container_index, logical_obj.pool, logical_obj.nspace);
   ContainerReverseMapEntry garbage_entry(logical_obj, packed_info.length, true);
   std::map<std::string, ceph::buffer::list> omap_updates;
   encode_omap_entry(omap_updates, packed_info.offset, garbage_entry);
-  t.omap_setkeys(cid, ghobject_t(packed_info.container_object_id), omap_updates);
+  t.omap_setkeys(cid, ghobject_t(old_container_hobj), omap_updates);
   
-  // 2. Write to new location (reuse plan_write logic)
-  PackResult write_result = plan_write(logical_obj, combined_data, current_container);
+  // 2. Write to new location (reuse plan_write_raw logic)
+  PackResult write_result = plan_write_raw(logical_obj, combined_data, current_container);
   
   if (!write_result.success) {
     return write_result;
@@ -315,10 +388,12 @@ PackResult ObjectPackEngine::plan_delete(
   coll_t cid;  // Placeholder
   
   // Mark space as garbage in container OMAP
+  hobject_t container_hobj = container_hobject_from_index(
+    packed_info.container_index, logical_obj.pool, logical_obj.nspace);
   ContainerReverseMapEntry garbage_entry(logical_obj, packed_info.length, true);
   std::map<std::string, ceph::buffer::list> omap_updates;
   encode_omap_entry(omap_updates, packed_info.offset, garbage_entry);
-  t.omap_setkeys(cid, ghobject_t(packed_info.container_object_id), omap_updates);
+  t.omap_setkeys(cid, ghobject_t(container_hobj), omap_updates);
   
   // Note: GC triggering is a policy decision that should be made by the caller
   // based on the updated container state
@@ -372,10 +447,12 @@ PackResult ObjectPackEngine::plan_promote(
   coll_t cid;  // Placeholder
   
   // Mark old location as garbage
+  hobject_t container_hobj = container_hobject_from_index(
+    packed_info.container_index, logical_obj.pool, logical_obj.nspace);
   ContainerReverseMapEntry garbage_entry(logical_obj, packed_info.length, true);
   std::map<std::string, ceph::buffer::list> omap_updates;
   encode_omap_entry(omap_updates, packed_info.offset, garbage_entry);
-  t.omap_setkeys(cid, ghobject_t(packed_info.container_object_id), omap_updates);
+  t.omap_setkeys(cid, ghobject_t(container_hobj), omap_updates);
   
   // Note: The actual promotion (creating standalone object) must be done by caller
   // This transaction just marks the old location as garbage
