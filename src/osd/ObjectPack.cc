@@ -27,8 +27,9 @@ namespace osd {
 // ============================================================================
 
 void PackedObjectInfo::encode(ceph::buffer::list& bl) const {
-  ENCODE_START(1, 1, bl);
+  ENCODE_START(2, 2, bl);  // Version 2 adds shard_id
   encode(container_index, bl);
+  encode(shard_id, bl);
   encode(offset, bl);
   encode(length, bl);
   encode(packed, bl);
@@ -36,8 +37,9 @@ void PackedObjectInfo::encode(ceph::buffer::list& bl) const {
 }
 
 void PackedObjectInfo::decode(ceph::buffer::list::const_iterator& p) {
-  DECODE_START(1, p);
+  DECODE_START(2, p);
   decode(container_index, p);
+  decode(shard_id, p);
   decode(offset, p);
   decode(length, p);
   decode(packed, p);
@@ -46,6 +48,7 @@ void PackedObjectInfo::decode(ceph::buffer::list::const_iterator& p) {
 
 void PackedObjectInfo::dump(ceph::Formatter *f) const {
   f->dump_unsigned("container_index", container_index);
+  f->dump_unsigned("shard_id", shard_id);
   f->dump_unsigned("offset", offset);
   f->dump_unsigned("length", length);
   f->dump_bool("packed", packed);
@@ -78,42 +81,35 @@ void ContainerReverseMapEntry::dump(ceph::Formatter *f) const {
 }
 
 // ============================================================================
-// ContainerInfo Implementation
+// ShardInfo Implementation
 // ============================================================================
 
-void ContainerInfo::encode(ceph::buffer::list& bl) const {
+void ShardInfo::encode(ceph::buffer::list& bl) const {
   ENCODE_START(1, 1, bl);
-  encode(container_index, bl);
-  encode(total_size, bl);
+  encode(shard_id, bl);
   encode(used_bytes, bl);
   encode(garbage_bytes, bl);
   encode(next_offset, bl);
-  encode(is_sealed, bl);
   encode(reverse_map, bl);
   ENCODE_FINISH(bl);
 }
 
-void ContainerInfo::decode(ceph::buffer::list::const_iterator& p) {
+void ShardInfo::decode(ceph::buffer::list::const_iterator& p) {
   DECODE_START(1, p);
-  decode(container_index, p);
-  decode(total_size, p);
+  decode(shard_id, p);
   decode(used_bytes, p);
   decode(garbage_bytes, p);
   decode(next_offset, p);
-  decode(is_sealed, p);
   decode(reverse_map, p);
   DECODE_FINISH(p);
 }
 
-void ContainerInfo::dump(ceph::Formatter *f) const {
-  f->dump_unsigned("container_index", container_index);
-  f->dump_unsigned("total_size", total_size);
+void ShardInfo::dump(ceph::Formatter *f) const {
+  f->dump_unsigned("shard_id", shard_id);
   f->dump_unsigned("used_bytes", used_bytes);
   f->dump_unsigned("garbage_bytes", garbage_bytes);
   f->dump_unsigned("next_offset", next_offset);
-  f->dump_bool("is_sealed", is_sealed);
   f->dump_float("fragmentation_ratio", fragmentation_ratio());
-  f->dump_unsigned("available_space", available_space());
   f->open_array_section("reverse_map");
   for (const auto& [offset, entry] : reverse_map) {
     f->open_object_section("entry");
@@ -124,7 +120,60 @@ void ContainerInfo::dump(ceph::Formatter *f) const {
   f->close_section();
 }
 
+// ============================================================================
+// ContainerInfo Implementation
+// ============================================================================
 
+void ContainerInfo::encode(ceph::buffer::list& bl) const {
+  ENCODE_START(2, 2, bl);  // Version 2 adds shards
+  encode(container_index, bl);
+  encode(shard_size, bl);
+  encode(shards, bl);
+  encode(is_sealed, bl);
+  ENCODE_FINISH(bl);
+}
+
+void ContainerInfo::decode(ceph::buffer::list::const_iterator& p) {
+  DECODE_START(2, p);
+  decode(container_index, p);
+  decode(shard_size, p);
+  decode(shards, p);
+  decode(is_sealed, p);
+  DECODE_FINISH(p);
+}
+
+void ContainerInfo::dump(ceph::Formatter *f) const {
+  f->dump_unsigned("container_index", container_index);
+  f->dump_unsigned("shard_size", shard_size);
+  f->dump_unsigned("num_shards", shards.size());
+  f->dump_unsigned("total_size", total_size());
+  f->dump_unsigned("total_used_bytes", total_used_bytes());
+  f->dump_unsigned("total_garbage_bytes", total_garbage_bytes());
+  f->dump_bool("is_sealed", is_sealed);
+  f->dump_float("fragmentation_ratio", fragmentation_ratio());
+  f->dump_unsigned("total_available_space", total_available_space());
+  f->open_array_section("shards");
+  for (const auto& shard : shards) {
+    f->open_object_section("shard");
+    shard.dump(f);
+    f->close_section();
+  }
+  f->close_section();
+}
+
+int32_t ContainerInfo::select_shard_for_write(uint64_t write_size) const {
+  int32_t best_shard = -1;
+  uint64_t best_available = 0;
+  
+  for (uint32_t i = 0; i < shards.size(); ++i) {
+    uint64_t available = shards[i].available_space(shard_size);
+    if (available >= write_size && available > best_available) {
+      best_shard = static_cast<int32_t>(i);
+      best_available = available;
+    }
+  }
+  return best_shard;
+}
 // ============================================================================
 // ObjectPackEngine Implementation
 // ============================================================================
@@ -140,7 +189,7 @@ uint64_t ObjectPackEngine::calculate_aligned_offset(
 bool ObjectPackEngine::should_trigger_gc(const ContainerInfo& container) const {
   // Trigger GC if fragmentation exceeds threshold AND we have enough garbage
   return container.fragmentation_ratio() >= config_.gc_fragmentation_threshold &&
-         container.garbage_bytes >= config_.gc_min_garbage_bytes;
+         container.total_garbage_bytes() >= config_.gc_min_garbage_bytes;
 }
 
 void ObjectPackEngine::encode_omap_entry(
@@ -188,25 +237,24 @@ PackResult ObjectPackEngine::plan_write(
     return PackResult::error("Object size exceeds packing threshold");
   }
   
-  // Determine target container
-  uint64_t container_index;
-  uint64_t write_offset;
-  
-  if (current_container.has_value() &&
-      !current_container->is_sealed &&
-      current_container->available_space() >= op_len) {
-    // Use existing container
-    container_index = current_container->container_index;
-    write_offset = calculate_aligned_offset(
-      current_container->next_offset,
-      op_len);
-    
-    // Check if aligned offset still fits
-    if (write_offset + op_len > current_container->total_size) {
-      return PackResult::error("Current container full - caller must allocate new container");
-    }
-  } else {
+  // Determine target container and shard
+  if (!current_container.has_value() || current_container->is_sealed) {
     return PackResult::error("No current container - caller must allocate container");
+  }
+  
+  // Select the best shard for this write
+  int32_t shard_id = current_container->select_shard_for_write(op_len);
+  if (shard_id < 0) {
+    return PackResult::error("No shard has space for this write - container full");
+  }
+  
+  const ShardInfo& shard = current_container->shards[shard_id];
+  uint64_t container_index = current_container->container_index;
+  uint64_t write_offset = calculate_aligned_offset(shard.next_offset, op_len);
+  
+  // Verify aligned offset still fits in shard
+  if (write_offset + op_len > current_container->shard_size) {
+    return PackResult::error("Shard full after alignment - caller must allocate new container");
   }
   
   // Build transaction
@@ -220,7 +268,7 @@ PackResult ObjectPackEngine::plan_write(
   t.write(cid, ghobject_t(container_hobj), write_offset, op_len, write_data);
   
   // 2. Return packed_info for the caller to update the logical object's OI
-  PackedObjectInfo packed_info(container_index, write_offset, op_len);
+  PackedObjectInfo packed_info(container_index, static_cast<uint32_t>(shard_id), write_offset, op_len);
   
   // 3. Update container's reverse map (OMAP)
   ContainerReverseMapEntry reverse_entry(logical_obj.hobj, op_len, false);
@@ -245,27 +293,24 @@ PackResult ObjectPackEngine::plan_write_raw(
     return PackResult::error("Object size exceeds packing threshold");
   }
   
-  // Determine target container index
-  uint64_t container_index;
-  uint64_t write_offset;
-  
-  if (current_container.has_value() &&
-      !current_container->is_sealed &&
-      current_container->available_space() >= data_size) {
-    // Use existing container
-    container_index = current_container->container_index;
-    write_offset = calculate_aligned_offset(
-      current_container->next_offset,
-      data_size);
-    
-    // Check if aligned offset still fits
-    if (write_offset + data_size > current_container->total_size) {
-      // Need a new container - caller must provide the next index
-      return PackResult::error("Current container full - caller must allocate new container");
-    }
-  } else {
-    // Caller must provide a container index
+  // Determine target container and shard
+  if (!current_container.has_value() || current_container->is_sealed) {
     return PackResult::error("No current container - caller must allocate container");
+  }
+  
+  // Select the best shard for this write
+  int32_t shard_id = current_container->select_shard_for_write(data_size);
+  if (shard_id < 0) {
+    return PackResult::error("No shard has space for this write - container full");
+  }
+  
+  const ShardInfo& shard = current_container->shards[shard_id];
+  uint64_t container_index = current_container->container_index;
+  uint64_t write_offset = calculate_aligned_offset(shard.next_offset, data_size);
+  
+  // Verify aligned offset still fits in shard
+  if (write_offset + data_size > current_container->shard_size) {
+    return PackResult::error("Shard full after alignment - caller must allocate new container");
   }
   
   // Build transaction
@@ -285,7 +330,7 @@ PackResult ObjectPackEngine::plan_write_raw(
   // 2. Update logical object's OI with packing info
   // The OI update is typically done by the caller after this transaction
   // We return the packed_info for the caller to use
-  PackedObjectInfo packed_info(container_index, write_offset, data_size);
+  PackedObjectInfo packed_info(container_index, static_cast<uint32_t>(shard_id), write_offset, data_size);
   
   // 3. Update container's reverse map (OMAP)
   ContainerReverseMapEntry reverse_entry(logical_obj, data_size, false);
@@ -307,6 +352,7 @@ PackResult ObjectPackEngine::plan_read(
   // Return read specification - caller will perform the actual read
   PackReadSpec read_spec(
     packed_info.container_index,
+    packed_info.shard_id,
     packed_info.offset,
     packed_info.length);
   
@@ -411,7 +457,7 @@ PackResult ObjectPackEngine::plan_gc(
   if (container_info.fragmentation_ratio() < config_.gc_fragmentation_threshold) {
     return PackResult::error("Container fragmentation below threshold");
   }
-  if (container_info.garbage_bytes < config_.gc_min_garbage_bytes) {
+  if (container_info.total_garbage_bytes() < config_.gc_min_garbage_bytes) {
     return PackResult::error("Container garbage bytes below minimum");
   }
   

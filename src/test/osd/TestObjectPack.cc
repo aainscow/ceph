@@ -46,10 +46,11 @@ static ceph::buffer::list mk_data(size_t size, char fill = 'x') {
 // ============================================================================
 
 TEST(ObjectPack, PackedObjectInfo_Basic) {
-  PackedObjectInfo info(1, 1024, 512);
+  PackedObjectInfo info(1, 0, 1024, 512);  // container_idx, shard_id, offset, len
   
   ASSERT_TRUE(info.is_packed());
   ASSERT_EQ(1u, info.container_index);
+  ASSERT_EQ(0u, info.shard_id);
   ASSERT_EQ(1024u, info.offset);
   ASSERT_EQ(512u, info.length);
 }
@@ -60,7 +61,7 @@ TEST(ObjectPack, PackedObjectInfo_NotPacked) {
 }
 
 TEST(ObjectPack, PackedObjectInfo_Encoding) {
-  PackedObjectInfo info1(1, 2048, 1024);
+  PackedObjectInfo info1(1, 2, 2048, 1024);  // container_idx, shard_id, offset, len
   
   ceph::buffer::list bl;
   info1.encode(bl);
@@ -70,6 +71,7 @@ TEST(ObjectPack, PackedObjectInfo_Encoding) {
   info2.decode(p);
   
   ASSERT_EQ(info1.container_index, info2.container_index);
+  ASSERT_EQ(info1.shard_id, info2.shard_id);
   ASSERT_EQ(info1.offset, info2.offset);
   ASSERT_EQ(info1.length, info2.length);
 }
@@ -115,51 +117,54 @@ TEST(ObjectPack, ContainerReverseMapEntry_Encoding) {
 // ============================================================================
 
 TEST(ObjectPack, ContainerInfo_Basic) {
-  ContainerInfo info(1, 4 * 1024 * 1024);
+  ContainerInfo info(1, 4 * 1024 * 1024, 4);  // container_idx, shard_size, num_shards
   
   ASSERT_EQ(1u, info.container_index);
-  ASSERT_EQ(4 * 1024 * 1024u, info.total_size);
-  ASSERT_EQ(0u, info.used_bytes);
-  ASSERT_EQ(0u, info.garbage_bytes);
-  ASSERT_EQ(0u, info.next_offset);
+  ASSERT_EQ(4 * 1024 * 1024u, info.shard_size);
+  ASSERT_EQ(4u, info.shards.size());
+  ASSERT_EQ(4 * 4 * 1024 * 1024u, info.total_size());
+  ASSERT_EQ(0u, info.total_used_bytes());
+  ASSERT_EQ(0u, info.total_garbage_bytes());
   ASSERT_FALSE(info.is_sealed);
   ASSERT_EQ(0.0, info.fragmentation_ratio());
-  ASSERT_EQ(4 * 1024 * 1024u, info.available_space());
+  ASSERT_EQ(4 * 4 * 1024 * 1024u, info.total_available_space());
 }
 
 TEST(ObjectPack, ContainerInfo_Fragmentation) {
-  ContainerInfo info(1, 4 * 1024 * 1024);
+  ContainerInfo info(1, 4 * 1024 * 1024, 2);  // 2 shards
   
-  info.used_bytes = 1024 * 1024;
-  info.garbage_bytes = 256 * 1024;
+  info.shards[0].used_bytes = 512 * 1024;
+  info.shards[0].garbage_bytes = 128 * 1024;
+  info.shards[1].used_bytes = 512 * 1024;
+  info.shards[1].garbage_bytes = 128 * 1024;
   
-  // Fragmentation = garbage / (used + garbage)
+  // Fragmentation = total_garbage / (total_used + total_garbage)
   double expected = 256.0 * 1024 / (1024 * 1024 + 256 * 1024);
   ASSERT_NEAR(expected, info.fragmentation_ratio(), 0.001);
 }
 
 TEST(ObjectPack, ContainerInfo_AvailableSpace) {
-  ContainerInfo info(1, 1024 * 1024);
+  ContainerInfo info(1, 1024 * 1024, 2);  // 2 shards of 1MB each
   
-  info.next_offset = 512 * 1024;
-  ASSERT_EQ(512 * 1024u, info.available_space());
+  info.shards[0].next_offset = 512 * 1024;
+  info.shards[1].next_offset = 256 * 1024;
+  // Shard 0: 512KB available, Shard 1: 768KB available
+  ASSERT_EQ((512 + 768) * 1024u, info.total_available_space());
   
-  info.next_offset = 1024 * 1024;
-  ASSERT_EQ(0u, info.available_space());
-  
-  info.next_offset = 2 * 1024 * 1024; // Overflow case
-  ASSERT_EQ(0u, info.available_space());
+  info.shards[0].next_offset = 1024 * 1024;  // Full
+  info.shards[1].next_offset = 1024 * 1024;  // Full
+  ASSERT_EQ(0u, info.total_available_space());
 }
 
 TEST(ObjectPack, ContainerInfo_Encoding) {
-  ContainerInfo info1(1, 4 * 1024 * 1024);
-  info1.used_bytes = 1024;
-  info1.garbage_bytes = 512;
-  info1.next_offset = 2048;
+  ContainerInfo info1(1, 4 * 1024 * 1024, 2);  // 2 shards
+  info1.shards[0].used_bytes = 1024;
+  info1.shards[0].garbage_bytes = 512;
+  info1.shards[0].next_offset = 2048;
   info1.is_sealed = true;
   
   hobject_t obj1 = mk_obj(1);
-  info1.reverse_map[0] = ContainerReverseMapEntry(obj1, 1024, false);
+  info1.shards[0].reverse_map[0] = ContainerReverseMapEntry(obj1, 1024, false);
   
   ceph::buffer::list bl;
   info1.encode(bl);
@@ -169,12 +174,13 @@ TEST(ObjectPack, ContainerInfo_Encoding) {
   info2.decode(p);
   
   ASSERT_EQ(info1.container_index, info2.container_index);
-  ASSERT_EQ(info1.total_size, info2.total_size);
-  ASSERT_EQ(info1.used_bytes, info2.used_bytes);
-  ASSERT_EQ(info1.garbage_bytes, info2.garbage_bytes);
-  ASSERT_EQ(info1.next_offset, info2.next_offset);
+  ASSERT_EQ(info1.shard_size, info2.shard_size);
+  ASSERT_EQ(info1.shards.size(), info2.shards.size());
+  ASSERT_EQ(info1.shards[0].used_bytes, info2.shards[0].used_bytes);
+  ASSERT_EQ(info1.shards[0].garbage_bytes, info2.shards[0].garbage_bytes);
+  ASSERT_EQ(info1.shards[0].next_offset, info2.shards[0].next_offset);
   ASSERT_EQ(info1.is_sealed, info2.is_sealed);
-  ASSERT_EQ(info1.reverse_map.size(), info2.reverse_map.size());
+  ASSERT_EQ(info1.shards[0].reverse_map.size(), info2.shards[0].reverse_map.size());
 }
 
 // ============================================================================

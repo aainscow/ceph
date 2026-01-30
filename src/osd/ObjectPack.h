@@ -56,14 +56,16 @@ class ObjectPackEngine;
  */
 struct PackedObjectInfo {
   uint64_t container_index;       ///< Index of container holding the data
-  uint64_t offset;                ///< Byte offset within container
+  uint32_t shard_id;              ///< Which shard within container (0 to k-1)
+  uint64_t offset;                ///< Byte offset within the shard
   uint64_t length;                ///< Length of data in container
   bool packed;                    ///< True if object is packed
   
-  PackedObjectInfo() : container_index(0), offset(0), length(0), packed(false) {}
+  PackedObjectInfo()
+    : container_index(0), shard_id(0), offset(0), length(0), packed(false) {}
   
-  PackedObjectInfo(uint64_t container_idx, uint64_t off, uint64_t len)
-    : container_index(container_idx), offset(off), length(len), packed(true) {}
+  PackedObjectInfo(uint64_t container_idx, uint32_t shard, uint64_t off, uint64_t len)
+    : container_index(container_idx), shard_id(shard), offset(off), length(len), packed(true) {}
   
   bool is_packed() const {
     return packed;
@@ -96,35 +98,94 @@ struct ContainerReverseMapEntry {
 WRITE_CLASS_ENCODER(ContainerReverseMapEntry)
 
 /**
- * Container metadata tracking utilization and fragmentation
+ * Per-shard metadata within a container
+ * Each shard has its own address space for independent packing
  */
-struct ContainerInfo {
-  uint64_t container_index;      ///< Index of this container
-  uint64_t total_size;           ///< Total size of container
-  uint64_t used_bytes;           ///< Bytes actually used by live objects
-  uint64_t garbage_bytes;        ///< Bytes wasted by deleted/relocated objects
-  uint64_t next_offset;          ///< Next available offset for appends
-  bool is_sealed;                ///< True if container is full/sealed
+struct ShardInfo {
+  uint32_t shard_id;           ///< Shard index (0 to k-1)
+  uint64_t used_bytes;         ///< Bytes used in this shard
+  uint64_t garbage_bytes;      ///< Garbage bytes in this shard
+  uint64_t next_offset;        ///< Next available offset for this shard
   
-  // Reverse mapping: offset -> logical object info
+  // Per-shard reverse map: offset -> logical object info
   std::map<uint64_t, ContainerReverseMapEntry> reverse_map;
   
-  ContainerInfo()
-    : container_index(0), total_size(0), used_bytes(0), garbage_bytes(0),
-      next_offset(0), is_sealed(false) {}
+  ShardInfo() : shard_id(0), used_bytes(0), garbage_bytes(0), next_offset(0) {}
   
-  explicit ContainerInfo(uint64_t idx, uint64_t size = 0)
-    : container_index(idx), total_size(size), used_bytes(0),
-      garbage_bytes(0), next_offset(0), is_sealed(false) {}
+  explicit ShardInfo(uint32_t id)
+    : shard_id(id), used_bytes(0), garbage_bytes(0), next_offset(0) {}
+  
+  uint64_t available_space(uint64_t shard_size) const {
+    return shard_size > next_offset ? shard_size - next_offset : 0;
+  }
   
   double fragmentation_ratio() const {
     if (used_bytes + garbage_bytes == 0) return 0.0;
     return static_cast<double>(garbage_bytes) / (used_bytes + garbage_bytes);
   }
   
-  uint64_t available_space() const {
-    return total_size > next_offset ? total_size - next_offset : 0;
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& p);
+  void dump(ceph::Formatter *f) const;
+};
+WRITE_CLASS_ENCODER(ShardInfo)
+
+/**
+ * Container metadata tracking utilization and fragmentation
+ * A container has k shards, each with independent address space
+ */
+struct ContainerInfo {
+  uint64_t container_index;      ///< Index of this container
+  uint64_t shard_size;           ///< Size per shard
+  std::vector<ShardInfo> shards; ///< k shards for this container
+  bool is_sealed;                ///< True if container is full/sealed
+  
+  ContainerInfo()
+    : container_index(0), shard_size(0), is_sealed(false) {}
+  
+  ContainerInfo(uint64_t idx, uint64_t size_per_shard, uint32_t num_shards)
+    : container_index(idx), shard_size(size_per_shard), is_sealed(false) {
+    shards.reserve(num_shards);
+    for (uint32_t i = 0; i < num_shards; ++i) {
+      shards.emplace_back(i);
+    }
   }
+  
+  // Aggregate statistics across all shards
+  uint64_t total_used_bytes() const {
+    uint64_t total = 0;
+    for (const auto& s : shards) total += s.used_bytes;
+    return total;
+  }
+  
+  uint64_t total_garbage_bytes() const {
+    uint64_t total = 0;
+    for (const auto& s : shards) total += s.garbage_bytes;
+    return total;
+  }
+  
+  uint64_t total_size() const {
+    return shard_size * shards.size();
+  }
+  
+  double fragmentation_ratio() const {
+    uint64_t used = total_used_bytes();
+    uint64_t garbage = total_garbage_bytes();
+    if (used + garbage == 0) return 0.0;
+    return static_cast<double>(garbage) / (used + garbage);
+  }
+  
+  uint64_t total_available_space() const {
+    uint64_t total = 0;
+    for (const auto& s : shards) total += s.available_space(shard_size);
+    return total;
+  }
+  
+  /**
+   * Select the shard with most available space for balanced packing
+   * Returns shard_id of selected shard, or -1 if no shard can fit write_size
+   */
+  int32_t select_shard_for_write(uint64_t write_size) const;
   
   void encode(ceph::buffer::list& bl) const;
   void decode(ceph::buffer::list::const_iterator& p);
@@ -170,13 +231,14 @@ struct PackingConfig {
  */
 struct PackReadSpec {
   uint64_t container_index;    ///< Index of container to read from
-  uint64_t offset;             ///< Offset within container
+  uint32_t shard_id;           ///< Which shard within container
+  uint64_t offset;             ///< Offset within shard
   uint64_t length;             ///< Length to read
   
-  PackReadSpec() : container_index(0), offset(0), length(0) {}
+  PackReadSpec() : container_index(0), shard_id(0), offset(0), length(0) {}
   
-  PackReadSpec(uint64_t container_idx, uint64_t off, uint64_t len)
-    : container_index(container_idx), offset(off), length(len) {}
+  PackReadSpec(uint64_t container_idx, uint32_t shard, uint64_t off, uint64_t len)
+    : container_index(container_idx), shard_id(shard), offset(off), length(len) {}
 };
 
 /**
