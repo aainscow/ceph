@@ -506,6 +506,120 @@ PackResult ObjectPackEngine::plan_promote(
   return PackResult::ok(std::move(t));
 }
 
+// ============================================================================
+// Transaction Implementation
+// ============================================================================
+
+bool Transaction::write(const hobject_t& logical_obj, const ceph::buffer::list& data) {
+  using ceph::encode;
+  
+  uint64_t data_size = data.length();
+  
+  // Check if object should be packed
+  if (!engine_->should_pack_object(data_size)) {
+    // Generate normal write for oversized objects
+    ghobject_t gobj(logical_obj);
+    client_transaction_.write(cid_, gobj, 0, data_size, data);
+    return false;  // Container not modified
+  }
+  
+  // Ensure we have an open container
+  if (!open_container_) {
+    open_container_ = engine_->allocate_new_container();
+  }
+  
+  // Select the best shard for this write
+  int32_t shard_id = open_container_->select_shard_for_write(data_size);
+  
+  // If no shard has space, seal current container and allocate new one
+  if (shard_id < 0) {
+    // Seal current container
+    open_container_->is_sealed = true;
+    
+    // Add to write list if not already there
+    if (containers_to_write_set_.find(open_container_->container_index) ==
+        containers_to_write_set_.end()) {
+      containers_to_write_set_.insert(open_container_->container_index);
+      containers_to_write.push_back(open_container_);
+    }
+    
+    // Allocate new container
+    open_container_ = engine_->allocate_new_container();
+    
+    // Try again with new container
+    shard_id = open_container_->select_shard_for_write(data_size);
+    if (shard_id < 0) {
+      // This should not happen with a fresh container
+      return false;
+    }
+  }
+  
+  ShardInfo& shard = open_container_->shards[shard_id];
+  uint64_t container_index = open_container_->container_index;
+  uint64_t write_offset = engine_->calculate_aligned_offset(shard.next_offset, data_size);
+  
+  // Verify aligned offset still fits in shard
+  if (write_offset + data_size > open_container_->shard_size) {
+    // Shard full after alignment - seal and try with new container
+    open_container_->is_sealed = true;
+    
+    if (containers_to_write_set_.find(open_container_->container_index) ==
+        containers_to_write_set_.end()) {
+      containers_to_write_set_.insert(open_container_->container_index);
+      containers_to_write.push_back(open_container_);
+    }
+    
+    open_container_ = engine_->allocate_new_container();
+    return write(logical_obj, data);  // Recursive call with new container
+  }
+  
+  // Generate container hobject
+  hobject_t container_hobj = ObjectPackEngine::container_hobject_from_index(
+    container_index, logical_obj.pool, logical_obj.nspace);
+  
+  // Write data to container at calculated offset
+  client_transaction_.write(cid_, ghobject_t(container_hobj), write_offset, data_size, data);
+  
+  // Update shard metadata
+  shard.next_offset = write_offset + data_size;
+  shard.used_bytes += data_size;
+  
+  // Add reverse map entry
+  shard.reverse_map[write_offset] = ContainerReverseMapEntry(logical_obj, data_size, false);
+  
+  // Mark container as needing to be written (if not already marked)
+  if (containers_to_write_set_.find(container_index) == containers_to_write_set_.end()) {
+    containers_to_write_set_.insert(container_index);
+    containers_to_write.push_back(open_container_);
+  }
+  
+  return true;  // Container was modified
+}
+
+// ============================================================================
+// ObjectPackEngine New Methods
+// ============================================================================
+
+ContainerInfo* ObjectPackEngine::allocate_new_container() {
+  uint64_t container_idx = next_container_index_++;
+  uint32_t num_shards = config_.ec_k > 0 ? config_.ec_k : 4;  // Default to 4 shards
+  uint64_t shard_size = config_.container_size / num_shards;
+  
+  return new ContainerInfo(container_idx, shard_size, num_shards);
+}
+
+std::shared_ptr<Transaction> ObjectPackEngine::begin_transaction(
+  ceph::os::Transaction& client_txn,
+  const coll_t& cid)
+{
+  // Ensure we have an open container
+  if (!open_container_) {
+    open_container_ = allocate_new_container();
+  }
+  
+  return std::make_shared<Transaction>(this, open_container_, client_txn, cid);
+}
+
 } // namespace osd
 } // namespace ceph
 

@@ -201,6 +201,9 @@ struct PackingConfig {
   uint64_t container_size;             ///< Target size for container objects
   uint64_t alignment_small;            ///< Alignment for objects < 2KB (64 bytes)
   uint64_t alignment_large;            ///< Alignment for objects >= 2KB (4KB)
+  // Bob: Refactor this away from being a double.  This should be an uint64 and we then
+  //      need to refactor the way we measure fragmentation.  I want to keep this simple
+  //      initially, so we probably just need a threshold and not the min bytes.
   double gc_fragmentation_threshold;   ///< Trigger GC when fragmentation exceeds this
   uint64_t gc_min_garbage_bytes;       ///< Minimum garbage bytes to trigger GC
   uint32_t ec_k;                       ///< EC k parameter (data chunks)
@@ -285,11 +288,52 @@ struct PackResult {
 };
 
 /**
+ * Transaction for batched packing operations
+ * Tracks open container and containers that need to be written
+ */
+class Transaction {
+private:
+  ObjectPackEngine* engine_;                    ///< Reference to engine
+  ContainerInfo* open_container_;               ///< Current open container (from engine)
+  std::set<uint64_t> containers_to_write_set_;  ///< Track unique containers
+  ceph::os::Transaction& client_transaction_;   ///< Client's transaction
+  coll_t cid_;                                  ///< Collection ID
+  
+public:
+  std::vector<ContainerInfo*> containers_to_write; ///< Containers needing persistence
+  
+  Transaction(ObjectPackEngine* engine,
+              ContainerInfo* open_container,
+              ceph::os::Transaction& client_txn,
+              const coll_t& cid)
+    : engine_(engine),
+      open_container_(open_container),
+      client_transaction_(client_txn),
+      cid_(cid) {}
+  
+  /**
+   * Write a small object to the packing system
+   * Returns true if container was modified, false otherwise
+   * Automatically handles container allocation and rotation
+   */
+  bool write(const hobject_t& logical_obj, const ceph::buffer::list& data);
+  
+  /**
+   * Get the current open container
+   */
+  ContainerInfo* get_open_container() const { return open_container_; }
+};
+
+/**
  * Main packing engine - pure logic, no I/O
  */
 class ObjectPackEngine {
+  friend class Transaction;  // Allow Transaction to access private methods
+  
 private:
   PackingConfig config_;
+  ContainerInfo* open_container_;  ///< Current open container owned by engine
+  uint64_t next_container_index_;  ///< Next container index to allocate
   
   // Helper methods
   uint64_t calculate_aligned_offset(uint64_t current_offset, uint64_t object_size) const;
@@ -300,6 +344,9 @@ private:
     std::map<std::string, ceph::buffer::list>& omap,
     uint64_t offset,
     const ContainerReverseMapEntry& entry) const;
+  
+  // Container allocation
+  ContainerInfo* allocate_new_container();
   
 public:
   /**
@@ -331,11 +378,33 @@ private:
   
 public:
   explicit ObjectPackEngine(const PackingConfig& config = PackingConfig())
-    : config_(config) {}
+    : config_(config), open_container_(nullptr), next_container_index_(0) {}
+  
+  ~ObjectPackEngine() {
+    delete open_container_;
+  }
   
   // Configuration
   const PackingConfig& get_config() const { return config_; }
   void set_config(const PackingConfig& config) { config_ = config; }
+  
+  /**
+   * Begin a new packing transaction
+   * Returns a shared_ptr to a Transaction that manages batched writes
+   */
+  std::shared_ptr<Transaction> begin_transaction(
+    ceph::os::Transaction& client_txn,
+    const coll_t& cid);
+  
+  /**
+   * Get the current open container (for inspection)
+   */
+  const ContainerInfo* get_open_container() const { return open_container_; }
+  
+  /**
+   * Get the next container index that will be allocated
+   */
+  uint64_t get_next_container_index() const { return next_container_index_; }
   
   /**
    * Determine if an object should be packed

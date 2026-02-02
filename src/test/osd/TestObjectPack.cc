@@ -248,8 +248,11 @@ TEST(ObjectPack, Engine_ShouldPackObject) {
 TEST(ObjectPack, Engine_PlanWriteRaw_ExistingContainer) {
   ObjectPackEngine engine;
   
-  ContainerInfo container_info(1, 4 * 1024 * 1024);
-  container_info.next_offset = 1024;
+  ContainerInfo container_info(1, 4 * 1024 * 1024, 4);  // 4 shards
+  // Set all shards to same offset so shard 0 is selected
+  for (auto& shard : container_info.shards) {
+    shard.next_offset = 1024;
+  }
   
   hobject_t obj = mk_obj(1);
   ceph::buffer::list data = mk_data(512);
@@ -259,7 +262,7 @@ TEST(ObjectPack, Engine_PlanWriteRaw_ExistingContainer) {
   ASSERT_TRUE(result.success);
   ASSERT_TRUE(result.packed_info.has_value());
   ASSERT_EQ(1u, result.packed_info->container_index);
-  // 512 bytes at offset 1024 should stay at 1024 (already 64-byte aligned)
+  // 512 bytes starting at next_offset 1024, aligned to 64 bytes = 1024
   ASSERT_EQ(1024u, result.packed_info->offset);
   ASSERT_EQ(512u, result.packed_info->length);
 }
@@ -282,7 +285,7 @@ TEST(ObjectPack, Engine_PlanWriteRaw_TooLarge) {
   config.small_object_threshold = 1024;
   ObjectPackEngine engine(config);
   
-  ContainerInfo container_info(1, 4 * 1024 * 1024);
+  ContainerInfo container_info(1, 4 * 1024 * 1024, 4);
   hobject_t obj = mk_obj(1);
   ceph::buffer::list data = mk_data(2048);
   
@@ -295,8 +298,8 @@ TEST(ObjectPack, Engine_PlanWriteRaw_TooLarge) {
 TEST(ObjectPack, Engine_PlanWrite_WithOp) {
   ObjectPackEngine engine;
   
-  ContainerInfo container_info(1, 4 * 1024 * 1024);
-  container_info.next_offset = 0;
+  ContainerInfo container_info(1, 4 * 1024 * 1024, 4);
+  container_info.shards[0].next_offset = 0;
   
   hobject_t obj = mk_obj(1);
   ghobject_t gobj(obj);
@@ -321,7 +324,7 @@ TEST(ObjectPack, Engine_PlanWrite_WithOp) {
 TEST(ObjectPack, Engine_PlanWrite_WrongOpType) {
   ObjectPackEngine engine;
   
-  ContainerInfo container_info(1, 4 * 1024 * 1024);
+  ContainerInfo container_info(1, 4 * 1024 * 1024, 4);
   hobject_t obj = mk_obj(1);
   ghobject_t gobj(obj);
   coll_t cid;
@@ -342,7 +345,7 @@ TEST(ObjectPack, Engine_PlanWrite_WrongOpType) {
 TEST(ObjectPack, Engine_PlanWrite_DataLengthMismatch) {
   ObjectPackEngine engine;
   
-  ContainerInfo container_info(1, 4 * 1024 * 1024);
+  ContainerInfo container_info(1, 4 * 1024 * 1024, 4);
   hobject_t obj = mk_obj(1);
   ghobject_t gobj(obj);
   coll_t cid;
@@ -365,7 +368,7 @@ TEST(ObjectPack, Engine_PlanRead) {
   ObjectPackEngine engine;
   
   hobject_t obj = mk_obj(1);
-  PackedObjectInfo packed_info(1, 2048, 1024);
+  PackedObjectInfo packed_info(1, 0, 2048, 1024);  // Added shard_id parameter
   
   PackResult result = engine.plan_read(obj, packed_info);
   
@@ -391,11 +394,11 @@ TEST(ObjectPack, Engine_PlanDelete) {
   ObjectPackEngine engine;
   
   hobject_t obj = mk_obj(1);
-  PackedObjectInfo packed_info(1, 2048, 1024);
+  PackedObjectInfo packed_info(1, 0, 2048, 1024);  // Added shard_id parameter
   
-  ContainerInfo container_info(1, 4 * 1024 * 1024);
-  container_info.used_bytes = 10 * 1024;
-  container_info.garbage_bytes = 1024;
+  ContainerInfo container_info(1, 4 * 1024 * 1024, 4);
+  container_info.shards[0].used_bytes = 10 * 1024;
+  container_info.shards[0].garbage_bytes = 1024;
   
   PackResult result = engine.plan_delete(obj, packed_info, container_info);
   
@@ -408,26 +411,26 @@ TEST(ObjectPack, Engine_NeedsGC) {
   config.gc_min_garbage_bytes = 1024;
   ObjectPackEngine engine(config);
   
-  ContainerInfo info(1, 4 * 1024 * 1024);
+  ContainerInfo info(1, 4 * 1024 * 1024, 4);
   
   // No garbage
-  info.used_bytes = 10 * 1024;
-  info.garbage_bytes = 0;
+  info.shards[0].used_bytes = 10 * 1024;
+  info.shards[0].garbage_bytes = 0;
   ASSERT_FALSE(engine.needs_gc(info));
   
   // High fragmentation but not enough garbage
-  info.used_bytes = 1024;
-  info.garbage_bytes = 512; // 33% fragmentation but < 1024 bytes
+  info.shards[0].used_bytes = 1024;
+  info.shards[0].garbage_bytes = 512; // 33% fragmentation but < 1024 bytes
   ASSERT_FALSE(engine.needs_gc(info));
   
   // Enough garbage but low fragmentation
-  info.used_bytes = 100 * 1024;
-  info.garbage_bytes = 2 * 1024; // Only 2% fragmentation
+  info.shards[0].used_bytes = 100 * 1024;
+  info.shards[0].garbage_bytes = 2 * 1024; // Only 2% fragmentation
   ASSERT_FALSE(engine.needs_gc(info));
   
   // Both conditions met
-  info.used_bytes = 3 * 1024;
-  info.garbage_bytes = 2 * 1024; // 40% fragmentation and > 1024 bytes
+  info.shards[0].used_bytes = 3 * 1024;
+  info.shards[0].garbage_bytes = 2 * 1024; // 40% fragmentation and > 1024 bytes
   ASSERT_TRUE(engine.needs_gc(info));
 }
 
@@ -437,7 +440,7 @@ TEST(ObjectPack, Engine_PlanPromote) {
   ObjectPackEngine engine(config);
   
   hobject_t obj = mk_obj(1);
-  PackedObjectInfo packed_info(1, 2048, 512);
+  PackedObjectInfo packed_info(1, 0, 2048, 512);  // Added shard_id parameter
   
   PackResult result = engine.plan_promote(obj, packed_info, 2048);
   
@@ -450,7 +453,7 @@ TEST(ObjectPack, Engine_PlanPromote_StillSmall) {
   ObjectPackEngine engine(config);
   
   hobject_t obj = mk_obj(1);
-  PackedObjectInfo packed_info(1, 0, 512);
+  PackedObjectInfo packed_info(1, 0, 0, 512);  // Added shard_id parameter
   
   PackResult result = engine.plan_promote(obj, packed_info, 1024);
   
@@ -467,6 +470,168 @@ TEST(ObjectPack, Engine_ContainerNaming) {
   ASSERT_EQ(".pack_container_42", hobj.oid.name);
   ASSERT_EQ(1, hobj.pool);
   ASSERT_EQ("ns", hobj.nspace);
+}
+
+// ============================================================================
+// Transaction Tests
+// ============================================================================
+
+TEST(ObjectPack, Transaction_BasicWrite) {
+  ObjectPackEngine engine;
+  ceph::os::Transaction client_txn;
+  coll_t cid;
+  
+  auto txn = engine.begin_transaction(client_txn, cid);
+  ASSERT_TRUE(txn != nullptr);
+  
+  hobject_t obj = mk_obj(1);
+  ceph::buffer::list data = mk_data(512);
+  
+  bool modified = txn->write(obj, data);
+  ASSERT_TRUE(modified);
+  
+  // Check that container was created
+  ASSERT_TRUE(txn->get_open_container() != nullptr);
+  ASSERT_EQ(1u, txn->containers_to_write.size());
+}
+
+TEST(ObjectPack, Transaction_MultipleWrites) {
+  ObjectPackEngine engine;
+  ceph::os::Transaction client_txn;
+  coll_t cid;
+  
+  auto txn = engine.begin_transaction(client_txn, cid);
+  
+  // Write multiple small objects
+  for (int i = 0; i < 5; i++) {
+    hobject_t obj = mk_obj(i);
+    ceph::buffer::list data = mk_data(1024);
+    bool modified = txn->write(obj, data);
+    ASSERT_TRUE(modified);
+  }
+  
+  // All writes should go to same container
+  ASSERT_EQ(1u, txn->containers_to_write.size());
+  
+  // Check container metadata
+  const ContainerInfo* container = txn->get_open_container();
+  ASSERT_TRUE(container != nullptr);
+  ASSERT_GT(container->total_used_bytes(), 0u);
+}
+
+TEST(ObjectPack, Transaction_OversizedObject) {
+  PackingConfig config;
+  config.small_object_threshold = 1024;
+  ObjectPackEngine engine(config);
+  
+  ceph::os::Transaction client_txn;
+  coll_t cid;
+  
+  auto txn = engine.begin_transaction(client_txn, cid);
+  
+  // Write an oversized object
+  hobject_t obj = mk_obj(1);
+  ceph::buffer::list data = mk_data(2048);  // Exceeds threshold
+  
+  bool modified = txn->write(obj, data);
+  ASSERT_FALSE(modified);  // Container not modified (normal write)
+  
+  // Container should still be empty
+  const ContainerInfo* container = txn->get_open_container();
+  ASSERT_EQ(0u, container->total_used_bytes());
+}
+
+TEST(ObjectPack, Transaction_ContainerRotation) {
+  PackingConfig config;
+  config.small_object_threshold = 64 * 1024;
+  config.container_size = 16 * 1024;  // Small container for testing
+  ObjectPackEngine engine(config);
+  
+  ceph::os::Transaction client_txn;
+  coll_t cid;
+  
+  auto txn = engine.begin_transaction(client_txn, cid);
+  
+  // Write objects until container is full
+  int num_writes = 0;
+  for (int i = 0; i < 20; i++) {
+    hobject_t obj = mk_obj(i);
+    ceph::buffer::list data = mk_data(2048);
+    bool modified = txn->write(obj, data);
+    if (modified) num_writes++;
+  }
+  
+  ASSERT_GT(num_writes, 0);
+  
+  // Should have rotated to multiple containers
+  ASSERT_GT(txn->containers_to_write.size(), 1u);
+}
+
+TEST(ObjectPack, Transaction_MixedSizes) {
+  ObjectPackEngine engine;
+  ceph::os::Transaction client_txn;
+  coll_t cid;
+  
+  auto txn = engine.begin_transaction(client_txn, cid);
+  
+  // Write objects of different sizes
+  hobject_t obj1 = mk_obj(1);
+  ceph::buffer::list data1 = mk_data(512);
+  ASSERT_TRUE(txn->write(obj1, data1));
+  
+  hobject_t obj2 = mk_obj(2);
+  ceph::buffer::list data2 = mk_data(4096);
+  ASSERT_TRUE(txn->write(obj2, data2));
+  
+  hobject_t obj3 = mk_obj(3);
+  ceph::buffer::list data3 = mk_data(1024);
+  ASSERT_TRUE(txn->write(obj3, data3));
+  
+  // All should go to same container
+  ASSERT_EQ(1u, txn->containers_to_write.size());
+  
+  const ContainerInfo* container = txn->get_open_container();
+  ASSERT_EQ(512u + 4096u + 1024u, container->total_used_bytes());
+}
+
+TEST(ObjectPack, Transaction_ContainerUniqueness) {
+  ObjectPackEngine engine;
+  ceph::os::Transaction client_txn;
+  coll_t cid;
+  
+  auto txn = engine.begin_transaction(client_txn, cid);
+  
+  // Write multiple objects to same container
+  for (int i = 0; i < 10; i++) {
+    hobject_t obj = mk_obj(i);
+    ceph::buffer::list data = mk_data(512);
+    txn->write(obj, data);
+  }
+  
+  // Container should appear only once in write list
+  ASSERT_EQ(1u, txn->containers_to_write.size());
+  
+  // Verify it's the same container as open_container
+  ASSERT_EQ(txn->get_open_container(), txn->containers_to_write[0]);
+}
+
+TEST(ObjectPack, Engine_ContainerAllocation) {
+  ObjectPackEngine engine;
+  
+  ASSERT_EQ(0u, engine.get_next_container_index());
+  ASSERT_EQ(nullptr, engine.get_open_container());
+  
+  ceph::os::Transaction client_txn;
+  coll_t cid;
+  
+  auto txn = engine.begin_transaction(client_txn, cid);
+  
+  // Container should be allocated
+  ASSERT_NE(nullptr, engine.get_open_container());
+  ASSERT_EQ(1u, engine.get_next_container_index());
+  
+  // Container index should be 0
+  ASSERT_EQ(0u, txn->get_open_container()->container_index);
 }
 
 int main(int argc, char **argv) {
