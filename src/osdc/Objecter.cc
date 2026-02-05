@@ -2418,11 +2418,7 @@ void Objecter::op_submit(Op *op, ceph_tid_t *ptid, int *ctx_budget)
     ptid = &tid;
   op->trace.event("op submit");
 
-  bool was_split = SplitOp::create(op, *this, rl, ptid, ctx_budget, cct);
-
-  if (!was_split) {
-    _op_submit_with_budget(op, rl, ptid, ctx_budget);
-  }
+  _op_submit_with_budget(op, rl, ptid, ctx_budget);
 }
 
 void Objecter::_op_submit_with_budget(Op *op,
@@ -2456,7 +2452,28 @@ void Objecter::_op_submit_with_budget(Op *op,
 				      op_cancel(tid, -ETIMEDOUT); });
   }
 
-  _op_submit(op, sul, ptid);
+
+  bool was_split = SplitOp::create(op, *this, sul, cct);
+
+  if (was_split) {
+    // All the ops have been sent, but we need to track the op with a tid.
+    if (op->tid == 0) {
+      op->tid = ++last_tid;
+    }
+    *ptid = op->tid;
+    OSDSession *s;
+    int r = _get_session(op->target.osd, &s, sul);
+    // The lock has been held since the last calc_target, so it should not
+    // be possible for a new map to have appeared.
+    ceph_assert(r == 0);
+    unique_lock sl(s->lock);
+    _session_op_assign(s, op);
+    inflight_ops++;
+    sl.unlock();
+    put_session(s);
+  } else {
+    _op_submit(op, sul, ptid);
+  }
 }
 
 void Objecter::_send_op_account(Op *op)
