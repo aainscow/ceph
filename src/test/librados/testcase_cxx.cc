@@ -475,42 +475,6 @@ void RadosTestECPP::set_allow_ec_overwrites()
   }
 }
 
-void RadosTestECPP::inject_ec_read_error(const std::string &objname) {
-  int osd = -1;
-  ceph::consistency::RadosCommands ec_commands(s_cluster);
-  osd = ec_commands.get_primary_osd(pool_name, objname, nspace);
-
-  ceph::messaging::osd::InjectECErrorRequest<
-    io_exerciser::InjectOpType::ReadDelayed>
-  injectErrorRequest(pool_name, "*", 0, 2, 0, std::numeric_limits<int64_t>::max());
-
-  JSONFormatter f;
-  encode_json("ReadDelayedInject", injectErrorRequest, &f);
-
-  std::ostringstream oss;
-  f.flush(oss);
-  int rc = s_cluster.osd_command(osd, oss.str(), {}, {}, nullptr);
-  ASSERT_EQ(0, rc);
-}
-
-void RadosTestECPP::clear_ec_read_error(const std::string &objname) {
-  int osd = -1;
-  ceph::consistency::RadosCommands ec_commands(s_cluster);
-  osd = ec_commands.get_primary_osd(pool_name, objname, nspace);
-
-  ceph::messaging::osd::InjectECClearErrorRequest<
-      io_exerciser::InjectOpType::ReadDelayed>
-      clearErrorInject{pool_name, "*", 0, 2};
-
-  JSONFormatter f;
-  encode_json("ReadDelayedInject", clearErrorInject, &f);
-
-  std::ostringstream oss;
-  f.flush(oss);
-  int rc = s_cluster.osd_command(osd, oss.str(), {}, {}, nullptr);
-  ASSERT_EQ(0, rc);
-}
-
 void RadosTestECPP::wait_for_stable_acting_set(const std::string &objname) {
   ceph::consistency::RadosCommands ec_commands(s_cluster);
   
