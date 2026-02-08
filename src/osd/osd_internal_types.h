@@ -43,6 +43,8 @@ struct ObjectContext {
   SnapSetContext *ssc;  // may be null
 
   Context *destructor_callback;
+  
+  CephContext *cct;  // for logging
 
 public:
 
@@ -54,29 +56,57 @@ public:
 
   RWState rwstate;
   std::list<OpRequestRef> waiters;  ///< ops waiting on state change
-  bool get_read(OpRequestRef& op) {
+  bool get_read(OpRequestRef& op, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
     if (rwstate.get_read_lock()) {
+      if (hoid && caller && cct) {
+        lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " READ_LOCK acquired by " << caller
+                       << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name() << ")" << dendl;
+      }
       return true;
     } // else
       // Now we really need to bump up the ref-counter.
+    if (hoid && caller && cct) {
+      lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " READ_LOCK blocked for " << caller
+                     << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name()
+                     << ", waiters=" << rwstate.waiters << ")" << dendl;
+    }
     waiters.emplace_back(op);
     rwstate.inc_waiters();
     return false;
   }
-  bool get_write(OpRequestRef& op, bool greedy=false) {
+  bool get_write(OpRequestRef& op, bool greedy=false, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
     if (rwstate.get_write_lock(greedy)) {
+      if (hoid && caller && cct) {
+        lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " WRITE_LOCK acquired by " << caller
+                       << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name()
+                       << ", greedy=" << greedy << ")" << dendl;
+      }
       return true;
     } // else
+    if (hoid && caller && cct) {
+      lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " WRITE_LOCK blocked for " << caller
+                     << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name()
+                     << ", waiters=" << rwstate.waiters << ", greedy=" << greedy << ")" << dendl;
+    }
     if (op) {
       waiters.emplace_back(op);
       rwstate.inc_waiters();
     }
     return false;
   }
-  bool get_excl(OpRequestRef& op) {
+  bool get_excl(OpRequestRef& op, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
     if (rwstate.get_excl_lock()) {
+      if (hoid && caller && cct) {
+        lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " EXCL_LOCK acquired by " << caller
+                       << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name() << ")" << dendl;
+      }
       return true;
     } // else
+    if (hoid && caller && cct) {
+      lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " EXCL_LOCK blocked for " << caller
+                     << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name()
+                     << ", waiters=" << rwstate.waiters << ")" << dendl;
+    }
     if (op) {
       waiters.emplace_back(op);
       rwstate.inc_waiters();
@@ -87,38 +117,65 @@ public:
     rwstate.release_waiters();
     requeue->splice(requeue->end(), waiters);
   }
-  void put_read(std::list<OpRequestRef> *requeue) {
+  void put_read(std::list<OpRequestRef> *requeue, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
+    if (hoid && caller && cct) {
+      lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " READ_LOCK released by " << caller
+                     << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name()
+                     << ", waiters=" << rwstate.waiters << ")" << dendl;
+    }
     if (rwstate.put_read()) {
+      if (hoid && caller && cct) {
+        lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " READ_LOCK fully released, waking waiters (waiters="
+                       << rwstate.waiters << ")" << dendl;
+      }
       wake(requeue);
     }
   }
-  void put_write(std::list<OpRequestRef> *requeue) {
+  void put_write(std::list<OpRequestRef> *requeue, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
+    if (hoid && caller && cct) {
+      lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " WRITE_LOCK released by " << caller
+                     << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name()
+                     << ", waiters=" << rwstate.waiters << ")" << dendl;
+    }
     if (rwstate.put_write()) {
+      if (hoid && caller && cct) {
+        lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " WRITE_LOCK fully released, waking waiters (waiters="
+                       << rwstate.waiters << ")" << dendl;
+      }
       wake(requeue);
     }
   }
-  void put_excl(std::list<OpRequestRef> *requeue) {
+  void put_excl(std::list<OpRequestRef> *requeue, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
+    if (hoid && caller && cct) {
+      lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " EXCL_LOCK released by " << caller
+                     << " (count=" << rwstate.count << ", state=" << rwstate.get_state_name()
+                     << ", waiters=" << rwstate.waiters << ")" << dendl;
+    }
     if (rwstate.put_excl()) {
+      if (hoid && caller && cct) {
+        lgeneric_subdout(cct, osd, 20) << "LOCK_TRACE: " << *hoid << " EXCL_LOCK fully released, waking waiters (waiters="
+                       << rwstate.waiters << ")" << dendl;
+      }
       wake(requeue);
     }
   }
   bool empty() const { return rwstate.empty(); }
 
-  bool get_lock_type(OpRequestRef& op, RWState::State type) {
+  bool get_lock_type(OpRequestRef& op, RWState::State type, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
     switch (type) {
     case RWState::RWWRITE:
-      return get_write(op);
+      return get_write(op, false, hoid, caller);
     case RWState::RWREAD:
-      return get_read(op);
+      return get_read(op, hoid, caller);
     case RWState::RWEXCL:
-      return get_excl(op);
+      return get_excl(op, hoid, caller);
     default:
       ceph_abort_msg("invalid lock type");
       return true;
     }
   }
-  bool get_write_greedy(OpRequestRef& op) {
-    return get_write(op, true);
+  bool get_write_greedy(OpRequestRef& op, const hobject_t* hoid = nullptr, const char* caller = nullptr) {
+    return get_write(op, true, hoid, caller);
   }
   bool get_snaptrimmer_write(bool mark_if_unsuccessful) {
     return rwstate.get_snaptrimmer_write(mark_if_unsuccessful);
@@ -138,16 +195,18 @@ public:
     RWState::State type,
     std::list<OpRequestRef> *to_wake,
     bool *requeue_recovery,
-    bool *requeue_snaptrimmer) {
+    bool *requeue_snaptrimmer,
+    const hobject_t* hoid = nullptr,
+    const char* caller = nullptr) {
     switch (type) {
     case RWState::RWWRITE:
-      put_write(to_wake);
+      put_write(to_wake, hoid, caller);
       break;
     case RWState::RWREAD:
-      put_read(to_wake);
+      put_read(to_wake, hoid, caller);
       break;
     case RWState::RWEXCL:
-      put_excl(to_wake);
+      put_excl(to_wake, hoid, caller);
       break;
     default:
       ceph_abort_msg("invalid lock type");
@@ -165,9 +224,10 @@ public:
     return !rwstate.empty();
   }
 
-  ObjectContext()
+  ObjectContext(CephContext *cct_ = nullptr)
     : ssc(NULL),
       destructor_callback(0),
+      cct(cct_),
       blocked(false), requeue_scrub_on_unblock(false) {}
 
   ~ObjectContext() {
@@ -228,9 +288,10 @@ public:
     RWState::State type,
     const hobject_t &hoid,
     ObjectContextRef& obc,
-    OpRequestRef& op) {
+    OpRequestRef& op,
+    const char* caller = __builtin_FUNCTION()) {
     ceph_assert(locks.find(hoid) == locks.end());
-    if (obc->get_lock_type(op, type)) {
+    if (obc->get_lock_type(op, type, &hoid, caller)) {
       locks.insert(std::make_pair(hoid, ObjectLockState(obc, type)));
       return true;
     } else {
@@ -240,12 +301,17 @@ public:
   /// Get write lock, ignore starvation
   bool take_write_lock(
     const hobject_t &hoid,
-    ObjectContextRef obc) {
+    ObjectContextRef obc,
+    const char* caller = __builtin_FUNCTION()) {
     ceph_assert(locks.find(hoid) == locks.end());
     if (obc->rwstate.take_write_lock()) {
+      if (obc->cct) {
+        lgeneric_subdout(obc->cct, osd, 20) << "LOCK_TRACE: " << hoid << " WRITE_LOCK taken (ignore starvation) by " << caller
+                            << " (count=" << obc->rwstate.count << ", state=" << obc->rwstate.get_state_name() << ")" << dendl;
+      }
       locks.insert(
-	std::make_pair(
-	  hoid, ObjectLockState(obc, RWState::RWWRITE)));
+ std::make_pair(
+   hoid, ObjectLockState(obc, RWState::RWWRITE)));
       return true;
     } else {
       return false;
@@ -255,12 +321,17 @@ public:
   bool get_snaptrimmer_write(
     const hobject_t &hoid,
     ObjectContextRef obc,
-    bool mark_if_unsuccessful) {
+    bool mark_if_unsuccessful,
+    const char* caller = __builtin_FUNCTION()) {
     ceph_assert(locks.find(hoid) == locks.end());
     if (obc->get_snaptrimmer_write(mark_if_unsuccessful)) {
+      if (obc->cct) {
+        lgeneric_subdout(obc->cct, osd, 20) << "LOCK_TRACE: " << hoid << " WRITE_LOCK acquired (snaptrimmer) by " << caller
+                            << " (count=" << obc->rwstate.count << ", state=" << obc->rwstate.get_state_name() << ")" << dendl;
+      }
       locks.insert(
-	std::make_pair(
-	  hoid, ObjectLockState(obc, RWState::RWWRITE)));
+ std::make_pair(
+   hoid, ObjectLockState(obc, RWState::RWWRITE)));
       return true;
     } else {
       return false;
@@ -270,12 +341,13 @@ public:
   bool get_write_greedy(
     const hobject_t &hoid,
     ObjectContextRef obc,
-    OpRequestRef op) {
+    OpRequestRef op,
+    const char* caller = __builtin_FUNCTION()) {
     ceph_assert(locks.find(hoid) == locks.end());
-    if (obc->get_write_greedy(op)) {
+    if (obc->get_write_greedy(op, &hoid, caller)) {
       locks.insert(
-	std::make_pair(
-	  hoid, ObjectLockState(obc, RWState::RWWRITE)));
+ std::make_pair(
+   hoid, ObjectLockState(obc, RWState::RWWRITE)));
       return true;
     } else {
       return false;
@@ -285,13 +357,18 @@ public:
   /// try get read lock
   bool try_get_read_lock(
     const hobject_t &hoid,
-    ObjectContextRef obc) {
+    ObjectContextRef obc,
+    const char* caller = __builtin_FUNCTION()) {
     ceph_assert(locks.find(hoid) == locks.end());
     if (obc->try_get_read_lock()) {
+      if (obc->cct) {
+        lgeneric_subdout(obc->cct, osd, 20) << "LOCK_TRACE: " << hoid << " READ_LOCK tried and acquired by " << caller
+                            << " (count=" << obc->rwstate.count << ", state=" << obc->rwstate.get_state_name() << ")" << dendl;
+      }
       locks.insert(
-	std::make_pair(
-	  hoid,
-	  ObjectLockState(obc, RWState::RWREAD)));
+ std::make_pair(
+   hoid,
+   ObjectLockState(obc, RWState::RWREAD)));
       return true;
     } else {
       return false;
@@ -301,19 +378,22 @@ public:
   void put_locks(
     std::list<std::pair<ObjectContextRef, std::list<OpRequestRef> > > *to_requeue,
     bool *requeue_recovery,
-    bool *requeue_snaptrimmer) {
+    bool *requeue_snaptrimmer,
+    const char* caller = __builtin_FUNCTION()) {
     for (auto& p: locks) {
       std::list<OpRequestRef> _to_requeue;
       p.second.obc->put_lock_type(
-	p.second.type,
-	&_to_requeue,
-	requeue_recovery,
-	requeue_snaptrimmer);
+ p.second.type,
+ &_to_requeue,
+ requeue_recovery,
+ requeue_snaptrimmer,
+ &p.first,
+ caller);
       if (to_requeue) {
         // We can safely std::move here as the whole `locks` is going
         // to die just after the loop.
-	to_requeue->emplace_back(std::move(p.second.obc),
-				 std::move(_to_requeue));
+ to_requeue->emplace_back(std::move(p.second.obc),
+  		 std::move(_to_requeue));
       }
     }
     locks.clear();

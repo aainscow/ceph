@@ -12030,6 +12030,7 @@ ObjectContextRef PrimaryLogPG::create_object_context(const object_info_t& oi,
 {
   ObjectContextRef obc(object_contexts.lookup_or_create(oi.soid));
   ceph_assert(obc->destructor_callback == NULL);
+  obc->cct = cct;  // Set CephContext for logging
   obc->destructor_callback = new C_PG_ObjectContext(this, obc.get());
   obc->obs.oi = oi;
   obc->obs.exists = false;
@@ -12106,6 +12107,7 @@ ObjectContextRef PrimaryLogPG::get_object_context(
     ceph_assert(oi.soid.pool == (int64_t)info.pgid.pool());
 
     obc = object_contexts.lookup_or_create(oi.soid);
+    obc->cct = cct;  // Set CephContext for logging
     obc->destructor_callback = new C_PG_ObjectContext(this, obc.get());
     obc->obs.oi = oi;
     obc->obs.exists = true;
