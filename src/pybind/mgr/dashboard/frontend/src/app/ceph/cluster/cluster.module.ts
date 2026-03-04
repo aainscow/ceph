@@ -24,7 +24,8 @@ import {
   RadioModule,
   TilesModule,
   LayerModule,
-  TabsModule
+  TabsModule,
+  ProgressBarModule
 } from 'carbon-components-angular';
 
 import {
@@ -91,6 +92,7 @@ import { MultiClusterListComponent } from './multi-cluster/multi-cluster-list/mu
 import { DashboardV3Module } from '../dashboard-v3/dashboard-v3.module';
 import { MultiClusterDetailsComponent } from './multi-cluster/multi-cluster-details/multi-cluster-details.component';
 import { TextLabelListComponent } from '~/app/shared/components/text-label-list/text-label-list.component';
+import { LicenceAgreementComponent } from './license-agreement/license-agreement.component';
 
 @NgModule({
   imports: [
@@ -133,7 +135,8 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     FileUploaderModule,
     RadioModule,
     TilesModule,
-    LayerModule
+    LayerModule,
+    ProgressBarModule
   ],
   declarations: [
     MonitorComponent,
@@ -181,7 +184,8 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     MultiClusterFormComponent,
     MultiClusterListComponent,
     MultiClusterDetailsComponent,
-    HostsComponent
+    HostsComponent,
+    LicenceAgreementComponent
   ],
   providers: [NgbActiveModal]
 })
