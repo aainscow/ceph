@@ -22,7 +22,9 @@ import {
   NumberModule,
   FileUploaderModule,
   TabsModule,
-  RadioModule
+  RadioModule,
+  TilesModule,
+  LayerModule
 } from 'carbon-components-angular';
 
 import {
@@ -129,7 +131,9 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     LayoutModule,
     NumberModule,
     FileUploaderModule,
-    RadioModule
+    RadioModule,
+    TilesModule,
+    LayerModule
   ],
   declarations: [
     MonitorComponent,
