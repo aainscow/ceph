@@ -4,7 +4,7 @@ import { NvmeofService } from '~/app/shared/api/nvmeof.service';
 import { DeleteConfirmationModalComponent } from '~/app/shared/components/delete-confirmation-modal/delete-confirmation-modal.component';
 import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
 import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
-import { Icons, ICON_TYPE } from '~/app/shared/enum/icons.enum';
+import { Icons, EMPTY_STATE_IMAGE } from '~/app/shared/enum/icons.enum';
 import { CdTableAction } from '~/app/shared/models/cd-table-action';
 import { CdTableColumn } from '~/app/shared/models/cd-table-column';
 import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
@@ -19,7 +19,8 @@ import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 @Component({
   selector: 'cd-nvmeof-listeners-list',
   templateUrl: './nvmeof-listeners-list.component.html',
-  styleUrls: ['./nvmeof-listeners-list.component.scss']
+  styleUrls: ['./nvmeof-listeners-list.component.scss'],
+  standalone: false
 })
 export class NvmeofListenersListComponent implements OnInit {
   @Input()
@@ -33,7 +34,7 @@ export class NvmeofListenersListComponent implements OnInit {
   permission: Permission;
   listeners: NvmeofListener[];
   hasAvailableNodes = true;
-  iconType = ICON_TYPE;
+  emptyStateImage = EMPTY_STATE_IMAGE;
 
   constructor(
     public actionLabels: ActionLabelsI18n,
