@@ -131,6 +131,7 @@ import { NumberWithUnitComponent } from './number-with-unit/number-with-unit.com
 import ArrowUpRight16 from '@carbon/icons/es/arrow--up-right/16';
 import InProgress16 from '@carbon/icons/es/in-progress/16';
 import ArrowDown16 from '@carbon/icons/es/arrow--down/16';
+import CloudMonitoring16 from '@carbon/icons/es/cloud--monitoring/16';
 
 @NgModule({
   imports: [
@@ -316,7 +317,8 @@ export class ComponentsModule {
       Warning16,
       ArrowUpRight16,
       InProgress16,
-      ArrowDown16
+      ArrowDown16,
+      CloudMonitoring16
     ]);
   }
 }
