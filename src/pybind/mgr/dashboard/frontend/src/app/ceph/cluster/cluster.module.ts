@@ -21,7 +21,6 @@ import {
   LayoutModule,
   NumberModule,
   FileUploaderModule,
-  TabsModule,
   RadioModule,
   TilesModule,
   LayerModule
@@ -125,7 +124,6 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     ToggletipModule,
     IconModule,
     TagModule,
-    TabsModule,
     TextLabelListComponent,
     SelectModule,
     LayoutModule,
