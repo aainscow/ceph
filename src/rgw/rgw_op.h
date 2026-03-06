@@ -1581,7 +1581,6 @@ protected:
   std::string_view copy_source;
   // Not actually required
   std::optional<std::string_view> md_directive;
-  std::map<std::string, std::string> crypt_http_responses;
 
   off_t ofs;
   off_t len;
@@ -2053,7 +2052,6 @@ protected:
   std::optional<rgw::cksum::Cksum> cksum;
   std::optional<std::string> armored_cksum;
   off_t ofs = 0;
-  std::map<std::string, std::string> crypt_http_responses;
 
 public:
   RGWCompleteMultipart() {}
