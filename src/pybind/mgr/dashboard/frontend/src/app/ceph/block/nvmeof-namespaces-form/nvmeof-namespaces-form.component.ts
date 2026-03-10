@@ -30,7 +30,8 @@ import { HttpResponse } from '@angular/common/http';
 @Component({
   selector: 'cd-nvmeof-namespaces-form',
   templateUrl: './nvmeof-namespaces-form.component.html',
-  styleUrls: ['./nvmeof-namespaces-form.component.scss']
+  styleUrls: ['./nvmeof-namespaces-form.component.scss'],
+  standalone: false
 })
 export class NvmeofNamespacesFormComponent implements OnInit {
   action: string;
@@ -248,9 +249,7 @@ export class NvmeofNamespacesFormComponent implements OnInit {
           return /^[^@/]+$/.test(value) ? null : { rbdImageName: true };
         })
       ]),
-      namespace_size: new UntypedFormControl(null, {
-        validators: [CdValidators.blockSizeMultiple()]
-      }), // UI only - not sent to backend
+      namespace_size: new UntypedFormControl(null), // UI only - not sent to backend
       host_access: new UntypedFormControl('all'), // UI only - determines visibility
       initiators: new UntypedFormControl([]) // UI only - selected hosts
     });
@@ -339,11 +338,6 @@ export class NvmeofNamespacesFormComponent implements OnInit {
         no_auto_visible: noAutoVisible
       };
 
-      const blockSize = this.nsForm.getValue('namespace_size');
-      if (blockSize) {
-        request.block_size = blockSize;
-      }
-
       if (isGatewayProvisioned) {
         const rbdImageName = this.nsForm.getValue('rbd_image_name');
         if (rbdImageName) {
@@ -360,7 +354,6 @@ export class NvmeofNamespacesFormComponent implements OnInit {
           request['rbd_image_name'] = rbdImageName;
         }
       }
-
       const subsystemNQN = this.nsForm.getValue('subsystem') || this.subsystemNQN;
       requests.push(this.nvmeofService.createNamespace(subsystemNQN, request));
     }
