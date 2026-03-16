@@ -23,7 +23,8 @@ import {
   FileUploaderModule,
   RadioModule,
   TilesModule,
-  LayerModule
+  LayerModule,
+  TabsModule
 } from 'carbon-components-angular';
 
 import {
@@ -124,6 +125,7 @@ import { TextLabelListComponent } from '~/app/shared/components/text-label-list/
     ToggletipModule,
     IconModule,
     TagModule,
+    TabsModule,
     TextLabelListComponent,
     SelectModule,
     LayoutModule,
