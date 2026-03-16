@@ -159,8 +159,6 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                                 port: Optional[int] = None,
                                 enable_virtual_server: bool = False,
                                 enable_nfsv3: bool = False,
-                                inbuf: Optional[str] = None
-                                ) -> None:
                                 bind_addrs: Optional[str] = None,
                                 monitoring_addrs: Optional[str] = None,
                                 monitoring_port: Optional[int] = None,
