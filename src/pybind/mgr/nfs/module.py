@@ -1,7 +1,7 @@
 import logging
 import threading
 from typing import Tuple, Optional, List, Dict, Any
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from mgr_module import MgrModule, CLICommand, Option, CLICheckNonemptyFileInput
 import object_format
