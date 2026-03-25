@@ -2832,7 +2832,7 @@ class TestIngressService:
             'backend backend\n'
             '    mode        tcp\n'
             '    balance     roundrobin\n'
-            '    stick-table type ip size 200k expire 30m peers haproxy_peers\n'
+            '    stick-table type ip size 1m peers haproxy_peers\n'
             '    stick on src\n'
             '    hash-type   consistent\n'
         )
@@ -3737,7 +3737,7 @@ class TestIngressService:
             'backend backend\n'
             '    mode        tcp\n'
             '    balance     roundrobin\n'
-            '    stick-table type ip size 200k expire 30m peers haproxy_peers\n'
+            '    stick-table type ip size 1m peers haproxy_peers\n'
             '    stick on src\n'
             '    hash-type   consistent\n'
             '    default-server send-proxy-v2\n'
