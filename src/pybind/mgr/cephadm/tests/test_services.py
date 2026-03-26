@@ -554,7 +554,9 @@ class TestNVMEOFService:
     qos_timeslice_in_usecs = 0
     notifications_interval = 60
 
-    [monitor]
+    [kmip]
+    cert_dir = ./certs/kmip/{{server_name}}
+
     timeout = 1.0\n"""
 
         with with_host(cephadm_module, 'test'):
