@@ -164,10 +164,8 @@ describe('NvmeofService', () => {
     it('should call createSubsystem', () => {
       const request = {
         nqn: mockNQN,
-        enable_ha: true,
-        initiators: '*',
         gw_group: mockGroupName,
-        dhchap_key: null
+        dhchap_key: ''
       };
       service.createSubsystem(request).subscribe();
       const req = httpTesting.expectOne(`${API_PATH}/subsystem`);
