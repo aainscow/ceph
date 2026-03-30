@@ -35,11 +35,6 @@ class DefaultImages(Enum):
     KEEPALIVED = _create_image('registry.redhat.io/rhceph/keepalived-rhel10:v9.1', 'keepalived')
     NVMEOF = _create_image('cp.icr.io/cp/ibm-ceph/nvmeof-rhel9:1.6', 'nvmeof')
     SNMP_GATEWAY = _create_image('registry.redhat.io/rhceph/snmp-notifier-rhel10:v9.1', 'snmp_gateway')
-    ELASTICSEARCH = _create_image('quay.io/omrizeneva/elasticsearch:6.8.23', 'elasticsearch')
-    JAEGER_COLLECTOR = _create_image('quay.io/jaegertracing/jaeger-collector:1.29',
-                                     'jaeger_collector')
-    JAEGER_AGENT = _create_image('quay.io/jaegertracing/jaeger-agent:1.29', 'jaeger_agent')
-    JAEGER_QUERY = _create_image('quay.io/jaegertracing/jaeger-query:1.29', 'jaeger_query')
     SAMBA = _create_image('cp.icr.io/cp/ibm-ceph/samba-server-rhel9:v9.1', 'samba')
     SAMBA_METRICS = _create_image('cp.icr.io/cp/ibm-ceph/samba-metrics-rhel9:v9.1', 'samba_metrics')
     NGINX = _create_image('registry.redhat.io/rhel9/nginx-124:latest', 'nginx')
