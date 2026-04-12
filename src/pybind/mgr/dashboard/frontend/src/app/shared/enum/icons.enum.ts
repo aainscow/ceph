@@ -167,7 +167,10 @@ export const ICON_TYPE = {
   close: 'close',
   arrowUpRight: 'arrow--up-right',
   inProgress: 'in-progress',
-  arrowDown: 'arrow--down'
+  arrowDown: 'arrow--down',
+  ibmCloudBareMetalServer:'ibm-cloud--bare-metal-server',
+  ibmCloudDedicatedHost:'ibm-cloud--dedicated-host',
+  clusterIcon:'web-services--cluster',
 } as const;
 
 export const EMPTY_STATE_IMAGE = {
