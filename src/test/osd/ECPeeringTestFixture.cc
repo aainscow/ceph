@@ -41,7 +41,7 @@ ECPeeringTestFixture::ECPeeringTestFixture()
 
 void ECPeeringTestFixture::SetUp() {
   PGBackendTestFixture::SetUp();
-  for (int i = 0; i < k + m; i++) {
+  for (int i = 0; i < (k + m) * num_zones; i++) {
     create_peering_state(i);
   }
   
@@ -84,6 +84,10 @@ void ECPeeringTestFixture::SetUp() {
   messenger->register_typed_handler<MOSDPeeringOp>(MSG_OSD_PG_LOG, peering_handler);
   messenger->register_typed_handler<MOSDPeeringOp>(MSG_OSD_PG_LEASE, peering_handler);
   messenger->register_typed_handler<MOSDPeeringOp>(MSG_OSD_PG_LEASE_ACK, peering_handler);
+  messenger->register_typed_handler<MOSDPeeringOp>(MSG_OSD_RECOVERY_RESERVE, peering_handler);
+  
+  // Note: MSG_OSD_PG_PUSH and MSG_OSD_PG_PUSH_REPLY handlers are registered
+  // in PGBackendTestFixture::setup_ec_pool() using make_backend_handler
   
   // Register idle callback to check for buffered messages
   event_loop->register_idle_callback([this]() -> bool {
@@ -111,7 +115,7 @@ void ECPeeringTestFixture::TearDown() {
 }
 
 PeeringState* ECPeeringTestFixture::get_peering_state(int shard) {
-  ceph_assert(shard >= 0 && shard < k + m);
+  ceph_assert(shard >= 0 && shard < (k + m) * num_zones);
   auto it = shard_peering_states.find(shard);
   ceph_assert(it != shard_peering_states.end());
   ceph_assert(it->second != nullptr);
@@ -119,7 +123,7 @@ PeeringState* ECPeeringTestFixture::get_peering_state(int shard) {
 }
 
 PeeringCtx* ECPeeringTestFixture::get_peering_ctx(int shard) {
-  ceph_assert(shard >= 0 && shard < k + m);
+  ceph_assert(shard >= 0 && shard < (k + m) * num_zones);
   auto it = shard_peering_ctxs.find(shard);
   ceph_assert(it != shard_peering_ctxs.end());
   ceph_assert(it->second != nullptr);
@@ -127,7 +131,7 @@ PeeringCtx* ECPeeringTestFixture::get_peering_ctx(int shard) {
 }
 
 MockPeeringListener* ECPeeringTestFixture::get_peering_listener(int shard) {
-  ceph_assert(shard >= 0 && shard < k + m);
+  ceph_assert(shard >= 0 && shard < (k + m) * num_zones);
   auto it = shard_peering_listeners.find(shard);
   ceph_assert(it != shard_peering_listeners.end());
   ceph_assert(it->second != nullptr);
@@ -532,6 +536,15 @@ void ECPeeringTestFixture::mark_osds_down(const std::vector<int>& osd_ids)
   update_osdmap_with_peering(new_osdmap);
 }
 
+void ECPeeringTestFixture::set_pool_min_size(unsigned new_min_size)
+{
+  auto new_osdmap = std::make_shared<OSDMap>();
+  new_osdmap->deepish_copy_from(*osdmap);
+  OSDMapTestHelpers::set_pool_min_size(new_osdmap, pool_id, new_min_size);
+  
+  update_osdmap_with_peering(new_osdmap);
+}
+
 void ECPeeringTestFixture::advance_epoch()
 {
   auto new_osdmap = std::make_shared<OSDMap>();
@@ -539,5 +552,144 @@ void ECPeeringTestFixture::advance_epoch()
   OSDMapTestHelpers::advance_epoch(new_osdmap);
   
   update_osdmap_with_peering(new_osdmap);
+}
+
+void ECPeeringTestFixture::run_recovery_and_verify_callbacks(
+  const std::string& obj_name,
+  int removed_osd,
+  const std::string& expected_data)
+{
+  // Get the actual primary from the OSDMap (don't assume it's shard 0)
+  int primary_shard = get_primary_shard_from_osdmap();
+  auto primary_ps = get_peering_state(primary_shard);
+  pg_shard_t removed_shard(removed_osd, shard_id_t(removed_osd));
+  
+  hobject_t hoid = make_test_object(obj_name);
+  pg_missing_item missing_item;
+  
+  // Check if the removed OSD is the current primary
+  // If so, check the primary's own missing set; otherwise check peer_missing
+  if (removed_osd == primary_shard) {
+    // The removed OSD became primary again after coming back up
+    // Check the primary's own missing set
+    const pg_missing_t& primary_missing = primary_ps->get_pg_log().get_missing();
+    ASSERT_TRUE(primary_missing.have_missing())
+      << "Primary OSD " << removed_osd << " should have missing objects after coming back up";
+    
+    ASSERT_TRUE(primary_missing.is_missing(hoid, &missing_item))
+      << "Object " << obj_name << " should be in primary " << removed_osd << "'s missing set";
+    
+    std::cout << "  OSD " << removed_osd << " is the primary and has the object in its own missing set" << std::endl;
+  } else {
+    // The removed OSD is a peer, check peer_missing
+    const auto& peer_missing_map = primary_ps->get_peer_missing();
+    auto peer_missing_it = peer_missing_map.find(removed_shard);
+    ASSERT_NE(peer_missing_it, peer_missing_map.end())
+      << "Primary should have peer_missing entry for OSD " << removed_osd;
+
+    const pg_missing_t& peer_missing = peer_missing_it->second;
+    ASSERT_TRUE(peer_missing.have_missing())
+      << "Peer OSD " << removed_osd << " should have missing objects after coming back up";
+
+    ASSERT_TRUE(peer_missing.is_missing(hoid, &missing_item))
+      << "Object " << obj_name << " should be in peer " << removed_osd << "'s missing set";
+    
+    std::cout << "  OSD " << removed_osd << " is a peer and has the object in peer_missing" << std::endl;
+  }
+
+  ObjectContextRef obc = get_or_create_obc(hoid, true, expected_data.length());
+  ASSERT_FALSE(obc->attr_cache.empty()) << "OBC attr_cache must be populated for recovery";
+
+  // Reset recovery callback tracker before starting recovery
+  auto* primary_listener = get_primary_listener();
+  primary_listener->recovery_tracker.reset();
+  
+  std::cout << "  Starting recovery operation for object " << hoid << std::endl;
+  PGBackend::RecoveryHandle *h = get_primary_backend()->open_recovery_op();
+  int r = get_primary_backend()->recover_object(hoid, missing_item.need, ObjectContextRef(), obc, h);
+  ASSERT_EQ(0, r) << "recover_object should successfully queue the recovery operation";
+  
+  std::cout << "  Running recovery op (this triggers the recovery flow)" << std::endl;
+  get_primary_backend()->run_recovery_op(h, 10);  // priority = 10
+  event_loop->run_until_idle();
+  
+  // Verify recovery callbacks were invoked
+  std::cout << "\n  === Recovery Callback Verification ===" << std::endl;
+  std::cout << "  on_local_recover calls: " << primary_listener->recovery_tracker.on_local_recover_calls << std::endl;
+  for (const auto& obj : primary_listener->recovery_tracker.on_local_recover_objects) {
+    std::cout << "    - object: " << obj << std::endl;
+  }
+  
+  std::cout << "  on_peer_recover calls: " << primary_listener->recovery_tracker.on_peer_recover_calls.size() << " peers" << std::endl;
+  for (const auto& [peer, count] : primary_listener->recovery_tracker.on_peer_recover_calls) {
+    std::cout << "    - peer " << peer << ": " << count << " calls" << std::endl;
+  }
+  for (const auto& [peer, obj] : primary_listener->recovery_tracker.on_peer_recover_objects) {
+    std::cout << "      object: " << obj << std::endl;
+  }
+  
+  std::cout << "  on_global_recover calls: " << primary_listener->recovery_tracker.on_global_recover_calls << std::endl;
+  for (const auto& obj : primary_listener->recovery_tracker.on_global_recover_objects) {
+    std::cout << "    - object: " << obj << std::endl;
+  }
+
+  // When the removed OSD is the primary itself, recovery is local (on_local_recover)
+  // When the removed OSD is a peer, recovery is remote (on_peer_recover)
+  if (removed_osd == primary_shard) {
+    // Primary recovering itself - should use on_local_recover
+    ASSERT_EQ(1, primary_listener->recovery_tracker.on_local_recover_calls)
+      << "on_local_recover should be called once when primary recovers itself";
+    ASSERT_EQ(hoid, primary_listener->recovery_tracker.on_local_recover_objects[0])
+      << "on_local_recover should be called for the correct object";
+    std::cout << "  ✓ Primary shard " << primary_shard << " recovered object locally (on_local_recover called)" << std::endl;
+  } else {
+    // Peer recovering - should use on_peer_recover
+    ASSERT_EQ(1, primary_listener->recovery_tracker.on_peer_recover_calls[removed_shard])
+      << "on_peer_recover should be called once on primary for the recovering peer";
+    std::cout << "  ✓ Peer shard " << removed_shard << " recovered via on_peer_recover" << std::endl;
+  }
+  
+  ASSERT_EQ(1, primary_listener->recovery_tracker.on_global_recover_calls)
+    << "on_global_recover should be called once on primary when all peers complete";
+  ASSERT_EQ(hoid, primary_listener->recovery_tracker.on_global_recover_objects[0])
+    << "on_global_recover should be called for the correct object";
+  
+  // Verify that the callbacks updated PeeringState correctly
+  std::cout << "\n  === PeeringState Update Verification ===" << std::endl;
+  
+  // After recovery, the object should no longer be missing
+  if (removed_osd == primary_shard) {
+    // Primary recovered itself - check primary's own missing set
+    const pg_missing_t& updated_primary_missing = primary_ps->get_pg_log().get_missing();
+    ASSERT_FALSE(updated_primary_missing.is_missing(hoid))
+      << "After on_local_recover, object should no longer be in primary's missing set";
+    std::cout << "  ✓ Primary " << primary_shard << " no longer has object " << hoid << " missing" << std::endl;
+  } else {
+    // Peer recovered - check peer_missing map
+    const auto& updated_peer_missing_map = primary_ps->get_peer_missing();
+    auto updated_peer_missing_it = updated_peer_missing_map.find(removed_shard);
+    
+    if (updated_peer_missing_it != updated_peer_missing_map.end()) {
+      const pg_missing_t& updated_peer_missing = updated_peer_missing_it->second;
+      ASSERT_FALSE(updated_peer_missing.is_missing(hoid))
+        << "After on_peer_recover, object should no longer be in peer's missing set";
+      std::cout << "  ✓ Peer " << removed_shard << " no longer has object " << hoid << " missing" << std::endl;
+    }
+  }
+  
+  // After on_global_recover, the object should be in the missing_loc (available locations)
+  const auto& missing_loc = primary_ps->get_missing_loc();
+  const auto& missing_locs = missing_loc.get_missing_locs();
+  auto loc_it = missing_locs.find(hoid);
+  if (loc_it != missing_locs.end()) {
+    ASSERT_TRUE(loc_it->second.count(removed_shard) > 0)
+      << "After recovery, peer should be listed as having the object";
+    std::cout << "  ✓ Object " << hoid << " is now available on peer " << removed_shard << std::endl;
+  }
+  
+  std::cout << "  === All recovery callbacks and PeeringState updates verified successfully ===" << std::endl;
+  
+  // Verify the object data is correct
+  verify_object(obj_name, expected_data, 0, expected_data.length());
 }
 

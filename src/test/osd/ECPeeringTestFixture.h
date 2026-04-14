@@ -131,6 +131,14 @@ public:
   void mark_osds_down(const std::vector<int>& osd_ids);
   
   /**
+   * Set the pool min_size.
+   * Creates a new OSDMap epoch and triggers peering.
+   *
+   * @param new_min_size The new min_size value
+   */
+  void set_pool_min_size(unsigned new_min_size);
+  
+  /**
    * Advance to a new epoch without changing OSD states.
    * Useful for testing re-peering scenarios.
    */
@@ -184,5 +192,23 @@ public:
    * @param to_osd The OSD number to unblock messages to (from the primary)
    */
   void unsuspend_primary_to_osd(int to_osd);
+  
+  /**
+   * run_recovery_and_verify_callbacks - Run recovery for an object and verify callbacks
+   *
+   * This helper function encapsulates the complete EC recovery flow:
+   * 1. Verifies the object is in the peer's missing set
+   * 2. Runs the recovery operation
+   * 3. Verifies all recovery callbacks were invoked correctly
+   * 4. Verifies PeeringState was updated correctly
+   *
+   * @param obj_name The name of the object to recover
+   * @param removed_osd The OSD that was down and needs recovery
+   * @param expected_data The expected data content after recovery
+   */
+  void run_recovery_and_verify_callbacks(
+    const std::string& obj_name,
+    int removed_osd,
+    const std::string& expected_data);
 };
 

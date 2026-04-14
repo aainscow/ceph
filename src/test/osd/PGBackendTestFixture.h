@@ -77,15 +77,15 @@ protected:
   /// across sequential operations on the same object. This is critical for
   /// EC attr_cache continuity.
   std::map<hobject_t, ObjectContextRef> object_contexts;
-  
+
   /// Track outstanding writes per object. When this reaches 0, we can safely
   /// clear attr_cache (as there are no in-flight writes that might have stale
   /// cached OI data).
   std::map<hobject_t, int> outstanding_writes;
-  
+
   // OpTracker for wrapping messages in OpRequestRef
   std::shared_ptr<OpTracker> op_tracker;
-  
+
   ceph::ErasureCodeInterfaceRef ec_impl;
   std::map<int, std::unique_ptr<ECExtentCache::LRU>> lrus;
   int k = 4;  // data chunks
@@ -93,6 +93,7 @@ protected:
   uint64_t stripe_unit = 4096;  // aka chunk_size
   std::string ec_plugin = "isa";
   std::string ec_technique = "reed_sol_van";
+  int num_zones = 0;
 
   int num_replicas = 3;
   int min_size = 2;
@@ -103,11 +104,11 @@ protected:
   
   // Transaction ID counter - increments with each transaction
   ceph_tid_t next_tid = 1;
-  
+
   // Version counter for auto-generating versions in write* functions
   // The epoch comes from osdmap, this tracks the second version number
   uint64_t next_version = 1;
-  
+
   class TestDpp : public NoDoutPrefix {
   public:
     TestDpp(CephContext *cct) : NoDoutPrefix(cct, ceph_subsys_osd) {}
@@ -187,7 +188,7 @@ public:
     backends.clear();
     object_contexts.clear();
     outstanding_writes.clear();
-    
+
     if (pool_type == EC) {
       lrus.clear();
       ec_impl.reset();
@@ -282,45 +283,53 @@ public:
   /// Unlike make_object_context(), this method reuses OBCs for the same
   /// object across operations, which is essential for attr_cache continuity
   /// in EC pools.
+  /// @param primary_shard The shard ID to read attributes from (for EC pools)
   ObjectContextRef get_or_create_obc(
     const hobject_t& hoid,
     bool exists = false,
-    uint64_t size = 0)
+    uint64_t size = 0,
+    int primary_shard = 0)
   {
     auto it = object_contexts.find(hoid);
-    if (it != object_contexts.end()) {
-      return it->second;
-    }
-    ObjectContextRef obc = make_object_context(hoid, exists, size);
+    ObjectContextRef obc;
     
+    if (it != object_contexts.end()) {
+      obc = it->second;
+    } else {
+      obc = make_object_context(hoid, exists, size);
+      object_contexts[hoid] = obc;
+    }
+
     // If the object exists and this is an EC pool, populate attr_cache with
-    // ALL attributes from disk. This matches production behavior where the OBC
-    // is loaded with all xattrs from the object store.
-    if (exists && pool_type == EC && store && !chs.empty()) {
+    // ALL attributes from disk if not already populated. This matches production
+    // behavior where the OBC is loaded with all xattrs from the object store.
+    // In EC, attributes are stored per-shard, so we must read from the specified shard.
+    if (exists && pool_type == EC && store && !chs.empty() && obc->attr_cache.empty()) {
       auto writes_it = outstanding_writes.find(hoid);
       bool has_outstanding_writes = (writes_it != outstanding_writes.end() && writes_it->second > 0);
+
+      // Cannot read from disk if there are outstanding writes - test bug
+      ceph_assert(!has_outstanding_writes);
       
-      // Only read from disk if there are no outstanding writes
-      if (!has_outstanding_writes) {
-        ObjectStore::CollectionHandle ch_primary = chs[0];
-        if (ch_primary) {
-          ghobject_t ghoid(hoid, ghobject_t::NO_GEN, shard_id_t::NO_SHARD);
-          std::map<std::string, ceph::buffer::ptr, std::less<>> attrs;
-          int r = store->getattrs(ch_primary, ghoid, attrs);
-          
-          if (r >= 0) {
-            // Successfully read all attributes from disk - populate the cache
-            for (auto& [key, value_ptr] : attrs) {
-              bufferlist bl;
-              bl.append(value_ptr);
-              obc->attr_cache[key] = std::move(bl);
-            }
+      // For EC pools, attributes are stored with the shard ID in the ghobject_t
+      ceph_assert(primary_shard >= 0 && primary_shard < (int)chs.size());
+      ObjectStore::CollectionHandle ch = chs[primary_shard];
+      if (ch) {
+        ghobject_t ghoid(hoid, ghobject_t::NO_GEN, shard_id_t(primary_shard));
+        std::map<std::string, ceph::buffer::ptr, std::less<>> attrs;
+        int r = store->getattrs(ch, ghoid, attrs);
+
+        if (r >= 0) {
+          // Successfully read all attributes from disk - populate the cache
+          for (auto& [key, value_ptr] : attrs) {
+            bufferlist bl;
+            bl.append(value_ptr);
+            obc->attr_cache[key] = std::move(bl);
           }
         }
       }
     }
-    
-    object_contexts[hoid] = obc;
+
     return obc;
   }
   

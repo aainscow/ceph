@@ -64,6 +64,28 @@ public:
   MockMessenger *messenger = nullptr;
   OpTracker *op_tracker = nullptr;
   PerfCounters *perf_logger = nullptr;
+  
+  // Recovery callback tracking
+  struct RecoveryCallbackTracker {
+    int on_local_recover_calls = 0;
+    std::vector<hobject_t> on_local_recover_objects;
+    
+    std::map<pg_shard_t, int> on_peer_recover_calls;
+    std::vector<std::pair<pg_shard_t, hobject_t>> on_peer_recover_objects;
+    
+    int on_global_recover_calls = 0;
+    std::vector<hobject_t> on_global_recover_objects;
+    
+    void reset() {
+      on_local_recover_calls = 0;
+      on_local_recover_objects.clear();
+      on_peer_recover_calls.clear();
+      on_peer_recover_objects.clear();
+      on_global_recover_calls = 0;
+      on_global_recover_objects.clear();
+    }
+  };
+  RecoveryCallbackTracker recovery_tracker;
 
   MockPGBackendListener(OSDMapRef osdmap, int64_t pool_id, DoutPrefixProvider *dpp, pg_shard_t pg_whoami, PeeringState *ps = nullptr) :
     osdmap(osdmap), pool_id(pool_id), log(g_ceph_context), dpp(dpp), pg_whoami(pg_whoami), peering_state(ps) {
@@ -112,18 +134,36 @@ public:
     ObjectContextRef obc,
     bool is_delete,
     ObjectStore::Transaction *t) override {
+    recovery_tracker.on_local_recover_calls++;
+    recovery_tracker.on_local_recover_objects.push_back(oid);
+    
+    // Call into PeeringState to update recovery state
+    if (peering_state) {
+      peering_state->recover_got(oid, recovery_info.version, is_delete, *t);
+    }
   }
 
   void on_global_recover(
     const hobject_t &oid,
     const object_stat_sum_t &stat_diff,
     bool is_delete) override {
+    recovery_tracker.on_global_recover_calls++;
+    recovery_tracker.on_global_recover_objects.push_back(oid);
+    
+    // Call into PeeringState to mark object as fully recovered
+    if (peering_state) {
+      peering_state->object_recovered(oid, stat_diff);
+    }
   }
 
   void on_peer_recover(
     pg_shard_t peer,
     const hobject_t &oid,
     const ObjectRecoveryInfo &recovery_info) override {
+    recovery_tracker.on_peer_recover_calls[peer]++;
+    recovery_tracker.on_peer_recover_objects.push_back({peer, oid});
+    
+    // Call into PeeringState to update peer missing state
     if (peering_state) {
       peering_state->on_peer_recover(peer, oid, recovery_info.version);
     }
@@ -254,10 +294,16 @@ public:
 
   // Shard information
   const std::set<pg_shard_t> &get_acting_recovery_backfill_shards() const override {
+    if (peering_state) {
+      return peering_state->get_acting_recovery_backfill();
+    }
     return shardset;
   }
 
-  const shard_id_set &get_acting_recovery_backfill_shard_id_set() const {
+  const shard_id_set &get_acting_recovery_backfill_shard_id_set() const override {
+    if (peering_state) {
+      return peering_state->get_acting_recovery_backfill_shard_id_set();
+    }
     return acting_recovery_backfill_shard_id_set;
   }
 
