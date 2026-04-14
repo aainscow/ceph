@@ -70,7 +70,7 @@ void ECPeeringTestFixture::SetUp() {
     osdmap->apply_incremental(inc);
   }
 
-  for (int i = 0; i < k + m; i++) {
+  for (int i = 0; i < (k + m) * num_zones; i++) {
     create_peering_state(i);
   }
   
@@ -146,7 +146,7 @@ void ECPeeringTestFixture::set_config(const std::string& option, const std::stri
 }
 
 PeeringState* ECPeeringTestFixture::get_peering_state(int shard) {
-  ceph_assert(shard >= 0 && shard < k + m);
+  ceph_assert(shard >= 0 && shard < (k + m) * num_zones);
   auto it = shard_peering_states.find(shard);
   ceph_assert(it != shard_peering_states.end());
   ceph_assert(it->second != nullptr);
@@ -154,7 +154,7 @@ PeeringState* ECPeeringTestFixture::get_peering_state(int shard) {
 }
 
 PeeringCtx* ECPeeringTestFixture::get_peering_ctx(int shard) {
-  ceph_assert(shard >= 0 && shard < k + m);
+  ceph_assert(shard >= 0 && shard < (k + m) * num_zones);
   auto it = shard_peering_ctxs.find(shard);
   ceph_assert(it != shard_peering_ctxs.end());
   ceph_assert(it->second != nullptr);
@@ -162,7 +162,7 @@ PeeringCtx* ECPeeringTestFixture::get_peering_ctx(int shard) {
 }
 
 MockPeeringListener* ECPeeringTestFixture::get_peering_listener(int shard) {
-  ceph_assert(shard >= 0 && shard < k + m);
+  ceph_assert(shard >= 0 && shard < (k + m) * num_zones);
   auto it = shard_peering_listeners.find(shard);
   ceph_assert(it != shard_peering_listeners.end());
   ceph_assert(it->second != nullptr);
@@ -579,6 +579,15 @@ void ECPeeringTestFixture::mark_osds_down(const std::vector<int>& osd_ids)
   new_osdmap->deepish_copy_from(*osdmap);
   OSDMapTestHelpers::mark_osds_down(new_osdmap, osd_ids);
   
+  update_osdmap_with_peering(new_osdmap);
+}
+
+void ECPeeringTestFixture::set_pool_min_size(unsigned new_min_size)
+{
+  auto new_osdmap = std::make_shared<OSDMap>();
+  new_osdmap->deepish_copy_from(*osdmap);
+  OSDMapTestHelpers::set_pool_min_size(new_osdmap, pool_id, new_min_size);
+
   update_osdmap_with_peering(new_osdmap);
 }
 
