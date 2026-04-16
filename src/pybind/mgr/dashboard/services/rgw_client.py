@@ -1336,7 +1336,8 @@ class RgwMultisiteAutomation:
                                     cluster_fsid: Optional[str] = None,
                                     replication_zone_name: Optional[str] = None,
                                     cluster_details: Optional[str] = None,
-                                    selectedRealmName: Optional[str] = None):
+                                    selectedRealmName: Optional[str] = None,
+                                    secondary_tier_type: Optional[str] = None):
 
         logger.info("Starting multisite replication setup")
 
@@ -1360,7 +1361,7 @@ class RgwMultisiteAutomation:
 
         return self.export_and_import_realm(
             realm_name, zonegroup_name, cluster_fsid, replication_zone_name,
-            cluster_details_dict, selectedRealmName, username
+            cluster_details_dict, selectedRealmName, username, secondary_tier_type
         )
 
     def get_updated_endpoints(self, endpoints: str, orch: OrchClient) -> list[str]:
@@ -1431,7 +1432,7 @@ class RgwMultisiteAutomation:
     def export_and_import_realm(self, realm: str, zg: str,
                                 fsid: Optional[str], rep_zone: Optional[str],
                                 details_dict: dict, selectedRealm: Optional[str],
-                                username: str):
+                                username: str, secondary_tier_type: Optional[str] = None):
         try:
             realm_token_info = CephService.get_realm_tokens()
             if fsid and realm_token_info and rep_zone and details_dict:
@@ -1441,7 +1442,8 @@ class RgwMultisiteAutomation:
                             configuration, and establishing the target zone"
                 )
                 self.import_realm_token_to_cluster(fsid, realm, zg, realm_token_info, username,
-                                                   rep_zone, details_dict, selectedRealm)
+                                                   rep_zone, details_dict, selectedRealm,
+                                                   secondary_tier_type)
             else:
                 self.update_progress("Realm Export Token fetched successfully", 'complete')
             logger.info("Multisite replication setup completed")
@@ -1454,7 +1456,8 @@ class RgwMultisiteAutomation:
 
     def import_realm_token_to_cluster(self, cluster_fsid, realm_name, zonegroup_name,
                                       realm_token_info, username, replication_zone_name,
-                                      cluster_details, selectedRealmName):
+                                      cluster_details, selectedRealmName,
+                                      secondary_tier_type=None):
         try:
             if selectedRealmName:
                 rgw_service_manager = RgwServiceManager()
@@ -1471,7 +1474,7 @@ class RgwMultisiteAutomation:
 
             token_import_response = self._import_realm_token(
                 cluster_url, cluster_token, realm_export_token,
-                replication_zone_name)
+                replication_zone_name, secondary_tier_type)
 
             self.progress_done += 1
             self.update_progress(
@@ -1580,7 +1583,8 @@ class RgwMultisiteAutomation:
                                                     token=cluster_token)
         logger.info("setting config response: %s", config_info)
 
-    def _import_realm_token(self, cluster_url, cluster_token, realm_token, zone_name):
+    def _import_realm_token(self, cluster_url, cluster_token, realm_token, zone_name,
+                            secondary_tier_type=None):
         multi_cluster_instance = MultiCluster()
         # pylint: disable=protected-access
         available_port = multi_cluster_instance._proxy(
@@ -1592,6 +1596,8 @@ class RgwMultisiteAutomation:
             'port': available_port,
             'placement_spec': {"placement": {}}
         }
+        if secondary_tier_type:
+            payload['tier_type'] = secondary_tier_type
         # pylint: disable=protected-access
         token_import_response = multi_cluster_instance._proxy(
             method='POST', base_url=cluster_url, path='api/rgw/realm/import_realm_token',
