@@ -52,6 +52,7 @@ formgroup: CdFormGroup;
 **/
 @Component({
   selector: 'cd-tearsheet',
+  standalone: false,
   templateUrl: './tearsheet.component.html',
   styleUrls: ['./tearsheet.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -138,6 +139,7 @@ export class TearsheetComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   closeWideTearsheet() {
+    this.closeRequested.emit();
     this.isOpen = false;
     if (this.hasModalOutlet) {
       this.location.back();
@@ -154,8 +156,13 @@ export class TearsheetComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   onNext() {
-    const formEl = document.querySelector('form');
-    formEl?.dispatchEvent(new Event('submit', { bubbles: true }));
+    const currentForm = this.stepContents?.toArray()?.[this.currentStep]?.stepComponent?.formGroup;
+    currentForm?.markAllAsTouched();
+    currentForm?.updateValueAndValidity({ emitEvent: true });
+    if (currentForm) {
+      this._updateStepInvalid(this.currentStep, currentForm.invalid);
+    }
+
     if (this.currentStep !== this.lastStep && !this.steps[this.currentStep].invalid) {
       this.currentStep = this.currentStep + 1;
       this.stepChanged.emit({ current: this.currentStep });
@@ -170,6 +177,15 @@ export class TearsheetComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   handleSubmit() {
+    this.stepContents?.forEach((wrapper, index) => {
+      const form = wrapper.stepComponent?.formGroup;
+      if (!form) return;
+
+      form.markAllAsTouched();
+      form.updateValueAndValidity({ emitEvent: true });
+      this._updateStepInvalid(index, form.invalid);
+    });
+
     if (this.steps.some((step) => step?.invalid)) return;
 
     const mergedPayloads = this.getMergedPayload();
