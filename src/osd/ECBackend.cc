@@ -1009,9 +1009,18 @@ int ECBackend::objects_read_sync(
     uint64_t len,
     uint32_t op_flags,
     bufferlist *bl) {
+  return -EOPNOTSUPP;
+}
+
+int ECBackend::objects_read_local(
+    const hobject_t &hoid,
+    uint64_t off,
+    uint64_t len,
+    uint32_t op_flags,
+    bufferlist *bl) {
 
   if (!sinfo.supports_direct_reads()) {
-    return -EOPNOTSUPP; // For exec calls
+    return -EOPNOTSUPP;
   }
 
   // Cannot return EAGAIN here: the op would get dropped.  This check must have
@@ -1020,7 +1029,6 @@ int ECBackend::objects_read_sync(
 
   auto [shard_offset, shard_len] = extent_to_shard_extent(off, len);
 
-
   dout(20) << __func__ << " Submitting sync read: "
       << " hoid=" << hoid
       << " shard_offset=" << shard_offset
@@ -1028,7 +1036,6 @@ int ECBackend::objects_read_sync(
       << " op_flags=" << op_flags
       << " primary=" << switcher->is_primary()
       << dendl;
-
 
   return switcher->store->read(switcher->ch,
           ghobject_t(hoid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
