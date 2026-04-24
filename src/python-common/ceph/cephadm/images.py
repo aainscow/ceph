@@ -31,7 +31,7 @@ class DefaultImages(Enum):
     NODE_EXPORTER = _create_image('registry.redhat.io/openshift4/ose-prometheus-node-exporter:v4.15', 'node_exporter')
     ALERTMANAGER = _create_image('registry.redhat.io/openshift4/ose-prometheus-alertmanager:v4.15', 'alertmanager')
     GRAFANA = _create_image('registry.redhat.io/rhceph/grafana-rhel10:v9.1', 'grafana')
-    HAPROXY = _create_image('registry.redhat.io/rhceph/rhceph-haproxy-rhel9:v9.1', 'haproxy')
+    HAPROXY = _create_image('registry.redhat.io/rhceph/rhceph-haproxy-rhel10:v9.1', 'haproxy')
     KEEPALIVED = _create_image('registry.redhat.io/rhceph/keepalived-rhel10:v9.1', 'keepalived')
     NVMEOF = _create_image('cp.icr.io/cp/ibm-ceph/nvmeof-rhel9:1.6', 'nvmeof')
     SNMP_GATEWAY = _create_image('registry.redhat.io/rhceph/snmp-notifier-rhel10:v9.1', 'snmp_gateway')
