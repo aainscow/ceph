@@ -5,11 +5,11 @@
   padding: 0;
 
   &-header {
-    margin: 0;
-    padding: var(--cds-spacing-05);
+    align-items: end;
     display: flex;
     justify-content: space-between;
-    align-items: end;
+    margin: 0;
+    padding: var(--cds-spacing-05);
   }
 
   &-section {

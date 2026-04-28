@@ -20,6 +20,14 @@ import { MgrModuleService } from '~/app/shared/api/mgr-module.service';
 import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { OverviewStorageService } from '~/app/shared/api/storage-overview.service';
+import { Component } from '@angular/core';
+
+@Component({
+  selector: 'cd-overview-alerts-card',
+  standalone: true,
+  template: ''
+})
+class MockOverviewAlertsCardComponent {}
 
 describe('OverviewComponent', () => {
   let component: OverviewComponent;
@@ -110,7 +118,16 @@ describe('OverviewComponent', () => {
         { provide: MgrModuleService, useValue: mockMgrModuleService },
         { provide: HardwareService, useValue: mockHardwareService }
       ]
-    }).compileComponents();
+    })
+      .overrideComponent(OverviewComponent, {
+        remove: {
+          imports: [OverviewAlertsCardComponent]
+        },
+        add: {
+          imports: [MockOverviewAlertsCardComponent]
+        }
+      })
+      .compileComponents();
 
     fixture = TestBed.createComponent(OverviewComponent);
     component = fixture.componentInstance;

@@ -124,7 +124,12 @@ export class OverviewStorageService {
     return this.prom.getPrometheusQueryData({ params: this.RAW_USED_BY_STORAGE_TYPE_QUERY });
   }
 
-  getThresholdStatus(total: number, used: number, nearfull: number, full: number): CapacityThreshold {
+  getThresholdStatus(
+    total: number,
+    used: number,
+    nearfull: number,
+    full: number
+  ): CapacityThreshold {
     if (!used || !total || !nearfull || !full) {
       return null;
     }
