@@ -2349,6 +2349,8 @@ int CrushWrapper::add_simple_rule_at(
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
   }
+  if (err)
+    *err << root;
   crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, root, 0);
   if (type)
     crush_rule_set_step(
@@ -2368,7 +2370,8 @@ int CrushWrapper::add_simple_rule_at(
 
   int ret = crush_add_rule(crush, rule, rno);
   if(ret < 0) {
-    *err << "failed to add rule " << rno << " because " << cpp_strerror(ret);
+    if (err)
+      *err << "failed to add rule " << rno << " because " << cpp_strerror(ret);
     free(rule);
     return ret;
   }
