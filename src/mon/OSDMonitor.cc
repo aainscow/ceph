@@ -11790,6 +11790,52 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 					      get_last_committed() + 1));
     return true;
 
+
+  } else if (prefix == "osd crush rule create-stretch-replicated") {
+    string name = cmd_getval_or<string>(cmdmap, "rule_name", "stretch_rule");
+    string root = cmd_getval_or<string>(cmdmap, "root", "default");
+    int num_zones = cmd_getval_or<int64_t>(cmdmap, "zones", 2);
+    int num_replica_per_zone = cmd_getval_or<int64_t>(cmdmap, "num_replica_per_zone", 2);
+    string zone_failure_domain = cmd_getval_or<string>(cmdmap, "zone_failure_domain", "datacenter");
+    string osd_failure_domain = cmd_getval_or<string>(cmdmap, "osd_failure_domain", "host");
+    bool force = false;
+    cmd_getval(cmdmap, "force", force);
+    string device_class;
+    cmd_getval(cmdmap, "class", device_class);
+
+    if (osdmap.crush->rule_exists(name)) {
+    // The name is uniquely associated to a ruleid and the rule it contains
+      // From the user point of view, the rule is more meaningfull.
+      ss << "rule " << name << " already exists";
+      err = 0;
+      goto reply_no_propose;
+    }
+
+    CrushWrapper newcrush = _get_pending_crush();
+
+    if (newcrush.rule_exists(name)) {
+      // The name is uniquely associated to a ruleid and the rule it contains
+      // From the user point of view, the rule is more meaningfull.
+      ss << "rule " << name << " already exists";
+      err = 0;
+    } else {
+      int ruleno = newcrush.add_simple_stretch_rule(
+	name, root, zone_failure_domain, osd_failure_domain, num_zones, num_osds_per_zone, device_class,
+	"firstn", pg_pool_t::TYPE_REPLICATED, force, &ss);
+      if (ruleno < 0) {
+	err = ruleno;
+	goto reply_no_propose;
+      }
+
+      pending_inc.crush.clear();
+      newcrush.encode(pending_inc.crush, mon.get_quorum_con_features());
+    }
+    getline(ss, rs);
+    wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs,
+					      get_last_committed() + 1));
+    return true;
+
+>>>>>>> d9bef9fcd36 (From https://github.com/ceph/ceph/pull/68666)
   } else if (prefix == "osd erasure-code-profile rm") {
     string name;
     cmd_getval(cmdmap, "name", name);
