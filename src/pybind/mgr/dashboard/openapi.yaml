@@ -16708,6 +16708,11 @@ paths:
         required: true
         schema:
           type: string
+      - default: ''
+        in: query
+        name: zone_name
+        schema:
+          type: string
       responses:
         '202':
           content:
