@@ -7890,26 +7890,35 @@ int OSDMonitor::prepare_pool_size(const unsigned pool_type,
 				  ostream *ss)
 {
   int err = 0;
-  bool set_min_size = false;
   switch (pool_type) {
   case pg_pool_t::TYPE_REPLICATED:
-    if (mon.monmap->global_stretch_mode_enabled) {
-      if (repl_size == 0)
-	repl_size = g_conf().get_val<uint64_t>("mon_stretch_pool_size");
-      if (repl_size != g_conf().get_val<uint64_t>("mon_stretch_pool_size")) {
+    // stretch pool
+    if (num_zones > 1) {
+      if (repl_size == 0) {
+        repl_size = g_conf().get_val<uint64_t>("mon_stretch_pool_size");
+      }
+      if (mon.monmap->global_stretch_mode_enabled && 
+        repl_size != g_conf().get_val<uint64_t>("mon_stretch_pool_size")) {
 	*ss << "prepare_pool_size: we are in global stretch mode but size "
 	   << repl_size << " does not match!";
 	return -EINVAL;
       }
-      *min_size = g_conf().get_val<uint64_t>("mon_stretch_pool_min_size");
-      set_min_size = true;
-    }
-    if (repl_size == 0) {
-      repl_size = g_conf().get_val<uint64_t>("osd_pool_default_size");
+
+      if (mon.monmap->global_stretch_mode_enabled) {
+        // Global stretch mode: use config default
+        *min_size = g_conf().get_val<uint64_t>("mon_stretch_pool_min_size");
+      } else {
+        // Stretch pool: default min_size to size/num_zones
+        *min_size = std::max<unsigned int>(1U, repl_size / num_zones);
+      }
+    } else {
+      if (repl_size == 0) {
+        repl_size = g_conf().get_val<uint64_t>("osd_pool_default_size");
+      }
+      // Regular pool: use config default
+      *min_size = g_conf().get_osd_pool_default_min_size(repl_size);
     }
     *size = repl_size;
-    if (!set_min_size)
-      *min_size = g_conf().get_osd_pool_default_min_size(repl_size);
     break;
   case pg_pool_t::TYPE_ERASURE:
     {
@@ -14162,7 +14171,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     int64_t k = 0, m = 0, num_zones = 1;
     cmd_getval(cmdmap, "k", k);
     cmd_getval(cmdmap, "m", m);
-    cmd_getval(cmdmap, "num_zones", num_zones);
+    bool has_num_zones = cmd_getval(cmdmap, "num_zones", num_zones);
 
     bool has_ec_params = (k > 0 && m > 0);
     bool has_profile = !erasure_code_profile.empty();
@@ -14191,6 +14200,16 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       ss << "num_zones must be >= 1";
       err = -EINVAL;
       goto reply_no_propose;
+    }
+ 
+    if (mon.monmap->global_stretch_mode_enabled) {
+      if(has_num_zones && num_zones != osdmap.stretch_bucket_count) {
+        ss << "num_zones " << num_zones << " must equal global stretch mode bucket count " << osdmap.stretch_bucket_count;
+        err = -EINVAL;
+        goto reply_no_propose;
+      } else {
+        num_zones = osdmap.stretch_bucket_count;
+      }
     }
 
     if (pool_type == pg_pool_t::TYPE_ERASURE) {
