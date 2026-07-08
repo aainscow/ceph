@@ -8750,21 +8750,13 @@ void OSDMonitor::maybe_teardown_cluster_stretch_mode(int64_t skip_pool)
       continue;
     }
     // Check pending pools
-    if (auto it = pending_inc.new_pools.find(pid);
-        it != pending_inc.new_pools.end()) {
-      if (it->second.peering_crush_bucket_count > 0 &&
-          it->second.peering_crush_bucket_target > 0) {
-        any_remaining = true;
-        break;
-          }
-      // pending update exists to clear stretch
-      continue;
-        }
-    if (committed_pool.peering_crush_bucket_count > 0 &&
-        committed_pool.peering_crush_bucket_target > 0) {
+    const auto it = pending_inc.new_pools.find(pid);
+    const auto& pp = (it != pending_inc.new_pools.end()) ? it->second : committed_pool;
+
+    if (pp.peering_crush_bucket_count > 0 && pp.peering_crush_bucket_target > 0) {
       any_remaining = true;
       break;
-        }
+    }
   }
 
   if (!any_remaining) {
@@ -8908,7 +8900,7 @@ int OSDMonitor::prepare_pool_num_zones_update(int64_t pool,
       return -EBUSY;
     }
     if (p->is_erasure() && mon.monmap->global_stretch_mode_enabled) {
-      ss << "cannot set num_zones=2 on an erasure coded pool in global stretch mode";
+      ss << "cannot set num_zones > 1 on an erasure coded pool in global stretch mode";
       return -EINVAL;
     }
 
