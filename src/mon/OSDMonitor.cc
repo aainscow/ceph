@@ -8915,8 +8915,9 @@ int OSDMonitor::prepare_pool_num_zones_update(int64_t pool,
     // Calculate the new size/min_size
     unsigned size = 0;
     unsigned min_size = 0;
+    unsigned replicas_per_zone = 0;
     if (p->is_replicated()) {
-      unsigned replicas_per_zone = p->size / current_num_zones;
+      replicas_per_zone = p->size / current_num_zones;
       size = replicas_per_zone * num_zones;
       min_size = p->min_size + replicas_per_zone * (num_zones - current_num_zones);
     } else {
@@ -8930,14 +8931,13 @@ int OSDMonitor::prepare_pool_num_zones_update(int64_t pool,
     string root = "default";
     string osd_failure_domain = "host";
     string device_class;
-    int num_replica_per_zone = 2;
     // For replicated pools pass an empty rule_name so the create path is taken:
     // For EC pools use "<pool_name>-stretch" so the stretch rule has a distinct name
     string rule_name = p->is_replicated() ? "" : pool_name + "-stretch";
     int crush_rule = -1;
     int r = prepare_pool_crush_rule(p->type, pool_name, p->erasure_code_profile,
                                     rule_name, num_zones, root,
-                                    num_replica_per_zone, zone_failure_domain,
+                                    replicas_per_zone, zone_failure_domain,
                                     osd_failure_domain, device_class,
                                     &crush_rule, &ss);
     if (r != 0) {
@@ -8984,8 +8984,9 @@ int OSDMonitor::prepare_pool_num_zones_update(int64_t pool,
 
     unsigned size = 0;
     unsigned min_size = 0;
+    unsigned replicas_per_zone = 0;
     if (p->is_replicated()) {
-      unsigned replicas_per_zone = p->size / current_num_zones;
+      replicas_per_zone = p->size / current_num_zones;
       size = replicas_per_zone * num_zones;
       min_size = p->min_size - replicas_per_zone * (current_num_zones - num_zones);
     } else {
@@ -8999,12 +9000,11 @@ int OSDMonitor::prepare_pool_num_zones_update(int64_t pool,
     string root = "default";
     string osd_failure_domain = "host";
     string device_class;
-    int num_replica_per_zone = 2;
     int crush_rule = -1;
     string restore_rule_name = p->is_replicated() ? "" : pool_name;
     int r = prepare_pool_crush_rule(p->type, pool_name, p->erasure_code_profile,
                                     restore_rule_name, 1, root,
-                                    num_replica_per_zone, zone_failure_domain,
+                                    replicas_per_zone, zone_failure_domain,
                                     osd_failure_domain, device_class,
                                     &crush_rule, &ss);
     if (r < 0) {
