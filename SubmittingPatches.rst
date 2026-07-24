@@ -68,6 +68,15 @@ then you just add a line saying ::
 
 using your real name (sorry, no pseudonyms or anonymous contributions).
 
+AI Assistance Disclosure
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+If your contribution was produced with the assistance of an AI coding tool,
+your ``Signed-off-by`` also certifies that you have disclosed this. See
+:doc:`/dev/developer_guide/ai-coding-assistants` for the full policy,
+including the required ``Assisted-by`` attribution tag format.
+
+
 Git can sign off on your behalf
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -81,6 +90,9 @@ following config options::
 Then just remember to use ``git commit -s``. Git will add the ``Signed-off-by``
 line automatically.
 
+**AI agents must not use** ``git commit -s``, ``git commit --signoff``, or any
+other mechanism — including tools, aliases, or hooks — that would cause git to
+add a ``Signed-off-by`` on their behalf, either directly or indirectly.
 
 Separate your changes
 ---------------------
