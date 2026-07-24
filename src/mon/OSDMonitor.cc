@@ -7639,6 +7639,7 @@ int OSDMonitor::crush_rule_create_replica(const string &name,
 
 int OSDMonitor::crush_rule_create_erasure(const string &name,
                int64_t num_zones,
+               const std::string &root,
                const std::string &zone_failure_domain,
                const std::string &osd_failure_domain,
                const std::string &device_class,
@@ -7672,7 +7673,7 @@ int OSDMonitor::crush_rule_create_erasure(const string &name,
       return err;
     }
 
-    err = erasure_code->create_rule(name, num_zones, 
+    err = erasure_code->create_rule(name, num_zones, root,
       zone_failure_domain, osd_failure_domain, device_class, newcrush, ss);
     erasure_code.reset();
     if (err < 0)
@@ -8109,6 +8110,7 @@ int OSDMonitor::prepare_pool_crush_rule(const unsigned pool_type,
       {
 	int err = crush_rule_create_erasure(rule_name,
                  num_zones,
+                 root,
                  zone_failure_domain,
                  osd_failure_domain,
                  device_class,
@@ -12299,7 +12301,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     }
 
     int rule;
-    err = crush_rule_create_erasure(name, num_zones, "", "", "", profile, &rule, &ss);
+    err = crush_rule_create_erasure(name, num_zones, "", "", "", "", profile, &rule, &ss);
     if (err < 0) {
       switch(err) {
       case -EEXIST: // return immediately
