@@ -543,7 +543,8 @@ private:
   int prepare_pool_size(const unsigned pool_type,
 			const std::string &erasure_code_profile,
                         uint8_t repl_size,
-			int64_t num_zones,
+			int &replica,
+			int64_t &num_zones,
 			unsigned *size, unsigned *min_size,
 			std::ostream *ss);
   int prepare_pool_stripe_width(const unsigned pool_type,
@@ -563,17 +564,18 @@ private:
 		       const float target_size_ratio,
 		       const std::string &erasure_code_profile,
 		       const std::string &root,
+           int64_t num_zones,
+		       int replica,
 		       int num_replica_per_zone,
 		       const std::string &zone_failure_domain,
 		       const std::string &osd_failure_domain,
 		       const std::string &device_class,
-                       const unsigned pool_type,
-                       const uint64_t expected_num_objects,
-                       FastReadType fast_read,
+           const unsigned pool_type,
+           const uint64_t expected_num_objects,
+           FastReadType fast_read,
 		       std::string pg_autoscale_mode,
 		       bool bulk,
 		       bool crimson,
-                       int64_t num_zones,
 		       std::ostream *ss);
   int prepare_new_pool(MonOpRequestRef op);
 
