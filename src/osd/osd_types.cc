@@ -1409,9 +1409,7 @@ static opt_mapping_t opt_mapping = boost::assign::map_list_of
 	   ("read_ratio", pool_opts_t::opt_desc_t(
              pool_opts_t::READ_RATIO, pool_opts_t::INT))
 	   ("pct_update_delay", pool_opts_t::opt_desc_t(
-             pool_opts_t::PCT_UPDATE_DELAY, pool_opts_t::INT))
-	   ("num_zones", pool_opts_t::opt_desc_t(
-             pool_opts_t::NUM_ZONES, pool_opts_t::INT));
+             pool_opts_t::PCT_UPDATE_DELAY, pool_opts_t::INT));
 
 bool pool_opts_t::is_opt_name(const std::string& name)
 {
@@ -1985,7 +1983,7 @@ void pg_pool_t::encode(ceph::buffer::list& bl, uint64_t features) const
     return;
   }
 
-  uint8_t v = 32;
+  uint8_t v = 33;
   // NOTE: any new encoding dependencies must be reflected by
   // SIGNIFICANT_FEATURES
   if (!HAVE_SIGNIFICANT_FEATURE(features, SERVER_TENTACLE)) {
@@ -2107,12 +2105,16 @@ void pg_pool_t::encode(ceph::buffer::list& bl, uint64_t features) const
   if (v >= 32) {
     encode(nonprimary_shards, bl);
   }
+  if (v >= 33) {
+    encode(replica, bl);
+    encode(num_zones, bl);
+  }
   ENCODE_FINISH(bl);
 }
 
 void pg_pool_t::decode(ceph::buffer::list::const_iterator& bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(32, 5, 5, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(33, 5, 5, bl);
   decode(type, bl);
   decode(size, bl);
   decode(crush_rule, bl);
@@ -2307,6 +2309,24 @@ void pg_pool_t::decode(ceph::buffer::list::const_iterator& bl)
     decode(nonprimary_shards, bl);
   } else {
     nonprimary_shards.clear();
+  }
+  if (struct_v >= 33) {
+    decode(replica, bl);
+    decode(num_zones, bl);
+  } else {
+    // Old pools that don't have num_zones and replica
+    if (is_stretch_pool()) {
+      // Stretch pool: infer num_zones from peering_crush_bucket_target
+      // we don't use peering_crush_bucket_count because there are some clusters
+      // that set peering_crush_bucket_count to less than the actual number of 
+      // zones in order to survive more failures without degraded stretch mode.
+      num_zones = peering_crush_bucket_target;
+      replica = size / num_zones;
+    } else {
+      // Non-stretch pool: single-zone, replica = size
+      num_zones = 1;
+      replica = size;
+    }
   }
   DECODE_FINISH(bl);
   calc_pg_masks();
