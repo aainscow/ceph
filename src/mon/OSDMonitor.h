@@ -782,7 +782,25 @@ public:
   void enable_pool_ec_direct_reads(pg_pool_t &p);
   int prepare_command_pool_set(const cmdmap_t& cmdmap,
                                std::stringstream& ss);
-
+  int prepare_command_pool_set_num_zones(const std::string& poolstr,
+                                         int64_t pool,
+                                         pg_pool_t p,
+                                         int64_t num_zones,
+                                         std::stringstream& ss);
+  int prepare_pool_num_zones_update(int64_t pool,
+                                    const std::string& pool_name,
+                                    pg_pool_t *p,
+                                    int64_t num_zones,
+                                    std::stringstream& ss);
+  void maybe_remove_unused_crush_rule(int64_t skip_pool, int old_rule_id);
+  void maybe_teardown_cluster_stretch_mode(int64_t skip_pool);
+  int validate_per_pool_stretch_mode(pg_pool_t *pool_ptr,
+                                     const std::string& zone_failure_domain,
+                                     int64_t num_zones,
+                                     std::ostream& ss);
+  void commit_per_pool_stretch_mode(pg_pool_t *pool_ptr,
+                                    const std::string& zone_failure_domain,
+                                    int64_t num_zones);
   int prepare_command_pool_application(const std::string &prefix,
                                        const cmdmap_t& cmdmap,
                                        std::stringstream& ss);
