@@ -7950,6 +7950,8 @@ int OSDMonitor::prepare_pool_size(const unsigned pool_type,
       *size = repl_size;
       if (!set_min_size)
         *min_size = g_conf().get_osd_pool_default_min_size(repl_size);
+      // Update replica to maintain invariant: size = num_zones * replica
+      replica = *size / num_zones;
     }
     break;
   case pg_pool_t::TYPE_ERASURE:
@@ -14536,7 +14538,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 
     string root = cmd_getval_or<string>(cmdmap, "root", "default");
     int replica = cmd_getval_or<int64_t>(cmdmap, "replica", 0);
-    int num_replica_per_zone = cmd_getval_or<int64_t>(cmdmap, "num_replica_per_zone", 2);
+    int num_replica_per_zone = cmd_getval_or<int64_t>(cmdmap, "replica", 2);
     string zone_failure_domain = cmd_getval_or<string>(cmdmap, "zone_failure_domain", "datacenter");
     string osd_failure_domain = cmd_getval_or<string>(cmdmap, "osd_failure_domain", "host");
     string device_class;
