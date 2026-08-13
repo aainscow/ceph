@@ -1441,6 +1441,8 @@ public:
   pg_shard_t primary;        ///< id/shard of primary
   pg_shard_t pg_whoami;      ///< my id/shard
   pg_shard_t up_primary;     ///< id/shard of primary of up set
+  /// zone to primary shard in that zone
+  std::map<int, pg_shard_t> zone_primaries;
   std::vector<int> up;            ///< crush mapping without temp pgs
   std::set<pg_shard_t> upset;     ///< up in set form
   std::vector<int> acting;        ///< actual acting set for the current interval
@@ -1727,6 +1729,11 @@ public:
     const OSDMapRef osdmap,
     const PGPool& pool,
     std::ostream &ss);
+
+  static std::map<int, pg_shard_t> calc_zone_primaries(
+    const std::vector<int> &acting,
+    const pg_pool_t &pool_info,
+    const OSDMapRef &osdmap);
 
 private:
 
@@ -2337,6 +2344,17 @@ public:
   }
   pg_shard_t get_primary() const {
     return primary;
+  }
+  const std::map<int, pg_shard_t> &get_zone_primaries() const {
+    return zone_primaries;
+  }
+
+  std::optional<pg_shard_t> get_zone_primary(int zone) const {
+    auto it = zone_primaries.find(zone);
+    if (it == zone_primaries.end()) {
+      return std::nullopt;
+    }
+    return it->second;
   }
   const std::vector<int> &get_up() const {
     return up;
