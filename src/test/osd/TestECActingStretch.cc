@@ -317,3 +317,173 @@ TEST_F(TestECActingStretch, ZoneIsolation_SingleOSDDown) {
   EXPECT_EQ(want[4], 4);
   EXPECT_EQ(want[5], 5);
 }
+
+// calc_zone_primaries Tests
+
+// Helper: compute zone IDs for OSDs
+static int dc_of(const OSDMapRef& osdmap, int osd, int rule)
+{
+  const pg_pool_t* p = osdmap->get_pg_pool(1);
+  return osdmap->crush->get_parent_of_type(
+    osd, p->peering_crush_bucket_barrier, rule);
+}
+
+/**
+ * Test: Full acting set
+ *
+ * Scenario: acting = [0, 1, 2, 3, 4, 5]  (shards 0-2 in dc0, shards 3-5 in dc1)
+ * Expected: zone_primaries = { dc0 → pg_shard_t(0, shard 0),
+ *                              dc1 → pg_shard_t(3, shard 3) }
+ */
+TEST_F(TestECActingStretch, ZonePrimary_EC_FullActingSet)
+{
+  const pg_pool_t* pool = osdmap->get_pg_pool(pool_id);
+  ASSERT_NE(pool, nullptr);
+
+  vector<int> acting = {0, 1, 2, 3, 4, 5};
+  auto result = PeeringState::calc_zone_primaries(acting, *pool, osdmap);
+
+  const int crush_rule = pool->crush_rule;
+  int dc0 = dc_of(osdmap, 0, crush_rule);
+  int dc1 = dc_of(osdmap, 3, crush_rule);
+  ASSERT_NE(dc0, dc1);
+
+  ASSERT_EQ(result.size(), 2u);
+
+  // Zone dc0: first shard is index 0, OSD 0
+  ASSERT_TRUE(result.count(dc0));
+  EXPECT_EQ(result[dc0].osd, 0);
+  EXPECT_EQ(result[dc0].shard, shard_id_t(0));
+
+  // Zone dc1: first shard is index 3, OSD 3
+  ASSERT_TRUE(result.count(dc1));
+  EXPECT_EQ(result[dc1].osd, 3);
+  EXPECT_EQ(result[dc1].shard, shard_id_t(3));
+}
+
+/**
+ * Test: Full acting mixed
+ *
+ * Scenario: acting = [2, 0, 1, 3, 5, 4]  (shards 0-2 in dc0, shards 3-5 in dc1)
+ * Expected: zone_primaries = { dc0 → pg_shard_t(0, shard 0),
+ *                              dc1 → pg_shard_t(3, shard 3) }
+ */
+TEST_F(TestECActingStretch, ZonePrimary_EC_FullActingMixed)
+{
+  const pg_pool_t* pool = osdmap->get_pg_pool(pool_id);
+  ASSERT_NE(pool, nullptr);
+
+  vector<int> acting = {2, 0, 1, 3, 5, 4};
+  auto result = PeeringState::calc_zone_primaries(acting, *pool, osdmap);
+
+  const int crush_rule = pool->crush_rule;
+  int dc0 = dc_of(osdmap, 2, crush_rule);
+  int dc1 = dc_of(osdmap, 3, crush_rule);
+  ASSERT_NE(dc0, dc1);
+
+  ASSERT_EQ(result.size(), 2u);
+
+  // Zone dc0: first shard is index 0, OSD 2
+  ASSERT_TRUE(result.count(dc0));
+  EXPECT_EQ(result[dc0].osd, 2);
+  EXPECT_EQ(result[dc0].shard, shard_id_t(0));
+
+  // Zone dc1: first shard is index 3, OSD 3
+  ASSERT_TRUE(result.count(dc1));
+  EXPECT_EQ(result[dc1].osd, 3);
+  EXPECT_EQ(result[dc1].shard, shard_id_t(3));
+}
+
+/**
+ * Test : CRUSH_ITEM_NONE gaps are skipped
+ *
+ * Scenario: acting = [CRUSH_ITEM_NONE, 1, 2, CRUSH_ITEM_NONE, 4, 5]
+ * shard 1 and 4 marked as nonprimary
+ * Expected: zone_primaries = { dc0 → pg_shard_t(2, shard 2)
+ *                              dc1 → pg_shard_t(5, shard 5) }
+ */
+TEST_F(TestECActingStretch, ZonePrimary_EC_CrushItemNoneSkipped)
+{
+  const pg_pool_t* pool = osdmap->get_pg_pool(pool_id);
+  ASSERT_NE(pool, nullptr);
+
+  // mark shards 1 and 4 nonprimary
+  pg_pool_t pool_with_nonprimary = *pool;
+  pool_with_nonprimary.nonprimary_shards.insert(shard_id_t(1));
+  pool_with_nonprimary.nonprimary_shards.insert(shard_id_t(4));
+
+  vector<int> acting = {CRUSH_ITEM_NONE, 1, 2, CRUSH_ITEM_NONE, 4, 5};
+  auto result = PeeringState::calc_zone_primaries(acting, pool_with_nonprimary, osdmap);
+
+  const int crush_rule = pool->crush_rule;
+  int dc0 = dc_of(osdmap, 2, crush_rule);
+  int dc1 = dc_of(osdmap, 5, crush_rule);
+
+  ASSERT_EQ(result.size(), 2u);
+
+  ASSERT_TRUE(result.count(dc0));
+  EXPECT_EQ(result[dc0].osd, 2);
+  EXPECT_EQ(result[dc0].shard, shard_id_t(2));
+
+  ASSERT_TRUE(result.count(dc1));
+  EXPECT_EQ(result[dc1].osd, 5);
+  EXPECT_EQ(result[dc1].shard, shard_id_t(5));
+}
+
+/**
+ * Test : One Site Degraded
+ *
+ * Scenario: acting = [CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, 3, 4, 5]
+ * Expected: zone_primaries = { dc1 → pg_shard_t(3, shard 3) }
+ */
+TEST_F(TestECActingStretch, ZonePrimary_One_Site_Degraded)
+{
+  const pg_pool_t* pool = osdmap->get_pg_pool(pool_id);
+  ASSERT_NE(pool, nullptr);
+
+  // mark shards 1 and 4 nonprimary
+  pg_pool_t pool_with_nonprimary = *pool;
+  pool_with_nonprimary.nonprimary_shards.insert(shard_id_t(1));
+  pool_with_nonprimary.nonprimary_shards.insert(shard_id_t(4));
+
+  vector<int> acting = {CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, 3, 4, 5};
+  auto result = PeeringState::calc_zone_primaries(acting, pool_with_nonprimary, osdmap);
+
+  const int crush_rule = pool->crush_rule;
+  int dc1 = dc_of(osdmap, 3, crush_rule);
+
+  ASSERT_EQ(result.size(), 1u);
+
+  ASSERT_TRUE(result.count(dc1));
+  EXPECT_EQ(result[dc1].osd, 3);
+  EXPECT_EQ(result[dc1].shard, shard_id_t(3));
+}
+
+/**
+ * Test : One Site Degraded and one OSD down
+ *
+ * Scenario: acting = [CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, 5, 4]
+ * Expected: zone_primaries = { dc1 → pg_shard_t(4, shard 5) }
+ */
+TEST_F(TestECActingStretch, ZonePrimary_One_Site_Degraded_One_OSD_Down)
+{
+  const pg_pool_t* pool = osdmap->get_pg_pool(pool_id);
+  ASSERT_NE(pool, nullptr);
+
+  // mark shards 1 and 4 nonprimary
+  pg_pool_t pool_with_nonprimary = *pool;
+  pool_with_nonprimary.nonprimary_shards.insert(shard_id_t(1));
+  pool_with_nonprimary.nonprimary_shards.insert(shard_id_t(4));
+
+  vector<int> acting = {CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, 5, 4};
+  auto result = PeeringState::calc_zone_primaries(acting, pool_with_nonprimary, osdmap);
+
+  const int crush_rule = pool->crush_rule;
+  int dc1 = dc_of(osdmap, 4, crush_rule);
+
+  ASSERT_EQ(result.size(), 1u);
+
+  ASSERT_TRUE(result.count(dc1));
+  EXPECT_EQ(result[dc1].osd, 4);
+  EXPECT_EQ(result[dc1].shard, shard_id_t(5));
+}
