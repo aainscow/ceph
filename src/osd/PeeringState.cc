@@ -943,6 +943,28 @@ void PeeringState::on_new_interval()
   pl->on_new_interval();
 }
 
+std::map<int, pg_shard_t> PeeringState::calc_zone_primaries(
+  const vector<int> &acting,
+  const pg_pool_t &pool_info,
+  const OSDMapRef &osdmap)
+{
+  std::map<int, pg_shard_t> result;
+  for (uint8_t i = 0; i < acting.size(); ++i) {
+    if (acting[i] == CRUSH_ITEM_NONE)
+      continue;
+    const shard_id_t shard = pool_info.is_erasure()
+      ? shard_id_t(i) : shard_id_t::NO_SHARD;
+    if (pool_info.is_nonprimary_shard(shard))
+      continue;
+    const int zone = osdmap->crush->get_parent_of_type(
+      acting[i],
+      pool_info.peering_crush_bucket_barrier,
+      pool_info.crush_rule);
+    result.try_emplace(zone, pg_shard_t(acting[i], shard));
+  }
+  return result;
+}
+
 void PeeringState::init_primary_up_acting(
   const vector<int> &newup,
   const vector<int> &newacting,
@@ -967,6 +989,7 @@ void PeeringState::init_primary_up_acting(
 	  up[i],
 	  pool.info.is_erasure() ? shard_id_t(i) : shard_id_t::NO_SHARD));
   }
+  const OSDMapRef osdmap = get_osdmap();
   if (!pool.info.is_erasure()) {
     // replicated
     up_primary = pg_shard_t(new_up_primary, shard_id_t::NO_SHARD);
@@ -986,7 +1009,6 @@ void PeeringState::init_primary_up_acting(
     // the acting_set. Use pgtemp ordering (which places shards which
     // can become the primary first) to match the code in
     // OSDMap::_get_temp_osds
-    const OSDMapRef osdmap = get_osdmap();
     bool has_pgtemp = osdmap->has_pgtemp(spgid.pgid);
     std::vector<int> pg_temp = acting;
     if (has_pgtemp) {
@@ -1006,6 +1028,10 @@ void PeeringState::init_primary_up_acting(
     }
     ceph_assert(up_primary.osd == new_up_primary);
     ceph_assert(primary.osd == new_acting_primary);
+  }
+  zone_primaries.clear();
+  if (pool.info.is_stretch_pool()) {
+    zone_primaries = calc_zone_primaries(acting, pool.info, osdmap);
   }
 }
 
