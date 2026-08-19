@@ -22,6 +22,7 @@
 #include "include/buffer.h"
 #include "os/ObjectStore.h"
 #include "boost/tuple/tuple.hpp"
+#include "osd/PGTransaction.h"
 
 struct ECSubWrite {
   pg_shard_t from;
@@ -155,6 +156,58 @@ struct ECSubReadReply {
 };
 WRITE_CLASS_ENCODER(ECSubReadReply)
 
+struct ECZoneReplicateOp {
+  pg_shard_t from;
+  ceph_tid_t tid;
+  osd_reqid_t reqid;
+  hobject_t soid;
+  pg_stat_t stats;
+  std::shared_ptr<PGTransaction> t;
+  eversion_t at_version;
+  eversion_t trim_to;
+  eversion_t pg_committed_to;
+  std::vector<pg_log_entry_t> log_entries;
+  std::set<hobject_t> temp_added;
+  std::set<hobject_t> temp_removed;
+  std::optional<pg_hit_set_history_t> updated_hit_set_history;
+
+  ECZoneReplicateOp() : tid(0) {}
+  ECZoneReplicateOp(
+  pg_shard_t from,
+  ceph_tid_t tid,
+  osd_reqid_t reqid,
+  hobject_t soid,
+  const pg_stat_t &stats,
+  std::shared_ptr<PGTransaction> t,
+  eversion_t at_version,
+  eversion_t trim_to,
+  eversion_t pg_committed_to,
+  std::vector<pg_log_entry_t> log_entries,
+  std::optional<pg_hit_set_history_t> updated_hit_set_history,
+  const std::set<hobject_t> &temp_added,
+  const std::set<hobject_t> &temp_removed)
+  : from(from), tid(tid), reqid(reqid),
+    soid(soid), stats(stats), t(std::move(t)),
+    at_version(at_version),
+    trim_to(trim_to), pg_committed_to(pg_committed_to),
+    log_entries(log_entries),
+    temp_added(temp_added),
+    temp_removed(temp_removed),
+    updated_hit_set_history(updated_hit_set_history)
+  {}
+
+  ECZoneReplicateOp(const ECZoneReplicateOp &) = delete;
+  ECZoneReplicateOp &operator=(const ECZoneReplicateOp &) = delete;
+  ECZoneReplicateOp(ECZoneReplicateOp &&) = default;
+  ECZoneReplicateOp &operator=(ECZoneReplicateOp &&) = default;
+
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+  void dump(ceph::Formatter *f) const;
+  static std::list<ECZoneReplicateOp> generate_test_instances();
+};
+WRITE_CLASS_ENCODER(ECZoneReplicateOp)
+
 std::ostream &operator<<(
   std::ostream &lhs, const ECSubWrite &rhs);
 std::ostream &operator<<(
@@ -163,10 +216,13 @@ std::ostream &operator<<(
   std::ostream &lhs, const ECSubRead &rhs);
 std::ostream &operator<<(
   std::ostream &lhs, const ECSubReadReply &rhs);
+std::ostream &operator<<(
+  std::ostream &lhs, const ECZoneReplicateOp &rhs);
 
 template <> struct fmt::formatter<ECSubWrite> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<ECSubWriteReply> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<ECSubRead> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<ECSubReadReply> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<ECZoneReplicateOp> : fmt::ostream_formatter {};
 
 #endif
