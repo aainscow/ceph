@@ -627,3 +627,171 @@ list<ECSubReadReply> ECSubReadReply::generate_test_instances()
   o.back().errors[hoid1] = -2;
   return o;
 }
+
+// ---------------------------------------------------------------------------
+// ECZoneReplicateOp
+// ---------------------------------------------------------------------------
+
+void ECZoneReplicateOp::encode(ceph::buffer::list &bl) const
+{
+  // PGTransaction serialisation delegates to PGTransaction::encode; we
+  // encode it into the same bufferlist since ECZoneReplicateOp is used
+  // inside MOSDECZoneReplicate which splits payload/data separately.
+  ENCODE_START(1, 1, bl);
+  encode(from, bl);
+  encode(tid, bl);
+  encode(reqid, bl);
+  encode(soid, bl);
+  encode(stats, bl);
+  // PGTransaction: serialise presence flag then content
+  bool has_t = (t != nullptr);
+  encode(has_t, bl);
+  if (has_t) {
+    t->encode(bl);
+  }
+  encode(at_version, bl);
+  encode(trim_to, bl);
+  encode(pg_committed_to, bl);
+  encode(log_entries, bl);
+  encode(temp_added, bl);
+  encode(temp_removed, bl);
+  encode(updated_hit_set_history, bl);
+  ENCODE_FINISH(bl);
+}
+
+void ECZoneReplicateOp::decode(ceph::buffer::list::const_iterator &bl)
+{
+  DECODE_START(1, bl);
+  decode(from, bl);
+  decode(tid, bl);
+  decode(reqid, bl);
+  decode(soid, bl);
+  decode(stats, bl);
+  bool has_t = false;
+  decode(has_t, bl);
+  if (has_t) {
+    t = std::make_shared<PGTransaction>();
+    t->decode(bl);
+  } else {
+    t.reset();
+  }
+
+  decode(at_version, bl);
+  decode(trim_to, bl);
+  decode(pg_committed_to, bl);
+  decode(log_entries, bl);
+  decode(temp_added, bl);
+  decode(temp_removed, bl);
+  decode(updated_hit_set_history, bl);
+  DECODE_FINISH(bl);
+}
+
+void ECZoneReplicateOp::dump(ceph::Formatter *f) const
+{
+  f->dump_stream("from") << from;
+  f->dump_unsigned("tid", tid);
+  f->dump_stream("reqid") << reqid;
+  f->dump_stream("soid") << soid;
+  f->dump_stream("at_version") << at_version;
+  f->dump_stream("trim_to") << trim_to;
+  f->dump_stream("pg_committed_to") << pg_committed_to;
+  f->dump_bool("has_transaction", t != nullptr);
+  f->dump_bool("has_updated_hit_set_history",
+               static_cast<bool>(updated_hit_set_history));
+}
+
+std::ostream &operator<<(std::ostream &lhs, const ECZoneReplicateOp &rhs)
+{
+  lhs << "ECZoneReplicateOp(tid=" << rhs.tid
+      << ", reqid=" << rhs.reqid
+      << ", at_version=" << rhs.at_version
+      << ", trim_to=" << rhs.trim_to
+      << ", pg_committed_to=" << rhs.pg_committed_to;
+  if (rhs.updated_hit_set_history)
+    lhs << ", has_updated_hi_set_history";
+  return lhs << ")";
+}
+
+list<ECZoneReplicateOp> ECZoneReplicateOp::generate_test_instances()
+{
+  std::list<ECZoneReplicateOp> o;
+
+  // Instance 1: minimal — no transaction, no log entries, no hit-set history
+  o.emplace_back();
+  o.back().from = pg_shard_t(0, shard_id_t(0));
+  o.back().tid = 1;
+  o.back().at_version = eversion_t(1, 10);
+  o.back().trim_to = eversion_t(1, 5);
+  o.back().pg_committed_to = eversion_t(1, 5);
+
+  // Instance 2: transaction with a Create init and a Write buffer update
+  o.emplace_back();
+  o.back().from = pg_shard_t(1, shard_id_t(1));
+  o.back().tid = 2;
+  o.back().reqid = osd_reqid_t(entity_name_t::CLIENT(42), 1, 100);
+  o.back().soid = hobject_t(sobject_t("obj1", CEPH_NOSNAP));
+  o.back().at_version = eversion_t(2, 20);
+  o.back().trim_to = eversion_t(1, 10);
+  o.back().pg_committed_to = eversion_t(2, 15);
+  {
+    auto t = std::make_shared<PGTransaction>();
+    hobject_t hoid(sobject_t("obj1", CEPH_NOSNAP));
+    t->create(hoid);
+    ceph::buffer::list bl;
+    bl.append_zero(64);
+    t->write(hoid, 0, 64, bl);
+    o.back().t = std::move(t);
+  }
+  o.back().log_entries.push_back(
+    pg_log_entry_t(pg_log_entry_t::MODIFY,
+                   hobject_t(sobject_t("obj1", CEPH_NOSNAP)),
+                   eversion_t(2, 20), eversion_t(1, 10), 1,
+                   osd_reqid_t(entity_name_t::CLIENT(42), 1, 100),
+                   utime_t(1, 0), 0));
+
+  // Instance 3: transaction with a Clone init and a Zero buffer update
+  o.emplace_back();
+  o.back().from = pg_shard_t(0, shard_id_t(0));
+  o.back().tid = 3;
+  o.back().at_version = eversion_t(3, 30);
+  o.back().trim_to = eversion_t(2, 20);
+  o.back().pg_committed_to = eversion_t(3, 25);
+  {
+    auto t = std::make_shared<PGTransaction>();
+    hobject_t src(sobject_t("obj1", CEPH_NOSNAP));
+    hobject_t dst(sobject_t("obj1", snapid_t(1)));
+    t->clone(dst, src);
+    t->zero(dst, 0, 32);
+    o.back().t = std::move(t);
+  }
+
+  // Instance 4: transaction with a CloneRange buffer update + omap updates
+  //             + attr updates + optional hit-set history
+  o.emplace_back();
+  o.back().from = pg_shard_t(2, shard_id_t(2));
+  o.back().tid = 4;
+  o.back().reqid = osd_reqid_t(entity_name_t::CLIENT(99), 1, 200);
+  o.back().at_version = eversion_t(4, 40);
+  o.back().trim_to = eversion_t(3, 30);
+  o.back().pg_committed_to = eversion_t(4, 35);
+  {
+    auto t = std::make_shared<PGTransaction>();
+    hobject_t src(sobject_t("src", CEPH_NOSNAP));
+    hobject_t dst(sobject_t("dst", CEPH_NOSNAP));
+    t->create(dst);
+    t->clone_range(src, dst, 0, 128, 0);
+    std::map<std::string, ceph::buffer::list> omap;
+    ceph::buffer::list val;
+    val.append("value");
+    omap["key"] = val;
+    t->omap_setkeys(dst, omap);
+    ceph::buffer::list attr_val;
+    attr_val.append("attrval");
+    t->setattr(dst, "xattr1", attr_val);
+    o.back().t = std::move(t);
+  }
+  o.back().updated_hit_set_history = pg_hit_set_history_t();
+  o.back().updated_hit_set_history->current_last_update = eversion_t(4, 40);
+
+  return o;
+}
