@@ -501,9 +501,10 @@ public:
     std::string& key_begin,        ///< [in] first key in range
     std::string& key_end           ///< [in] first key past range, range is [first,last)
     ) {
+    using ceph::encode;
     ceph::buffer::list bl;
-    ::encode(key_begin, bl);
-    ::encode(key_end, bl);
+    encode(key_begin, bl);
+    encode(key_end, bl);
     omap_rmkeyrange(hoid, bl);
   }
   void omap_setheader(
@@ -600,6 +601,19 @@ public:
       }
     }
   }
+
+  // Encode/decode op_map for inter-zone replication.
+  // obc_map is NOT encoded — it holds live pointers the receiver reconstructs locally.
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+
+private:
+  // Wire discriminant for InitType — values must remain stable.
+  enum class InitTag : uint8_t { None = 0, Create = 1, Clone = 2, Rename = 3 };
+
+  static void encode_op(const ObjectOperation &op, ceph::buffer::list &bl);
+  static void decode_op(ObjectOperation &op,
+                        ceph::buffer::list::const_iterator &bl);
 };
 using PGTransactionUPtr = std::unique_ptr<PGTransaction>;
 
