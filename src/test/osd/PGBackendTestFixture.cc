@@ -18,6 +18,7 @@
 #include "crush/CrushWrapper.h"
 #include "messages/MOSDECSubOpWrite.h"
 #include "messages/MOSDECSubOpWriteReply.h"
+#include "messages/MOSDECZoneReplicate.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "messages/MOSDECSubOpReadReply.h"
 #include "messages/MOSDRepOp.h"
@@ -235,6 +236,7 @@ void PGBackendTestFixture::setup_ec_pool()
   // Register typed handlers for all EC message types
   make_backend_handler.template operator()<MOSDECSubOpWrite>(MSG_OSD_EC_WRITE);
   make_backend_handler.template operator()<MOSDECSubOpWriteReply>(MSG_OSD_EC_WRITE_REPLY);
+  make_backend_handler.template operator()<MOSDECZoneReplicate>(MSG_OSD_EC_ZONE_REPLICATE);
   make_backend_handler.template operator()<MOSDECSubOpRead>(MSG_OSD_EC_READ);
   make_backend_handler.template operator()<MOSDECSubOpReadReply>(MSG_OSD_EC_READ_REPLY);
   make_backend_handler.template operator()<MOSDPGPush>(MSG_OSD_PG_PUSH);
