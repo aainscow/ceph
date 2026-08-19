@@ -1031,7 +1031,11 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op) {
 // zone messages without being moved-from on the first iteration.
 // pg_txn may be nullptr for ECDummyOp (roll-forward)
 void ECCommon::RMWPipeline::build_zone_replicate_msgs(Op &op, 
+<<<<<<< HEAD
                                                       const std::map<int, pg_shard_t> &zone_primaries,
+=======
+                                                      const mini_flat_map<int, pg_shard_t> &zone_primaries,
+>>>>>>> 722b1a7e9ee (osd: Send ECZoneReplicate msg from primary to zone primary)
                                                       const shard_id_set &remote_zone_shards,
                                                       std::vector<std::pair<int, Message*>> &messages) {
   if (!remote_zone_shards.empty()) {
@@ -1122,7 +1126,6 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   shard_id_set remote_zone_shards;
 
   if (get_parent()->get_pool().supports_zone_replicate() && 
-      !op.is_zone_replicate() && 
       sinfo.get_num_zones() > 1 && 
       !zone_primaries.empty()) {
     const pg_shard_t whoami = get_parent()->whoami_shard();
