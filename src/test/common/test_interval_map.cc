@@ -409,6 +409,40 @@ TYPED_TEST(IntervalMapTest, print) {
   }
 }
 
+TYPED_TEST(IntervalMapTest, size) {
+  USING_NO_MERGE;
+  imap m;
+
+  ASSERT_EQ(0u, m.size());
+
+  m.insert(0, 5, gen(5));
+  ASSERT_EQ(1u, m.size());
+
+  m.insert(10, 5, gen(5));
+  ASSERT_EQ(2u, m.size());
+
+  m.insert(20, 5, gen(5));
+  ASSERT_EQ(3u, m.size());
+
+  m.erase(10, 5);
+  ASSERT_EQ(2u, m.size());
+
+  m.clear();
+  ASSERT_EQ(0u, m.size());
+}
+
+TYPED_TEST(IntervalMapTest, size_merge) {
+  USING_WITH_MERGE;
+  imap m;
+
+  m.insert(0, 5, gen(5));
+  ASSERT_EQ(1u, m.size());
+
+  // adjacent insert that can be merged collapses into one segment
+  m.insert(5, 5, gen(5));
+  ASSERT_EQ(1u, m.size());
+}
+
 /* This test does nothing unless nonconst_iterator is set on the interval map
  * If it is set, then the simple fact that append_zero() compiles means that
  * the non-const iterator has been enabled and used. The test then checks that
