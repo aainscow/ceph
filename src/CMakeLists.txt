@@ -544,6 +544,7 @@ set(libcommon_files
   mon/PGMap.cc
   mgr/ServiceMap.cc
   osd/ECMsgTypes.cc
+  osd/PGTransaction.cc
   osd/HitSet.cc
   osd/OSDMap.cc
   osd/OSDMapMapping.cc

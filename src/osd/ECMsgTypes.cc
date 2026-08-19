@@ -477,3 +477,87 @@ list<ECSubReadReply> ECSubReadReply::generate_test_instances()
   o.back().errors[hoid1] = -2;
   return o;
 }
+
+// ---------------------------------------------------------------------------
+// ECZoneReplicateOp
+// ---------------------------------------------------------------------------
+
+void ECZoneReplicateOp::encode(ceph::buffer::list &bl) const
+{
+  // PGTransaction serialisation delegates to PGTransaction::encode; we
+  // encode it into the same bufferlist since ECZoneReplicateOp is used
+  // inside MOSDECZoneReplicate which splits payload/data separately.
+  ENCODE_START(1, 1, bl);
+  encode(from, bl);
+  encode(tid, bl);
+  encode(reqid, bl);
+  encode(soid, bl);
+  encode(stats, bl);
+  // PGTransaction: serialise presence flag then content
+  bool has_t = (t != nullptr);
+  encode(has_t, bl);
+  if (has_t) {
+    t->encode(bl);
+  }
+  encode(at_version, bl);
+  encode(trim_to, bl);
+  encode(pg_committed_to, bl);
+  encode(log_entries, bl);
+  encode(temp_added, bl);
+  encode(temp_removed, bl);
+  encode(updated_hit_set_history, bl);
+  ENCODE_FINISH(bl);
+}
+
+void ECZoneReplicateOp::decode(ceph::buffer::list::const_iterator &bl)
+{
+  DECODE_START(1, bl);
+  decode(from, bl);
+  decode(tid, bl);
+  decode(reqid, bl);
+  decode(soid, bl);
+  decode(stats, bl);
+  bool has_t = false;
+  decode(has_t, bl);
+  if (has_t) {
+    t = std::make_unique<PGTransaction>();
+    t->decode(bl);
+  } else {
+    t.reset();
+  }
+
+  decode(at_version, bl);
+  decode(trim_to, bl);
+  decode(pg_committed_to, bl);
+  decode(log_entries, bl);
+  decode(temp_added, bl);
+  decode(temp_removed, bl);
+  decode(updated_hit_set_history, bl);
+  DECODE_FINISH(bl);
+}
+
+void ECZoneReplicateOp::dump(ceph::Formatter *f) const
+{
+  f->dump_stream("from") << from;
+  f->dump_unsigned("tid", tid);
+  f->dump_stream("reqid") << reqid;
+  f->dump_stream("soid") << soid;
+  f->dump_stream("at_version") << at_version;
+  f->dump_stream("trim_to") << trim_to;
+  f->dump_stream("pg_committed_to") << pg_committed_to;
+  f->dump_bool("has_transaction", t != nullptr);
+  f->dump_bool("has_updated_hit_set_history",
+               static_cast<bool>(updated_hit_set_history));
+}
+
+std::ostream &operator<<(std::ostream &lhs, const ECZoneReplicateOp &rhs)
+{
+  lhs << "ECZoneReplicateOp(tid=" << rhs.tid
+      << ", reqid=" << rhs.reqid
+      << ", at_version=" << rhs.at_version
+      << ", trim_to=" << rhs.trim_to
+      << ", pg_committed_to=" << rhs.pg_committed_to;
+  if (rhs.updated_hit_set_history)
+    lhs << ", has_updated_hi_set_history";
+  return lhs << ")";
+}
