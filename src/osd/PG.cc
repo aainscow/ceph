@@ -41,6 +41,7 @@
 #include "messages/MOSDPGPull.h"
 #include "messages/MOSDECSubOpWrite.h"
 #include "messages/MOSDECSubOpWriteReply.h"
+#include "messages/MOSDECZoneReplicate.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "messages/MOSDECSubOpReadReply.h"
 #include "messages/MOSDPGUpdateLogMissing.h"
@@ -2084,6 +2085,8 @@ bool PG::can_discard_request(OpRequestRef& op)
     return can_discard_replica_op<MOSDECSubOpWrite, MSG_OSD_EC_WRITE>(op);
   case MSG_OSD_EC_WRITE_REPLY:
     return can_discard_replica_op<MOSDECSubOpWriteReply, MSG_OSD_EC_WRITE_REPLY>(op);
+  case MSG_OSD_EC_ZONE_REPLICATE:
+    return can_discard_replica_op<MOSDECZoneReplicate, MSG_OSD_EC_ZONE_REPLICATE>(op);
   case MSG_OSD_EC_READ:
     return can_discard_replica_op<MOSDECSubOpRead, MSG_OSD_EC_READ>(op);
   case MSG_OSD_EC_READ_REPLY:
