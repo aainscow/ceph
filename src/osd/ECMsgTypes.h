@@ -195,7 +195,7 @@ struct ECZoneReplicateOp {
     temp_removed(temp_removed),
     updated_hit_set_history(updated_hit_set_history)
   {}
-
+  
   ECZoneReplicateOp(const ECZoneReplicateOp &) = delete;
   ECZoneReplicateOp &operator=(const ECZoneReplicateOp &) = delete;
   ECZoneReplicateOp(ECZoneReplicateOp &&) = default;
