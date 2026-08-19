@@ -655,6 +655,14 @@ public:
     }
   }
 
+  const mini_flat_map<int, pg_shard_t> &get_zone_primaries() const override {
+    if (peering_state) {
+      return peering_state->get_zone_primaries();
+    }
+    static const mini_flat_map<int, pg_shard_t> empty(0);
+    return empty;
+  }
+
   uint64_t min_peer_features() const override {
     if (peering_state) {
       return peering_state->get_min_peer_features();

@@ -625,6 +625,11 @@ struct ECCommon {
           shard_id_t shard,
           ceph::os::Transaction &transaction) = 0;
 
+      /// Moves the raw PGTransaction out so cache_ready() can forward it to a
+      /// remote Zone Primary via MOSDECZoneReplicate.  Returns nullptr for op
+      /// types that carry no PGTransaction.
+      virtual PGTransactionUPtr move_pg_transaction() { return nullptr; }
+
       void cache_ready(const hobject_t &oid, const ECUtil::shard_extent_map_t &result) {
         if (!result.empty()) {
           remote_shard_extent_map.insert(std::pair(oid, result));
@@ -683,6 +688,10 @@ struct ECCommon {
     eversion_t completed_to;
     eversion_t committed_to;
     void start_rmw(OpRef op);
+    void build_zone_replicate_msgs(Op &op, 
+                                   const mini_flat_map<int, pg_shard_t> &zone_primaries,
+                                   const shard_id_set &remote_zone_shards,
+                                   std::vector<std::pair<int, Message*>> &messages);
     void cache_ready(Op &op);
     void try_finish_rmw();
     void finish_rmw(OpRef const &op);
