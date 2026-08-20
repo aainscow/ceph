@@ -24,6 +24,7 @@
 #include "messages/MOSDECSubOpWriteReply.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "messages/MOSDECSubOpReadReply.h"
+#include "messages/MOSDECZoneReplicate.h"
 #include "common/debug.h"
 #include "ECMsgTypes.h"
 #include "ECTypes.h"
@@ -258,6 +259,14 @@ bool ECBackend::_handle_message(
   dout(10) << __func__ << ": " << *_op->get_req() << dendl;
   int priority = _op->get_req()->get_priority();
   switch (_op->get_req()->get_type()) {
+  case MSG_OSD_EC_ZONE_REPLICATE: {
+    // NOTE: non-const because we std::move the PGTransaction out of the wire
+    // struct into the pipeline op.
+    MOSDECZoneReplicate *op = static_cast<MOSDECZoneReplicate*>(
+      _op->get_nonconst_req());
+    handle_zone_replicate(op->op.from, _op, op->op, _op->pg_trace);
+    return true;
+  }
   case MSG_OSD_EC_WRITE: {
     // NOTE: this is non-const because handle_sub_write modifies the embedded
     // ObjectStore::Transaction in place (and then std::move's it).  It does
@@ -334,27 +343,29 @@ struct SubWriteCommitted : public Context {
   eversion_t version;
   eversion_t last_complete;
   const ZTracer::Trace trace;
-
+  pg_shard_t reply_to;
   SubWriteCommitted(
     ECBackend *pg,
     OpRequestRef msg,
     ceph_tid_t tid,
     eversion_t version,
     eversion_t last_complete,
-    const ZTracer::Trace &trace)
+    const ZTracer::Trace &trace,
+    pg_shard_t reply_to)
     : pg(pg), msg(msg), tid(tid),
-      version(version), last_complete(last_complete), trace(trace) {}
+      version(version), last_complete(last_complete), 
+      trace(trace), reply_to(reply_to) {}
 
   void finish(int) override {
     if (msg)
       msg->mark_event("sub_op_committed");
-    pg->sub_write_committed(tid, version, last_complete, trace);
+    pg->sub_write_committed(tid, version, last_complete, trace, reply_to);
   }
 };
 
 void ECBackend::sub_write_committed(
   ceph_tid_t tid, eversion_t version, eversion_t last_complete,
-  const ZTracer::Trace &trace) {
+  const ZTracer::Trace &trace, pg_shard_t reply_to) {
   if (get_parent()->pgb_is_primary()) {
     ECSubWriteReply reply;
     reply.tid = tid;
@@ -368,7 +379,7 @@ void ECBackend::sub_write_committed(
   } else {
     get_parent()->update_last_complete_ondisk(last_complete);
     MOSDECSubOpWriteReply *r = new MOSDECSubOpWriteReply;
-    r->pgid = get_parent()->primary_spg_t();
+    r->pgid = spg_t(get_parent()->primary_spg_t().pgid, reply_to.shard);
     r->map_epoch = switcher->get_osdmap_epoch();
     r->min_epoch = get_parent()->get_interval_start_epoch();
     r->op.tid = tid;
@@ -380,7 +391,7 @@ void ECBackend::sub_write_committed(
     r->trace = trace;
     r->trace.event("sending sub op commit");
     get_parent()->send_message_osd_cluster(
-      get_parent()->primary_shard().osd, r, switcher->get_osdmap_epoch());
+      reply_to.osd, r, switcher->get_osdmap_epoch());
   }
 }
 
@@ -486,7 +497,8 @@ void ECBackend::handle_sub_write(
       new SubWriteCommitted(
         this, msg, op.tid,
         op.at_version,
-        get_parent()->get_info().last_complete, trace)));
+        get_parent()->get_info().last_complete, 
+        trace, from)));
   vector<ObjectStore::Transaction> tls;
   tls.reserve(2);
   tls.push_back(std::move(op.t));
@@ -1124,7 +1136,7 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
     DoutPrefixProvider *dpp,
     const OSDMapRef &osdmap,
     bool& first_write_in_interval,
-    ECOmapJournal &ec_omap_journal) final {
+    ECOmapJournal &ec_omap_journal) override {
     ceph_assert(t);
     ECTransaction::generate_transactions(
       t.get(),
@@ -1148,7 +1160,7 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
   bool skip_transaction(
       std::set<shard_id_t> &pending_roll_forward,
       shard_id_t shard,
-      ceph::os::Transaction &transaction) final {
+      ceph::os::Transaction &transaction) override {
     if (transaction.empty()) {
       return true;
     }
@@ -1156,8 +1168,202 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
     return false;
   }
 
-  PGTransactionUPtr move_pg_transaction() final { return std::move(t); }
+  PGTransactionUPtr move_pg_transaction() override { return std::move(t); }
+
+  // This op type carries a PGTransaction that must be forwarded to remote
+  // Zone Primaries via MOSDECZoneReplicate.
+  bool needs_zone_replicate() const override { return true; }
 };
+
+// An Op subclass used on the zone primary side.
+// When shared_t is null this is a roll-forward op; generate_transactions
+// is a NOP and skip_transaction follows ECDummyOp semantics.
+struct ECZoneReplicateBackendOp : ECClassicalOp {
+  pg_shard_t reply_to;
+  std::shared_ptr<PGTransaction> shared_t;
+
+  bool is_zone_replicate() const final { return true; }
+
+  void generate_transactions(
+      ceph::ErasureCodeInterfaceRef &ec_impl,
+      pg_t pgid,
+      const ECUtil::stripe_info_t &sinfo,
+      map<hobject_t, ECUtil::shard_extent_map_t> *written,
+      shard_id_map<ObjectStore::Transaction> *transactions,
+      DoutPrefixProvider *dpp,
+      const OSDMapRef &osdmap,
+      bool &first_write_in_interval,
+      ECOmapJournal &ec_omap_journal) final {
+    if (!shared_t) {
+      return;  // roll-forward op: NOP
+    }
+    ECTransaction::generate_transactions(
+      shared_t.get(),
+      plan,
+      ec_impl,
+      pgid,
+      sinfo,
+      remote_shard_extent_map,
+      log_entries,
+      written,
+      transactions,
+      &temp_added,
+      &temp_cleared,
+      dpp,
+      osdmap,
+      first_write_in_interval,
+      ec_omap_journal,
+      pipeline->get_parent()->get_log());
+  }
+
+  bool skip_transaction(
+      std::set<shard_id_t> &pending_roll_forward,
+      shard_id_t shard,
+      ceph::os::Transaction &transaction) final {
+    if (!shared_t) {
+      return !pending_roll_forward.erase(shard);  // ECDummyOp behaviour
+    }
+    return ECClassicalOp::skip_transaction(pending_roll_forward, shard, transaction);
+  }
+
+  // Zone Primaries never re-fan-out to further zones, so move_pg_transaction
+  // is never called on this op type.
+  PGTransactionUPtr move_pg_transaction() final { return nullptr; }
+};
+
+// Context fired by finish_rmw() on the Zone Primary once all local-zone shard
+// commits are durable.  Sends MOSDECSubOpWriteReply back to the cluster Primary
+// so it can decrement its pending_commits and call try_finish_rmw().
+struct ZoneReplicateAllCommitted : public Context {
+  ECBackend *pg;
+  OpRequestRef msg;  // for mark_event instrumentation, mirrors SubWriteCommitted
+  ceph_tid_t tid;
+  pg_shard_t reply_to;
+  eversion_t version;
+  eversion_t last_complete;
+  ZTracer::Trace trace;
+
+  ZoneReplicateAllCommitted(ECBackend *pg,
+                            OpRequestRef msg,
+                            ceph_tid_t tid,
+                            pg_shard_t reply_to,
+                            eversion_t version,
+                            eversion_t last_complete,
+                            const ZTracer::Trace &trace)
+    : pg(pg), msg(msg), tid(tid), reply_to(reply_to),
+      version(version), last_complete(last_complete), trace(trace) {}
+
+  void finish(int) override {
+    if (msg)
+      msg->mark_event("zone_replicate_all_committed");
+    ECSubWriteReply rep;
+    rep.from        = pg->get_parent()->whoami_shard();
+    rep.tid         = tid;
+    rep.last_complete = last_complete;
+    rep.committed   = true;
+    rep.applied     = true;
+
+    MOSDECSubOpWriteReply *r = new MOSDECSubOpWriteReply;
+    r->pgid      = spg_t(pg->get_parent()->primary_spg_t().pgid, reply_to.shard);
+    r->map_epoch = pg->switcher->get_osdmap_epoch();
+    r->min_epoch = pg->get_parent()->get_interval_start_epoch();
+    r->op        = rep;
+    r->set_priority(CEPH_MSG_PRIO_HIGH);
+    r->trace     = trace;
+    r->trace.event("zone replicate all committed");
+    pg->get_parent()->send_message_osd_cluster(
+      reply_to.osd, r, pg->switcher->get_osdmap_epoch());
+  }
+};
+
+
+void ECBackend::handle_zone_replicate(
+  pg_shard_t from,
+  OpRequestRef msg,
+  ECZoneReplicateOp &wire_op,
+  const ZTracer::Trace &trace) {
+  if (msg) {
+    msg->mark_event("zone_replicate_started");
+  }
+  trace.event("handle_zone_replicate");
+  dout(10) << __func__ << " from=" << from
+            << " tid=" << wire_op.tid
+            << " soid=" << wire_op.soid
+            << " whoami=" << get_parent()->whoami_shard()
+            << " t=" << (wire_op.t ? "non-null" : "null")
+            << " acting_recovery_backfill=" << get_parent()->get_acting_recovery_backfill_shards().size()
+            << dendl;
+  // Build the pipeline op from the wire message.
+  auto op = std::make_shared<ECZoneReplicateBackendOp>();
+  op->hoid         = wire_op.soid;
+  op->tid          = wire_op.tid;
+  op->reqid        = wire_op.reqid;
+  op->version      = wire_op.at_version;
+  op->trim_to      = wire_op.trim_to;
+  op->pg_committed_to = wire_op.pg_committed_to;
+  op->log_entries  = std::move(wire_op.log_entries);
+  op->updated_hit_set_history = std::move(wire_op.updated_hit_set_history);
+  op->temp_added   = std::move(wire_op.temp_added);
+  op->temp_cleared = std::move(wire_op.temp_removed);
+  op->shared_t     = std::move(wire_op.t);
+  op->reply_to     = from;
+  op->client_op    = msg;
+  op->trace        = trace;
+  op->pipeline     = &rmw_pipeline;
+
+  // shared_t is nullptr for a roll-forward op — skip transaction-dependent
+  // setup.  generate_transactions() is a NOP in that case.
+  if (op->shared_t) {
+    // Populate obc_map since it isn't passed across zones
+    for (auto &[hoid, obj_op] : op->shared_t->op_map) {
+      auto [r, attrs, size] = get_attrs_n_size_from_disk(hoid);
+      if (r == 0) {
+        // Object exists locally — build OBC from disk attrs
+        ObjectContextRef obc = get_parent()->get_obc(hoid, attrs);
+        op->shared_t->obc_map[hoid] = obc;
+      } else if (r == -ENOENT) {
+        // Object doesn't exist yet — new write, use an empty OBC
+        auto obc = std::make_shared<ObjectContext>();
+        obc->obs.oi.soid = hoid;
+        obc->obs.exists = false;
+        op->shared_t->obc_map[hoid] = obc;
+      } else {
+        // Stall on pending_commits and eventually re-peer
+        dout(10) << __func__ << " local store error " << r
+                  << " reading attrs/stat for " << hoid
+                  << " tid=" << op->tid
+                  << " — aborting zone-replicate op" << dendl;
+        return;
+      }
+    }
+
+    // Compute the write plan from the PGTransaction — same as submit_transaction().
+    // This determines what shard reads (if any) are needed before encoding.
+    op->plan = get_write_plan(
+      sinfo,
+      *op->shared_t,
+      read_pipeline,
+      rmw_pipeline,
+      get_parent()->get_dpp());
+  }
+
+  if (!get_parent()->pgb_is_primary()) {
+    get_parent()->update_stats(wire_op.stats);
+  }
+
+  // When all local-zone shard commits are durable, send MOSDECSubOpWriteReply
+  // to the cluster Primary so it can decrement its pending_commits.
+  op->on_all_commit = new ZoneReplicateAllCommitted(
+                        this,
+                        msg,
+                        op->tid,
+                        from,
+                        op->version,
+                        get_parent()->get_info().last_complete,
+                        trace);
+      
+  rmw_pipeline.start_rmw(std::move(op));
+}
 
 std::tuple<
   int,

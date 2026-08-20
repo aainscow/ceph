@@ -630,6 +630,15 @@ struct ECCommon {
       /// types that carry no PGTransaction.
       virtual PGTransactionUPtr move_pg_transaction() { return nullptr; }
 
+      /// Returns true when this op arrived via MOSDECZoneReplicate (i.e. this
+      /// OSD is acting as a Zone Primary, not the cluster Primary).
+      /// cache_ready() uses this to restrict fan-out to local-zone shards only.
+      virtual bool is_zone_replicate() const { return false; }
+
+      /// Returns false for roll-forward dummy ops that carry no transaction
+      /// and must not trigger MOSDECZoneReplicate fan-out.
+      virtual bool needs_zone_replicate() const { return false; }
+
       void cache_ready(const hobject_t &oid, const ECUtil::shard_extent_map_t &result) {
         if (!result.empty()) {
           remote_shard_extent_map.insert(std::pair(oid, result));
@@ -687,6 +696,7 @@ struct ECCommon {
     std::list<OpRef> waiting_commit;
     eversion_t completed_to;
     eversion_t committed_to;
+    std::set<pg_shard_t> get_local_zone_shards() const;
     void start_rmw(OpRef op);
     void build_zone_replicate_msgs(Op &op, 
                                    const std::map<int, pg_shard_t> &zone_primaries,
