@@ -1126,6 +1126,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   shard_id_set remote_zone_shards;
 
   if (get_parent()->get_pool().supports_zone_replicate() && 
+      !op.is_zone_replicate() && 
       sinfo.get_num_zones() > 1 && 
       !zone_primaries.empty()) {
     const pg_shard_t whoami = get_parent()->whoami_shard();
