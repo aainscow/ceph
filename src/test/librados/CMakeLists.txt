@@ -153,6 +153,19 @@ add_executable(ceph_test_rados_api_split_op_pp
 target_link_libraries(ceph_test_rados_api_split_op_pp
         librados ${UNITTEST_LIBS} radostest-cxx)
 
+# Zone-aware split-read tests require a 2-zone CRUSH topology that is not
+# present by default.  The wrapper script sets up the datacenter buckets,
+# runs the LibRadosSplitOpZone suite, and restores the CRUSH map on exit.
+add_ceph_test(run-split-op-zone-tests.sh
+        ${CMAKE_CURRENT_SOURCE_DIR}/run-split-op-zone-tests.sh)
+set_tests_properties(run-split-op-zone-tests.sh PROPERTIES
+        DEPENDS ceph_test_rados_api_split_op_pp)
+
+add_ceph_test(run-ec-stretch-split-op-tests.sh
+        ${CMAKE_CURRENT_SOURCE_DIR}/run-ec-stretch-split-op-tests.sh)
+set_tests_properties(run-ec-stretch-split-op-tests.sh PROPERTIES
+        DEPENDS ceph_test_rados_api_split_op_pp)
+
 add_executable(ceph_test_rados_api_omap_pp
         omap_cxx.cc)
 target_link_libraries(ceph_test_rados_api_omap_pp
