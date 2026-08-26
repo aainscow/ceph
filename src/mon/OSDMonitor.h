@@ -801,6 +801,20 @@ public:
   void maybe_enable_pool_split_ops(pg_pool_t &p);
   int prepare_command_pool_set(const cmdmap_t& cmdmap,
                                std::stringstream& ss);
+  int prepare_command_pool_set_num_zones(const cmdmap_t& cmdmap,
+                                         int64_t pool,
+                                         const std::string& poolstr,
+                                         int64_t n,
+                                         const std::string& val,
+                                         const std::string& interr,
+                                         pg_pool_t& p,
+                                         std::stringstream& ss);
+  int prepare_command_pool_set_replica(int64_t pool,
+                                       int64_t n,
+                                       const std::string& val,
+                                       const std::string& interr,
+                                       pg_pool_t& p,
+                                       std::stringstream& ss);
 
   int prepare_command_pool_application(const std::string &prefix,
                                        const cmdmap_t& cmdmap,
