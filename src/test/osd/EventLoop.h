@@ -324,15 +324,31 @@ public:
    */
   void unsuspend_to_osd(int osd) {
     suspended_to_osds.erase(osd);
-    
-    // Move all suspended events for this OSD back to the main queue
+
+    // Only re-queue events whose to_osd matches and that are not still covered
+    // by an active suspend_from_to_osd rule.  The bucket is shared with
+    // from_to events, so we must not blindly flush it.
     auto it = suspended_events.find(osd);
-    if (it != suspended_events.end()) {
-      // Append suspended events to the main queue
-      for (auto& event : it->second) {
+    if (it == suspended_events.end()) {
+      return;
+    }
+    std::deque<Event> remaining;
+    for (auto& event : it->second) {
+      // Re-queue if: the event was suspended because to_osd==osd (to_osd rule,
+      // not a from_to rule), OR it was a from_to event whose rule is now gone.
+      bool still_from_to_suspended =
+        event.from_osd >= 0 &&
+        is_from_to_osd_suspended(event.from_osd, event.to_osd);
+      if (!still_from_to_suspended) {
         events.push_back(std::move(event));
+      } else {
+        remaining.push_back(std::move(event));
       }
+    }
+    if (remaining.empty()) {
       suspended_events.erase(it);
+    } else {
+      it->second = std::move(remaining);
     }
   }
   
@@ -350,15 +366,29 @@ public:
    */
   void unsuspend_from_to_osd(int from_osd, int to_osd) {
     suspended_from_to_osds.erase({from_osd, to_osd});
-    
-    // Move all suspended events for this OSD pair back to the main queue
+
+    // Only re-queue events that were suspended specifically because of this
+    // {from_osd, to_osd} pair.  The suspended_events bucket is keyed by
+    // to_osd and shared with events suspended by suspend_to_osd(to_osd) and
+    // other suspend_from_to_osd(X, to_osd) rules — flushing the whole bucket
+    // would release events that belong to a different suspension rule and
+    // cause use-after-free or double-delivery crashes.
     auto it = suspended_events.find(to_osd);
-    if (it != suspended_events.end()) {
-      // Append suspended events to the main queue
-      for (auto& event : it->second) {
+    if (it == suspended_events.end()) {
+      return;
+    }
+    std::deque<Event> remaining;
+    for (auto& event : it->second) {
+      if (event.from_osd == from_osd && event.to_osd == to_osd) {
         events.push_back(std::move(event));
+      } else {
+        remaining.push_back(std::move(event));
       }
+    }
+    if (remaining.empty()) {
       suspended_events.erase(it);
+    } else {
+      it->second = std::move(remaining);
     }
   }
   
