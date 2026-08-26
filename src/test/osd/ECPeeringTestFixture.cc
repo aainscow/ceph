@@ -497,6 +497,28 @@ void ECPeeringTestFixture::inject_read_error_for_shard(const std::string& obj_na
   osd_fixture->store->inject_read_error(ghoid, error_code);
 }
 
+void ECPeeringTestFixture::inject_stat_error_for_shard(const std::string& obj_name, int shard, int error_code)
+{
+  hobject_t hoid(object_t(obj_name), "", CEPH_NOSNAP, 0, pool_id, "");
+  ghobject_t ghoid(hoid, ghobject_t::NO_GEN, shard_id_t(shard));
+
+  OsdTestFixture* osd_fixture = get_osd_fixture(shard);
+  ceph_assert(osd_fixture != nullptr && osd_fixture->store);
+  osd_fixture->store->inject_stat_error(ghoid, error_code);
+}
+
+void ECPeeringTestFixture::inject_getattrs_error_for_shard(const std::string& obj_name, int shard, int error_code)
+{
+  hobject_t hoid(object_t(obj_name), "", CEPH_NOSNAP, 0, pool_id, "");
+  ghobject_t ghoid(hoid, ghobject_t::NO_GEN, shard_id_t(shard));
+
+  OsdTestFixture* osd_fixture = get_osd_fixture(shard);
+  ceph_assert(osd_fixture != nullptr && osd_fixture->store);
+  osd_fixture->store->inject_getattrs_error(ghoid, error_code);
+}
+
+
+
 void ECPeeringTestFixture::init_peering(TestPG *test_pg)
 {
   pg_history_t history;

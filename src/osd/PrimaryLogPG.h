@@ -602,7 +602,7 @@ public:
     return get_primary();
   }
 
-  nst std::map<int, pg_shard_t> &get_zone_primaries() const override {
+  const std::map<int, pg_shard_t> &get_zone_primaries() const override {
     return recovery_state.get_zone_primaries();
   }
   uint64_t min_peer_features() const override {

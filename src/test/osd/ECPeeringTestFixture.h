@@ -258,6 +258,28 @@ public:
   void inject_read_error_for_shard(const std::string& obj_name, int shard, int error_code);
 
   /**
+   * Inject a stat() error for a specific object on a specific shard's store.
+   * The error will be returned on the next stat() call for this object,
+   * then automatically cleared.
+   *
+   * @param obj_name The name of the object to inject an error for
+   * @param shard The shard number whose store should return the error
+   * @param error_code The error code to return (should be negative, e.g., -EIO)
+   */
+  void inject_stat_error_for_shard(const std::string& obj_name, int shard, int error_code);
+
+  /**
+   * Inject a getattrs() error for a specific object on a specific shard's store.
+   * The error will be returned on the next getattrs() call for this object,
+   * then automatically cleared.
+   *
+   * @param obj_name The name of the object to inject an error for
+   * @param shard The shard number whose store should return the error
+   * @param error_code The error code to return (should be negative, e.g., -EIO)
+   */
+  void inject_getattrs_error_for_shard(const std::string& obj_name, int shard, int error_code);
+
+  /**
    * run_recovery - Run recovery for an object
    *
    * This helper function encapsulates the complete EC recovery flow:
