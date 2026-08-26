@@ -929,6 +929,8 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
     pending_roll_forward.insert(shard);
     return false;
   }
+
+  PGTransactionUPtr move_pg_transaction() final { return std::move(t); }
 };
 
 std::tuple<
