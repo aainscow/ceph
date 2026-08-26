@@ -158,6 +158,21 @@ public:
       scrub_all_objects();
     }
 
+    // Call on_change() on every EC backend BEFORE shutting down the OpTracker.
+    // on_change() clears waiting_commit / tid_to_op_map, destroying Ops that
+    // hold client_op OpRequestRefs (TrackedOp).  Those put() calls need the
+    // OpTracker to still be alive; if op_tracker->on_shutdown() runs first,
+    // unregister_inflight_op crashes on a dead tracker.
+    // Also needed so ECExtentCache::on_change2() sees objects.empty() since
+    // ECExtentCache is a member destroyed after waiting_commit in ~RMWPipeline.
+    for (auto& [osd_id, osd_fixture] : osd_fixtures) {
+      for (auto& [spgid, test_pg] : osd_fixture->pgs) {
+        if (test_pg && test_pg->has_backend()) {
+          test_pg->get_backend()->on_change();
+        }
+      }
+    }
+
     if (op_tracker) {
       op_tracker->on_shutdown();
       op_tracker.reset();
