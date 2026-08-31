@@ -191,6 +191,18 @@ add_ceph_unittest(unittest_ec_acting_stretch)
 target_link_libraries(unittest_ec_acting_stretch osd os global ${CMAKE_DL_LIBS} ${BLKID_LIBRARIES})
 add_dependencies(unittest_ec_acting_stretch ec_isa ec_jerasure)
 
+# unittest_ec_zone_replicate
+add_executable(unittest_ec_zone_replicate
+  TestECZoneReplicate.cc
+  $<TARGET_OBJECTS:unit-main>
+  $<TARGET_OBJECTS:store_test_fixture>
+  $<TARGET_OBJECTS:pg_backend_test_fixture>
+  $<TARGET_OBJECTS:ec_peering_test_fixture>
+  )
+add_ceph_unittest(unittest_ec_zone_replicate)
+target_link_libraries(unittest_ec_zone_replicate osd os global ${CMAKE_DL_LIBS} ${BLKID_LIBRARIES})
+add_dependencies(unittest_ec_zone_replicate ec_isa ec_jerasure)
+
 # unittest_stretch_ec_min_size
 add_executable(unittest_stretch_ec_min_size
   TestStretchECMinSize.cc

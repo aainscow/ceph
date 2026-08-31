@@ -193,7 +193,7 @@ public:
     
     // For multi-zone configurations, set min_size to allow up to m failures
     // min_size = num_zones * (k+m) - m
-    pool.min_size = num_zones * (k + m) - m;
+    pool.min_size = k;
     pool.crush_rule = 0;
     pool.erasure_code_profile = "default";
     pool.stripe_width = stripe_width;
