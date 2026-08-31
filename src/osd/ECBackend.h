@@ -38,6 +38,7 @@ struct ECSubWrite;
 struct ECSubWriteReply;
 struct ECSubRead;
 struct ECSubReadReply;
+struct ECZoneReplicateOp;
 class ECSwitch;
 
 class ECSwitch;
@@ -68,7 +69,8 @@ class ECBackend : public ECCommon {
       ceph_tid_t tid,
       eversion_t version,
       eversion_t last_complete,
-      const ZTracer::Trace &trace
+      const ZTracer::Trace &trace,
+      pg_shard_t reply_to
     );
   void handle_sub_write(
       pg_shard_t from,
@@ -95,6 +97,12 @@ class ECBackend : public ECCommon {
   void handle_sub_write_reply(
       pg_shard_t from,
       const ECSubWriteReply &op,
+      const ZTracer::Trace &trace
+    );
+  void handle_zone_replicate(
+      pg_shard_t from,
+      OpRequestRef msg,
+      ECZoneReplicateOp &op,
       const ZTracer::Trace &trace
     );
   void handle_sub_read_reply(

@@ -144,6 +144,12 @@ ECCommon::ReadPipeline::get_readable_writable_shard_id_sets() {
   }
 
   writable = get_parent()->get_acting_recovery_backfill_shard_id_set();
+  // acting_recovery_backfill_shard_id_set is only populated by choose_acting()
+  // which runs on the cluster primary.  Zone primaries never run choose_acting() 
+  // so their set is empty. For stretch EC, fall back to actingset, reduced to relative shards
+  if (writable.empty() && sinfo.get_num_zones() > 1) {
+    writable = sinfo.zones_or(readable);
+  }
   return std::make_pair(std::move(readable), std::move(writable));
 }
 
@@ -861,6 +867,17 @@ bool ECCommon::read_request_t::operator==(const read_request_t &other) const {
       want_attrs == other.want_attrs;
 }
 
+std::set<pg_shard_t> ECCommon::RMWPipeline::get_local_zone_shards() const {
+  std::set<pg_shard_t> result;
+  const int my_zone = sinfo.get_shard_zone(get_parent()->whoami_shard().shard);
+  for (auto &pg_shard : get_parent()->get_acting_shards()) {
+      if (sinfo.get_shard_zone(pg_shard.shard) == my_zone) {
+          result.insert(pg_shard);
+      }
+  }
+  return result;
+}
+
 void ECCommon::RMWPipeline::start_rmw(OpRef op) {
   dout(20) << __func__ << " op=" << *op << dendl;
 
@@ -892,8 +909,16 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
     op.delta_stats);
 
   shard_id_map<ObjectStore::Transaction> trans(sinfo.get_k_plus_m());
-  for (auto &&shard : sinfo.zones_or(get_parent()->
-           get_acting_recovery_backfill_shard_id_set())) {
+  shard_id_set acting_shards =
+  get_parent()->get_acting_recovery_backfill_shard_id_set();
+  // Zone primaries never run choose_acting() so acting_recovery_backfill
+  // is empty.  Fall back to actingset for stretch EC
+  if (acting_shards.empty() && sinfo.get_num_zones() > 1) {
+    for (auto &&pg_shard : get_parent()->get_acting_shards()) {
+      acting_shards.insert(pg_shard.shard);
+    }
+  }
+  for (auto &&shard : sinfo.zones_or(acting_shards)) {
     trans[shard];
   }
 
@@ -925,7 +950,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
 
   const auto &zone_primaries = get_parent()->get_zone_primaries();
   set<pg_shard_t> remote_zone_shards;
-  if (sinfo.get_num_zones() > 1 && !zone_primaries.empty()) {
+  if (!op.is_zone_replicate() && sinfo.get_num_zones() > 1 && !zone_primaries.empty()) {
     const pg_shard_t whoami = get_parent()->whoami_shard();
     const int my_zone = sinfo.get_shard_zone(whoami.shard);
     for (auto &pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
@@ -941,14 +966,32 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
     }
     oid_to_version[op.hoid] = op.version;
   }
-  for (auto &&pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
-    // Skip EC Subwrites to remote shards if a zone primary exist that zone
+
+  const int local_zone = sinfo.get_shard_zone(get_parent()->whoami_shard().shard);
+  const auto &shards_to_write = op.is_zone_replicate()
+    ? get_local_zone_shards()
+    : get_parent()->get_acting_recovery_backfill_shards();
+
+  for (auto &&pg_shard : shards_to_write) {
+    // Skip EC Subwrites to remote shards if a zone primary exists for that zone
     if (remote_zone_shards.contains(pg_shard)) {
+      continue;
+    }
+    // Zone Primary path: skip shards that don't belong to our zone
+    if (op.is_zone_replicate() &&
+        sinfo.get_shard_zone(pg_shard.shard) != local_zone) {
       continue;
     }
     // Use shard % (k+m) to get the relative shard for zone duplication
     shard_id_t abs_shard = pg_shard.shard;
     shard_id_t rel_shard = sinfo.get_rel_shard(abs_shard);
+
+    // Zone Primary path: skip shards that don't belong to our zone
+    if (op.is_zone_replicate() &&
+        sinfo.get_shard_zone(abs_shard) != local_zone) {
+      dout(20) << __func__ << " Skipping shard " << abs_shard << "- belongs to a different zone" << dendl;
+      continue;
+    }
 
     // Skip if relative shard transaction doesn't exist (relative shard not in acting set)
     if (!trans.contains(rel_shard)) {
@@ -976,7 +1019,9 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
       delete f;
       *_dout << dendl;
     }
-    bool should_send = get_parent()->should_send_op(pg_shard, op.hoid);
+    bool should_send = op.is_zone_replicate()
+      ? true
+      : get_parent()->should_send_op(pg_shard, op.hoid);
     /* should_send being false indicates that a recovery is going on to this
      * object this makes it critical that the log on the non-primary shards is
      * complete:- We may need to update "missing" with the latest version.
