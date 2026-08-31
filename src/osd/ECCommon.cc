@@ -1157,6 +1157,19 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
 
       zop.t = std::move(zone_t);
       ceph_assert(zop.t);
+      using Write = PGTransaction::ObjectOperation::BufferUpdate::Write;
+      uint64_t replicate_bytes = 0;
+      for (auto &[hoid, obj_op] : zop.t->op_map) {
+        for (auto it = obj_op.buffer_updates.begin();
+             it != obj_op.buffer_updates.end(); ++it) {
+          if (auto *w = std::get_if<Write>(&it.get_val())) {
+            replicate_bytes += w->buffer.length();
+          }
+        }
+      }
+      get_parent()->get_logger()->inc(l_osd_stretch_cross_zone_write_ops);
+      get_parent()->get_logger()->inc(l_osd_stretch_cross_zone_write_bytes,
+                                      replicate_bytes);
 
       auto *r = new MOSDECZoneReplicate();
       r->pgid      = spg_t(get_parent()->primary_spg_t().pgid, zone_primary.shard);
