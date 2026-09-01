@@ -1283,6 +1283,70 @@ void ECTransaction::generate_transactions(
     bool &first_write_in_interval,
     ECOmapJournal &ec_omap_journal,
     const PGLog &pg_log) {
+  if (dpp && dpp->get_cct()->_conf->subsys.should_gather(dpp->get_subsys(), 6)) {
+    // A transaction is "interesting" if any object op is non-trivial.
+    // Trivial = plain write/zero only (init=none, no delete, no truncate,
+    //           single contiguous extent).
+    // A multi-object transaction is always interesting as a whole.
+    using Op = PGTransaction::ObjectOperation;
+    auto is_interesting = [](const Op &op) {
+      return op.delete_first ||
+             op.is_fresh_object() ||  // create, clone, or rename
+             op.truncate.has_value() ||
+             op.buffer_updates.ext_count() > 1;  // disjoint write regions
+    };
+
+    bool any_interesting = _t->op_map.size() > 1;
+    if (!any_interesting) {
+      for (auto &&[oid, op] : _t->op_map) {
+        if (is_interesting(op)) {
+          any_interesting = true;
+          break;
+        }
+      }
+    }
+
+    if (any_interesting) {
+      for (auto &&[oid, op] : _t->op_map) {
+        std::ostringstream ss;
+        ss << "EC_TXN_DUMP: oid=" << oid
+           << " delete_first=" << op.delete_first;
+        match(op.init_type,
+          [&](const Op::Init::None &)    { ss << " init=none"; },
+          [&](const Op::Init::Create &)  { ss << " init=create"; },
+          [&](const Op::Init::Clone &c)  { ss << " init=clone source=" << c.source; },
+          [&](const Op::Init::Rename &r) { ss << " init=rename source=" << r.source; });
+        if (op.truncate) {
+          ss << " truncate=[" << op.truncate->first << "," << op.truncate->second << "]";
+        }
+        for (auto &&extent : op.buffer_updates) {
+          match(extent.get_val(),
+            [&](const Op::BufferUpdate::Write &) {
+              ss << " write@" << extent.get_off() << "~" << extent.get_len();
+            },
+            [&](const Op::BufferUpdate::Zero &) {
+              ss << " zero@" << extent.get_off() << "~" << extent.get_len();
+            },
+            [&](const Op::BufferUpdate::CloneRange &cr) {
+              ss << " clone_range@" << extent.get_off() << "~" << extent.get_len()
+                 << " from=" << cr.from << "+" << cr.offset;
+            });
+        }
+        if (!op.attr_updates.empty()) {
+          ss << " attrs=[";
+          bool first = true;
+          for (auto &&[k, v] : op.attr_updates) {
+            if (!first) ss << ",";
+            ss << k << (v ? "" : "(rm)");
+            first = false;
+          }
+          ss << "]";
+        }
+        ldpp_dout(dpp, 6) << ss.str() << dendl;
+      }
+    }
+  }
+
   ceph_assert(written_map);
   ceph_assert(transactions);
   ceph_assert(temp_added);

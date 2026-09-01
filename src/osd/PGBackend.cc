@@ -334,6 +334,18 @@ void PGBackend::rollback(
   ceph_assert(entry.mod_desc.can_rollback());
   RollbackVisitor vis(entry.soid, this, entry);
   entry.mod_desc.visit(&vis);
+
+  auto dpp = get_parent()->get_dpp();
+  ldpp_dout(dpp, 6) << __func__ << " Rollback transaction for entry "
+       << entry.version << " soid " << entry.soid << " contents ";
+  Formatter *f = Formatter::create("json");
+  f->open_object_section("t");
+  vis.t.dump(f);
+  f->close_section();
+  f->flush(*_dout);
+  delete f;
+  *_dout << dendl;
+
   t->append(vis.t);
 }
 
