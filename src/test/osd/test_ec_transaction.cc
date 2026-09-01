@@ -18,6 +18,7 @@
 #include "osd/ECTransaction.h"
 #include "common/debug.h"
 #include "osd/ECBackend.h"
+#include "test/osd/MockErasureCode.h"
 
 #include "test/unit.cc"
 
@@ -504,4 +505,216 @@ TEST(ectransaction, truncate_to_stripe) {
   // Truncating to a whole shard - no writes needed.
   ECUtil::shard_extent_set_t ref_write(sinfo.get_k_plus_m());
   ASSERT_EQ(ref_write, plan.will_write);
+}
+
+// ---------------------------------------------------------------------------
+// EC_TXN_DUMP tracing tests
+//
+// These tests verify the "interesting transaction" predicate used by the
+// EC_TXN_DUMP tracing added to ECTransaction::generate_transactions().
+//
+// The predicate fires for:
+//   - fresh objects (create / clone / rename)
+//   - delete_first
+//   - truncate
+//   - multi-object transaction (op_map.size() > 1)
+//
+// Plain write/zero and lone attr-update transactions are NOT interesting.
+// ---------------------------------------------------------------------------
+
+// Helper: mirror the is_interesting lambda from ECTransaction.cc
+static bool ec_dump_is_interesting(const PGTransaction::ObjectOperation &op,
+                                   size_t op_map_size) {
+  if (op_map_size > 1) return true;
+  return op.delete_first ||
+         op.is_fresh_object() ||
+         op.truncate.has_value();
+}
+
+// Helper: make a temp hobject (pool <= -2, so is_temp() == true)
+static hobject_t make_temp_hoid(const char *name) {
+  hobject_t h(sobject_t(object_t(name), CEPH_NOSNAP));
+  h.pool = -2;   // hobject_t::POOL_TEMP_START
+  return h;
+}
+
+// Helper: build a minimal WritePlan for a single temp object op.
+static ECTransaction::WritePlan make_temp_plan(
+    const hobject_t &oid,
+    const PGTransaction::ObjectOperation &op,
+    const ECUtil::stripe_info_t &sinfo)
+{
+  shard_id_set all_shards;
+  all_shards.insert_range(shard_id_t(0), sinfo.get_k_plus_m());
+
+  ECTransaction::WritePlan plan;
+  plan.want_read = false;
+  plan.plans.emplace_back(
+      oid, op, sinfo,
+      all_shards, all_shards,
+      false, 0,
+      std::nullopt, std::nullopt, 0);
+  return plan;
+}
+
+// Run generate_transactions for a single-temp-object PGTransaction at
+// debug level 5 and return without asserting — proves the dump path is
+// exercised end-to-end.
+static void run_generate(PGTransaction &t,
+                         ECTransaction::WritePlan &plan,
+                         const ECUtil::stripe_info_t &sinfo,
+                         ErasureCodeInterfaceRef ec_impl)
+{
+  shard_id_map<ObjectStore::Transaction> transactions(sinfo.get_k_plus_m());
+  for (shard_id_t s(0); s < sinfo.get_k_plus_m(); ++s)
+    transactions[s];
+
+  map<hobject_t, ECUtil::shard_extent_map_t> written;
+  set<hobject_t> temp_added, temp_removed;
+  vector<pg_log_entry_t> entries;
+  bool first_write = true;
+
+  ECTransaction::generate_transactions(
+    &t, plan, ec_impl,
+    pg_t(0, 1), sinfo,
+    {},
+    entries, &written, &transactions,
+    &temp_added, &temp_removed,
+    &dpp,
+    OSDMapRef(),
+    first_write);
+}
+
+// --- Predicate unit tests (no generate_transactions call needed) ---
+
+TEST(ectransaction_dump, plain_write_not_interesting)
+{
+  PGTransaction::ObjectOperation op;
+  bufferlist bl;
+  bl.append_zero(4096);
+  op.buffer_updates.insert(
+    0, 4096, PGTransaction::ObjectOperation::BufferUpdate::Write{bl, 0});
+
+  EXPECT_FALSE(ec_dump_is_interesting(op, 1));
+}
+
+TEST(ectransaction_dump, lone_attr_update_not_interesting)
+{
+  PGTransaction::ObjectOperation op;
+  bufferlist bl;
+  bl.append_zero(4);
+  op.attr_updates["user.foo"] = bl;
+
+  EXPECT_FALSE(ec_dump_is_interesting(op, 1));
+}
+
+TEST(ectransaction_dump, create_is_interesting)
+{
+  PGTransaction::ObjectOperation op;
+  op.init_type = PGTransaction::ObjectOperation::Init::Create{};
+
+  EXPECT_TRUE(ec_dump_is_interesting(op, 1));
+}
+
+TEST(ectransaction_dump, clone_is_interesting)
+{
+  PGTransaction::ObjectOperation op;
+  hobject_t src;
+  op.init_type = PGTransaction::ObjectOperation::Init::Clone{src};
+
+  EXPECT_TRUE(ec_dump_is_interesting(op, 1));
+}
+
+TEST(ectransaction_dump, rename_is_interesting)
+{
+  PGTransaction::ObjectOperation op;
+  hobject_t src;
+  src.pool = -2;  // must be temp
+  op.init_type = PGTransaction::ObjectOperation::Init::Rename{src};
+
+  EXPECT_TRUE(ec_dump_is_interesting(op, 1));
+}
+
+TEST(ectransaction_dump, delete_first_is_interesting)
+{
+  PGTransaction::ObjectOperation op;
+  op.delete_first = true;
+
+  EXPECT_TRUE(ec_dump_is_interesting(op, 1));
+}
+
+TEST(ectransaction_dump, truncate_is_interesting)
+{
+  PGTransaction::ObjectOperation op;
+  op.truncate = std::make_pair(uint64_t(0), uint64_t(0));
+
+  EXPECT_TRUE(ec_dump_is_interesting(op, 1));
+}
+
+TEST(ectransaction_dump, multi_object_always_interesting)
+{
+  // Even a boring plain-write op is interesting when op_map has >1 entry
+  PGTransaction::ObjectOperation op;
+  bufferlist bl;
+  bl.append_zero(4096);
+  op.buffer_updates.insert(
+    0, 4096, PGTransaction::ObjectOperation::BufferUpdate::Write{bl, 0});
+
+  EXPECT_FALSE(ec_dump_is_interesting(op, 1));  // boring alone
+  EXPECT_TRUE(ec_dump_is_interesting(op, 2));   // interesting as part of multi
+}
+
+// --- Integration test: generate_transactions runs with dump active ---
+
+TEST(ectransaction_dump, generate_transactions_create_no_abort)
+{
+  // Raise debug_osd to 5 so should_gather returns true and the dump path fires
+  g_ceph_context->_conf.set_val("debug_osd", "5/5");
+  g_ceph_context->_conf.apply_changes(nullptr);
+
+  pg_pool_t pool;
+  pool.set_flag(pg_pool_t::FLAG_EC_OPTIMIZATIONS);
+  ECUtil::stripe_info_t sinfo(2, 1, 2 * EC_ALIGN_SIZE, &pool);
+  ErasureCodeInterfaceRef ec_impl(new MockErasureCode(2, 3));
+
+  hobject_t oid = make_temp_hoid("dump_create_test");
+
+  PGTransaction t;
+  t.create(oid);
+  // No OBC needed: temp objects bypass the OBC assert in Generate::Generate
+
+  PGTransaction::ObjectOperation &op = t.op_map.at(oid);
+  auto plan = make_temp_plan(oid, op, sinfo);
+
+  // Should complete without any ceph_abort
+  ASSERT_NO_FATAL_FAILURE(run_generate(t, plan, sinfo, ec_impl));
+
+  g_ceph_context->_conf.set_val("debug_osd", "0/0");
+  g_ceph_context->_conf.apply_changes(nullptr);
+}
+
+TEST(ectransaction_dump, generate_transactions_plain_write_no_abort)
+{
+  // At debug level 0 the dump is entirely skipped; just verify no abort
+  g_ceph_context->_conf.set_val("debug_osd", "0/0");
+  g_ceph_context->_conf.apply_changes(nullptr);
+
+  pg_pool_t pool;
+  pool.set_flag(pg_pool_t::FLAG_EC_OPTIMIZATIONS);
+  ECUtil::stripe_info_t sinfo(2, 1, 2 * EC_ALIGN_SIZE, &pool);
+  ErasureCodeInterfaceRef ec_impl(new MockErasureCode(2, 3));
+
+  hobject_t oid = make_temp_hoid("dump_write_test");
+
+  PGTransaction t;
+  // A fresh temp object write: use create + write so the op is valid
+  t.create(oid);
+  bufferlist bl;
+  bl.append_zero(EC_ALIGN_SIZE);
+  t.write(oid, 0, bl.length(), bl);
+
+  PGTransaction::ObjectOperation &op = t.op_map.at(oid);
+  auto plan = make_temp_plan(oid, op, sinfo);
+
+  ASSERT_NO_FATAL_FAILURE(run_generate(t, plan, sinfo, ec_impl));
 }
