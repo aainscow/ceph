@@ -668,6 +668,14 @@ options:
   services:
   - mon
   min: 1
+- name: mon_global_stretch_pool_min_size
+  type: uint
+  level: dev
+  default: 1
+  desc: Minimum number of replicas per zone for global stretch mode pools
+  services:
+  - mon
+  min: 1
 - name: mon_stretch_pool_size
   type: uint
   level: dev
