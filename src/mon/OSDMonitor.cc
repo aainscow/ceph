@@ -14861,11 +14861,17 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 
     string root = cmd_getval_or<string>(cmdmap, "root", "default");
     int replica = cmd_getval_or<int64_t>(cmdmap, "replica", 0);
-    int num_replica_per_zone = cmd_getval_or<int64_t>(cmdmap, "replica", 2);
+    int num_replica_per_zone = cmd_getval_or<int64_t>(
+      cmdmap, "replica",
+      g_conf().get_val<uint64_t>("osd_pool_stretch_default_replica"));
     string zone_failure_domain = cmd_getval_or<string>(cmdmap, "zone_failure_domain", "datacenter");
     string osd_failure_domain = cmd_getval_or<string>(cmdmap, "osd_failure_domain", "host");
     string device_class;
     cmd_getval(cmdmap, "class", device_class);
+
+    if (num_zones > 1 && replica == 0) {
+      replica = num_replica_per_zone;
+    }
 
     // Prevent specifying both size and replica
     if (cmdmap.count("size") && cmdmap.count("replica")) {
