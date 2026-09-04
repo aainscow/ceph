@@ -1153,10 +1153,11 @@ COMMAND("osd pool create "
 	"name=zone_failure_domain,type=CephString,req=false,goodchars=[A-Za-z0-9-_.] "
 	"name=osd_failure_domain,type=CephString,req=false,goodchars=[A-Za-z0-9-_.] "
 	"name=num_zones,type=CephInt,range=1,req=false "
-	"name=num_replica_per_zone,type=CephInt,range=0,req=false "
+	"name=replica,type=CephInt,range=0,req=false "
 	"name=class,type=CephString,goodchars=" CLASS_GOODCHARS ",req=false "
     "name=expected_num_objects,type=CephInt,range=0,req=false "
     "name=size,type=CephInt,range=0,req=false "
+	"name=min_size,type=CephInt,range=1,req=false "
 	"name=pg_num_min,type=CephInt,range=0,req=false "
 	"name=pg_num_max,type=CephInt,range=0,req=false "
 	"name=autoscale_mode,type=CephChoices,strings=on|off|warn,req=false "
@@ -1190,12 +1191,19 @@ COMMAND("osd pool rename "
 	"rename <srcpool> to <destpool>", "osd", "rw")
 COMMAND("osd pool get "
 	"name=pool,type=CephPoolname "
-	"name=var,type=CephChoices,strings=size|min_size|pg_num|pgp_num|crush_rule|hashpspool|nodelete|nopgchange|nosizechange|write_fadvise_dontneed|noscrub|nodeep-scrub|hit_set_type|hit_set_period|hit_set_count|hit_set_fpp|use_gmt_hitset|target_max_objects|target_max_bytes|cache_target_dirty_ratio|cache_target_dirty_high_ratio|cache_target_full_ratio|cache_min_flush_age|cache_min_evict_age|erasure_code_profile|min_read_recency_for_promote|all|min_write_recency_for_promote|fast_read|hit_set_grade_decay_rate|hit_set_search_last_n|scrub_min_interval|scrub_max_interval|deep_scrub_interval|recovery_priority|recovery_op_priority|scrub_priority|compression_mode|compression_algorithm|compression_required_ratio|compression_max_blob_size|compression_min_blob_size|csum_type|csum_min_block|csum_max_block|allow_ec_overwrites|fingerprint_algorithm|pg_autoscale_mode|pg_autoscale_bias|pg_num_min|pg_num_max|target_size_bytes|target_size_ratio|dedup_tier|dedup_chunk_algorithm|dedup_cdc_chunk_size|eio|bulk|read_ratio|pct_update_delay|allow_ec_optimizations|num_zones",
+	"name=var,type=CephChoices,strings=size|min_size|pg_num|pgp_num|crush_rule|hashpspool|nodelete|nopgchange|nosizechange|write_fadvise_dontneed|noscrub|nodeep-scrub|hit_set_type|hit_set_period|hit_set_count|hit_set_fpp|use_gmt_hitset|target_max_objects|target_max_bytes|cache_target_dirty_ratio|cache_target_dirty_high_ratio|cache_target_full_ratio|cache_min_flush_age|cache_min_evict_age|erasure_code_profile|min_read_recency_for_promote|all|min_write_recency_for_promote|fast_read|hit_set_grade_decay_rate|hit_set_search_last_n|scrub_min_interval|scrub_max_interval|deep_scrub_interval|recovery_priority|recovery_op_priority|scrub_priority|compression_mode|compression_algorithm|compression_required_ratio|compression_max_blob_size|compression_min_blob_size|csum_type|csum_min_block|csum_max_block|allow_ec_overwrites|fingerprint_algorithm|pg_autoscale_mode|pg_autoscale_bias|pg_num_min|pg_num_max|target_size_bytes|target_size_ratio|dedup_tier|dedup_chunk_algorithm|dedup_cdc_chunk_size|eio|bulk|read_ratio|pct_update_delay|allow_ec_optimizations|num_zones|replica",
 	"get pool parameter <var>", "osd", "r")
 COMMAND("osd pool set "
 	"name=pool,type=CephPoolname "
-	"name=var,type=CephChoices,strings=size|min_size|pg_num|pgp_num|pgp_num_actual|crush_rule|hashpspool|nodelete|nopgchange|nosizechange|write_fadvise_dontneed|noscrub|nodeep-scrub|hit_set_type|hit_set_period|hit_set_count|hit_set_fpp|use_gmt_hitset|target_max_bytes|target_max_objects|cache_target_dirty_ratio|cache_target_dirty_high_ratio|cache_target_full_ratio|cache_min_flush_age|cache_min_evict_age|min_read_recency_for_promote|min_write_recency_for_promote|fast_read|hit_set_grade_decay_rate|hit_set_search_last_n|scrub_min_interval|scrub_max_interval|deep_scrub_interval|recovery_priority|recovery_op_priority|scrub_priority|compression_mode|compression_algorithm|compression_required_ratio|compression_max_blob_size|compression_min_blob_size|csum_type|csum_min_block|csum_max_block|allow_ec_overwrites|fingerprint_algorithm|pg_autoscale_mode|pg_autoscale_bias|pg_num_min|pg_num_max|target_size_bytes|target_size_ratio|dedup_tier|dedup_chunk_algorithm|dedup_cdc_chunk_size|eio|bulk|read_ratio|pct_update_delay|allow_ec_optimizations "
+	"name=var,type=CephChoices,strings=size|min_size|pg_num|pgp_num|pgp_num_actual|crush_rule|hashpspool|nodelete|nopgchange|nosizechange|write_fadvise_dontneed|noscrub|nodeep-scrub|hit_set_type|hit_set_period|hit_set_count|hit_set_fpp|use_gmt_hitset|target_max_bytes|target_max_objects|cache_target_dirty_ratio|cache_target_dirty_high_ratio|cache_target_full_ratio|cache_min_flush_age|cache_min_evict_age|min_read_recency_for_promote|min_write_recency_for_promote|fast_read|hit_set_grade_decay_rate|hit_set_search_last_n|scrub_min_interval|scrub_max_interval|deep_scrub_interval|recovery_priority|recovery_op_priority|scrub_priority|compression_mode|compression_algorithm|compression_required_ratio|compression_max_blob_size|compression_min_blob_size|csum_type|csum_min_block|csum_max_block|allow_ec_overwrites|fingerprint_algorithm|pg_autoscale_mode|pg_autoscale_bias|pg_num_min|pg_num_max|target_size_bytes|target_size_ratio|dedup_tier|dedup_chunk_algorithm|dedup_cdc_chunk_size|eio|bulk|read_ratio|pct_update_delay|allow_ec_optimizations|num_zones|replica "
 	"name=val,type=CephString "
+	"name=replica,type=CephInt,range=0,req=false "
+	"name=zone_failure_domain,type=CephString,req=false "
+	"name=osd_failure_domain,type=CephString,req=false "
+	"name=crush_rule,type=CephString,req=false "
+	"name=root,type=CephString,req=false "
+	"name=class,type=CephString,req=false "
+	"name=min_size,type=CephInt,range=0,req=false "
 	"name=yes_i_really_mean_it,type=CephBool,req=false",
 	"set pool parameter <var> to <val>", "osd", "rw")
 // 'val' is a CephString because it can include a unit.  Perhaps
@@ -1251,6 +1259,7 @@ COMMAND("osd pool stretch set "
 		"name=peering_crush_bucket_target,type=CephInt,range=0 "
 		"name=peering_crush_bucket_barrier,type=CephString "
 		"name=crush_rule,type=CephString "
+		"name=replica,type=CephInt,range=0,req=false "
 		"name=size,type=CephInt,range=0 "
 		"name=min_size,type=CephInt,range=0 "
 		"name=yes_i_really_mean_it,type=CephBool,req=false",
@@ -1259,6 +1268,7 @@ COMMAND("osd pool stretch set "
 COMMAND("osd pool stretch unset "
 		"name=pool,type=CephPoolname "
 		"name=crush_rule,type=CephString "
+		"name=replica,type=CephInt,range=0,req=false "
 		"name=size,type=CephInt,range=0 "
 		"name=min_size,type=CephInt,range=0 ",
 		"unset the stretch mode for the pool",
