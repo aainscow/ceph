@@ -132,10 +132,11 @@
 #define MSG_OSD_PG_PULL        106
 #define MSG_OSD_PG_PUSH_REPLY  107
 
-#define MSG_OSD_EC_WRITE       108
-#define MSG_OSD_EC_WRITE_REPLY 109
-#define MSG_OSD_EC_READ        110
-#define MSG_OSD_EC_READ_REPLY  111
+#define MSG_OSD_EC_WRITE              108
+#define MSG_OSD_EC_WRITE_REPLY        109
+#define MSG_OSD_EC_READ               110
+#define MSG_OSD_EC_READ_REPLY         111
+#define MSG_OSD_EC_ZONE_REPLICATE       137
 
 #define MSG_OSD_REPOP         112
 #define MSG_OSD_REPOPREPLY    113
