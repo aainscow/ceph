@@ -967,6 +967,30 @@ void PeeringState::on_new_interval()
   pl->on_new_interval();
 }
 
+mini_flat_map<int, pg_shard_t> PeeringState::calc_zone_primaries(
+  const vector<int> &acting,
+  const pg_pool_t &pool_info,
+  const OSDMapRef &osdmap)
+{
+  mini_flat_map<int, pg_shard_t> result(acting.size());
+  for (unsigned i = 0; i < acting.size(); ++i) {
+    if (acting[i] == CRUSH_ITEM_NONE) {
+      continue;
+    }
+    const shard_id_t shard = pool_info.is_erasure()
+      ? shard_id_t(i) : shard_id_t::NO_SHARD;
+    if (pool_info.is_nonprimary_shard(shard)) {
+      continue;
+    }
+    const int zone = osdmap->crush->get_parent_of_type(
+      acting[i],
+      pool_info.peering_crush_bucket_barrier,
+      pool_info.crush_rule);
+    result.emplace(zone, pg_shard_t(acting[i], shard));
+  }
+  return result;
+}
+
 void PeeringState::init_primary_up_acting(
   const vector<int> &newup,
   const vector<int> &newacting,
@@ -1030,6 +1054,11 @@ void PeeringState::init_primary_up_acting(
     }
     ceph_assert(up_primary.osd == new_up_primary);
     ceph_assert(primary.osd == new_acting_primary);
+  }
+  zone_primaries.clear();
+  if (pool.info.is_stretch_pool()) {
+    const OSDMapRef osdmap = get_osdmap();
+    zone_primaries = calc_zone_primaries(acting, pool.info, osdmap);
   }
 }
 
