@@ -81,6 +81,7 @@ TYPE_NOCOPY(ECSubWrite)
 TYPE(ECSubWriteReply)
 TYPE_FEATUREFUL(ECSubRead)
 TYPE(ECSubReadReply)
+TYPE_NOCOPY(ECZoneReplicateOp)
 
 #include "osd/SnapMapper.h"
 TYPE(SnapMapper::Mapping)

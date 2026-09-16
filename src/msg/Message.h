@@ -132,10 +132,10 @@
 #define MSG_OSD_PG_PULL        106
 #define MSG_OSD_PG_PUSH_REPLY  107
 
-#define MSG_OSD_EC_WRITE       108
-#define MSG_OSD_EC_WRITE_REPLY 109
-#define MSG_OSD_EC_READ        110
-#define MSG_OSD_EC_READ_REPLY  111
+#define MSG_OSD_EC_WRITE              108
+#define MSG_OSD_EC_WRITE_REPLY        109
+#define MSG_OSD_EC_READ               110
+#define MSG_OSD_EC_READ_REPLY         111
 
 #define MSG_OSD_REPOP         112
 #define MSG_OSD_REPOPREPLY    113
@@ -153,6 +153,8 @@
 
 #define MSG_OSD_PG_READY_TO_MERGE 122
 #define MSG_OSD_PG_STOP_MERGE     124
+
+#define MSG_OSD_EC_ZONE_REPLICATE 125
 
 #define MSG_OSD_PG_LEASE        133
 #define MSG_OSD_PG_LEASE_ACK    134
