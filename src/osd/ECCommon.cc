@@ -1095,13 +1095,10 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   // since all active zones must have a primary capable shard.
   const auto &zone_primaries = get_parent()->get_zone_primaries();
   shard_id_set remote_zone_shards;
-<<<<<<< HEAD
-  if (sinfo.get_num_zones() > 1 && !zone_primaries.empty()) {
-=======
+
   if (get_parent()->get_pool().supports_zone_replicate() && 
       sinfo.get_num_zones() > 1 && 
       !zone_primaries.empty()) {
->>>>>>> 4de3e549462 (fixup! osd: Send ECZoneReplicate msg from primary to zone primary When the primary osd for a PG handles a client write, create a ECZoneReplicate to send to the remote zone-primary if in stretch mode. Suppress SubOpWrites to the remote zone osds.)
     const pg_shard_t whoami = get_parent()->whoami_shard();
     const int my_zone = sinfo.get_shard_zone(whoami.shard);
     for (auto &pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
@@ -1217,9 +1214,10 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
       messages.push_back(std::make_pair(pg_shard.osd, r));
     }
   }
-
-  build_zone_replicate_msgs(op, zone_primaries, remote_zone_shards, messages);
-
+  if (get_parent()->get_pool().supports_zone_replicate()) {
+    build_zone_replicate_msgs(op, zone_primaries, remote_zone_shards, messages);
+  }
+  
   next_write_all_shards = false;
 
   if (!messages.empty()) {

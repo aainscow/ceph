@@ -1335,6 +1335,10 @@ struct pg_pool_t {
     // Allow decreasing pg_num/pgp_num (PG merge) for crimson pools.
     // Note: requires that the pool is currently all bluestore.
     FLAG_CRIMSON_ALLOW_PG_MERGE = 1<<22,
+    FLAG_ZONE_REPLICATE = 1<<23, // Multi-zone pools are permitted to use zone-primary replication
+    // (MOSDECZoneReplicate). Once enabled, ensures no OSD can downgrade below the release that
+    // supports the MOSDECZoneReplicate message.
+    // Note: requires EC stretch mode R2
   };
 
   static const char *get_flag_name(uint64_t f) {
@@ -1362,6 +1366,7 @@ struct pg_pool_t {
     case FLAG_CLIENT_SPLIT_READS: return "split_reads";
     case FLAG_OMAP: return "supports_omap";
     case FLAG_CRIMSON_ALLOW_PG_MERGE: return "crimson_allow_pg_merge";
+    case FLAG_ZONE_REPLICATE: return "ec_zone_replicate";
     default: return "???";
     }
   }
@@ -1426,6 +1431,8 @@ struct pg_pool_t {
       return FLAG_CLIENT_SPLIT_READS;
     if (name == "supports_omap")
       return FLAG_OMAP;
+    if (name == "ec_zone_replicate")
+      return FLAG_ZONE_REPLICATE;
     return 0;
   }
 
@@ -1850,6 +1857,10 @@ public:
 
   bool supports_omap() const {
     return has_flag(FLAG_OMAP) || is_replicated();
+  }
+
+  bool supports_zone_replicate() const {
+    return has_flag(FLAG_ZONE_REPLICATE) && get_num_zone() > 1;
   }
 
   bool requires_aligned_append() const {
