@@ -1124,11 +1124,16 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   // since all active zones must have a primary capable shard.
   const auto &zone_primaries = get_parent()->get_zone_primaries();
   shard_id_set remote_zone_shards;
+<<<<<<< HEAD
 
   if (get_parent()->get_pool().supports_zone_replicate() && 
       !op.is_zone_replicate() && 
       sinfo.get_num_zones() > 1 && 
       !zone_primaries.empty()) {
+=======
+  if (sinfo.get_num_zones() > 1 && !zone_primaries.empty() &&
+      get_parent()->get_pool().supports_zone_replicate()) {
+>>>>>>> 7e0b0e8137d (osd: Introduce flag FLAG_ZONE_REPLICATE for preventing zone replication on old OSDs)
     const pg_shard_t whoami = get_parent()->whoami_shard();
     const int my_zone = sinfo.get_shard_zone(whoami.shard);
     for (auto &pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
