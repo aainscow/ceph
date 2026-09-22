@@ -395,6 +395,81 @@ TEST_F(TestECActingStretch, CRUSH_rehash) {
   EXPECT_FALSE(backfill.empty());
 }
 
+
+/**
+ * Test: CRUSH rehash degraded - osds change shard zone (location in vector)
+ *
+ * Scenario: up set OSDs are flip zones from acting - expect OSDs to not mix zones
+ * Expected: want set should be the same as up (OSDs do not mix zones)
+ */
+TEST_F(TestECActingStretch, CRUSH_rehash_degraded) {
+  const pg_pool_t* pool = osdmap->get_pg_pool(pool_id);
+  ASSERT_NE(pool, nullptr);
+  PGPool pgpool(osdmap, pool_id, *pool, "test_ec_pool");
+
+  // Zone 0 is down
+  vector<int> acting = {5, 4, 3, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE};     // Old acting set
+  vector<int> up = {CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, CRUSH_ITEM_NONE, 5, 4, 3}; // Current CRUSH mapping 
+
+  // Build all_info map
+  map<pg_shard_t, pg_info_t> all_info;
+  pg_history_t history;
+  history.epoch_created = 1;
+  history.same_interval_since = 1;
+  
+  for (unsigned i = 0; i < 3; i++) {
+    pg_shard_t shard(acting[i], shard_id_t(i));
+    pg_info_t info(spg_t(pg_t(1, pool_id), shard_id_t(i)));
+    info.history = history;
+    info.last_update = eversion_t(1, i);
+    all_info[shard] = info;
+  }
+  
+  auto auth_log_shard = all_info.find(pg_shard_t(acting[0], shard_id_t(0)));
+  ASSERT_NE(auth_log_shard, all_info.end());
+  
+  // Call calc_ec_acting_stretch
+  vector<int> want;
+  set<pg_shard_t> backfill;
+  set<pg_shard_t> acting_backfill;
+  ostringstream ss;
+  
+  PeeringState::calc_ec_acting_stretch(
+    auth_log_shard,
+    pool->size,
+    acting,
+    up,
+    all_info,
+    false,
+    &want,
+    &backfill,
+    &acting_backfill,
+    osdmap,
+    pgpool,
+    ss);
+  
+  std::cerr << ss.str();
+  // Verify want vector
+  ASSERT_EQ(want.size(), 6);
+    // Verify zone distribution: OSDs 0-2 in dc0, OSDs 3-5 in dc1
+  for (int i = 0; i < 3; i++) {
+    int dc0 = osdmap->crush->get_parent_of_type(i, 9, pool->crush_rule);
+    int dc1 = osdmap->crush->get_parent_of_type(i + 3, 9, pool->crush_rule);
+    EXPECT_NE(dc0, dc1) << "dc0 and dc1 should be different buckets";
+  }
+    // Verify want contains all 6 OSDs
+  EXPECT_EQ(want.size(), 6);
+  EXPECT_EQ(want[0], CRUSH_ITEM_NONE);
+  EXPECT_EQ(want[1], CRUSH_ITEM_NONE);
+  EXPECT_EQ(want[2], CRUSH_ITEM_NONE);
+  EXPECT_EQ(want[3], 5);
+  EXPECT_EQ(want[4], 4);
+  EXPECT_EQ(want[5], 3);
+  
+  // Verify no backfill needed
+  EXPECT_FALSE(backfill.empty());
+}
+
 /**
  * Test: Stray selected from correct zone via all_info_by_rel_shard
  *

@@ -2032,11 +2032,10 @@ void PeeringState::calc_ec_acting_stretch(
     // We first try to fill the position with up[i]
     if (up.size() > (unsigned)i && up[i] != CRUSH_ITEM_NONE) {
       auto info_it = all_info.find(pg_shard_t(up[i], shard_id_t(i)));
-      if (!zone_at_max(expected_zone) &&
-          info_it != all_info.end() &&
-          !info_it->second.is_incomplete() &&
-          info_it->second.last_update >=
-          auth_log_shard->second.log_tail) {
+      bool data_ok = (info_it != all_info.end() &&
+                      !info_it->second.is_incomplete() &&
+                      info_it->second.last_update >= auth_log_shard->second.log_tail);
+      if (!zone_at_max(expected_zone) && data_ok) {
         ss << " selecting up[i]: " << pg_shard_t(up[i], shard_id_t(i))
            << " in expected zone " << expected_zone << std::endl;
         want[i] = up[i];
@@ -2044,8 +2043,16 @@ void PeeringState::calc_ec_acting_stretch(
         continue;
       }
 
-      ss << " backfilling up[i]: " << pg_shard_t(up[i], shard_id_t(i)) << " and ";
-      backfill->insert(pg_shard_t(up[i], shard_id_t(i)));
+      // Only backfill if the data itself is missing or stale.  If up[i] was
+      // rejected solely because zone_at_max, its data is intact — inserting
+      // it into backfill would create a target with last_backfill==MAX
+      if (!data_ok) {
+        ss << " backfilling up[i]: " << pg_shard_t(up[i], shard_id_t(i)) << " and ";
+        backfill->insert(pg_shard_t(up[i], shard_id_t(i)));
+      } else {
+        ss << " skipping up[i]: " << pg_shard_t(up[i], shard_id_t(i))
+           << " (zone at max, data intact)" << std::endl;
+      }
     }
 
     // Try acting set when up[i] doesn't work out.
@@ -2085,7 +2092,9 @@ void PeeringState::calc_ec_acting_stretch(
         int stray_zone = get_crush_zone(j->osd);
 
         // Check if stray is in the expected zone.
-        if (expected_zone != CRUSH_ITEM_NONE &&
+        // If expected_zone is unknown (CRUSH_ITEM_NONE), the zone for this
+        // shard block could not be determined from up[] — skip all strays.
+        if (expected_zone == CRUSH_ITEM_NONE ||
             stray_zone != expected_zone) {
           ss << " skipping stray " << *j << " (wrong zone)" << std::endl;
           continue;
