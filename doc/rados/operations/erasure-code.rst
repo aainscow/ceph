@@ -294,6 +294,11 @@ This lets a pool keep a small stripe unit for small objects and small random
 I/O while large objects written in one operation, such as RGW objects, are
 stored in a single stripe. Existing objects are not changed.
 
+Clients read objects directly from the OSDs that hold the data (see
+:confval:`rados_replica_read_policy`) only if they supply the size of the
+object with the read. Other clients read through the primary OSD. A client
+that supplies a wrong size gets correct data from the primary OSD.
+
 The flag is experimental. Every OSD that serves the pool must support it:
 an OSD that does not would read and write objects with their own chunk size
 as if they used the stripe unit. Setting it therefore requires

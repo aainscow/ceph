@@ -73,7 +73,8 @@ std::pair<SplitOp::extent_set, bufferlist> ECSplitOp::assemble_buffer_sparse_rea
   auto &orig_osd_op = orig_op->ops[ops_index].op;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(orig_op->target.base_oloc.pool);
   ceph_assert(pi);
-  ECStripeView stripe_view(orig_osd_op.extent.offset, orig_osd_op.extent.length, pi);
+  ECStripeView stripe_view(orig_osd_op.extent.offset, orig_osd_op.extent.length,
+                           pi, ec_chunk_size);
   ldout(cct, DBG_LVL) << __func__ << " START -->" << " object_id=" << orig_op->target.base_oid << " tid=" << orig_op->tid << " extent="
     << orig_osd_op.extent.offset << "~" << orig_osd_op.extent.length << dendl;
 
@@ -132,7 +133,8 @@ void ECSplitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) const {
   auto &orig_osd_op = orig_op->ops[ops_index].op;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(orig_op->target.base_oloc.pool);
   ceph_assert(pi);
-  ECStripeView stripe_view(orig_osd_op.extent.offset, orig_osd_op.extent.length, pi);
+  ECStripeView stripe_view(orig_osd_op.extent.offset, orig_osd_op.extent.length,
+                           pi, ec_chunk_size);
 
   std::vector<uint64_t> buffer_offset(stripe_view.data_chunk_count);
   ldout(cct, DBG_LVL) << __func__ << " object_id=" << orig_op->target.base_oid << " tid=" << orig_op->tid << " extent="
@@ -181,7 +183,7 @@ void ECSplitOp::init_read(OSDOp &op, bool sparse, int ops_index) {
   uint64_t offset = op.op.extent.offset;
   uint64_t length = op.op.extent.length;
   uint64_t data_chunk_count = pi->get_ec_data_shard_count();
-  uint32_t chunk_size = pi->get_stripe_width() / data_chunk_count;
+  const uint64_t chunk_size = ec_chunk_size;
   uint64_t start_chunk = offset / chunk_size;
   // This calculation is wrong for length = 0, but such IOs should not have
   // reached here! Zero-length reads are rejected earlier in the validate()
@@ -624,7 +626,8 @@ void SplitOp::protect_torn_reads() {
   for (auto&& [index, sr] : sub_reads) {
     auto &internal_version = sr.internal_version;
     internal_version = std::make_optional<InternalVersion>();
-    sr.rd.get_internal_versions(&internal_version->ec, &internal_version->bl);
+    sr.rd.get_internal_versions(&internal_version->ec, &internal_version->bl,
+                                declared_ec_chunk_size);
   }
 }
 
@@ -655,22 +658,14 @@ void SplitOp::init(OSDOp &op, int ops_index) {
 #define dout_prefix *_dout << " SplitOp::"
 
 namespace {
-std::pair<bool, bool> is_single_chunk(const pg_pool_t *pi, uint64_t offset, uint64_t len) {
+std::pair<bool, bool> is_single_chunk(const pg_pool_t *pi, uint64_t chunk_size,
+                                      uint64_t offset, uint64_t len) {
   if (!pi->is_erasure()) {
     return {false, false};
   }
 
-  uint64_t stripe_width = pi->get_stripe_width();
-
-  // Optimization: Use stripe_width / 2 as a threshold to quickly reject requests
-  // that cannot fit in a single chunk. Since k (data chunks) is at least 2,
-  // chunk_size = stripe_width / k <= stripe_width / 2. This early check avoids
-  // the more expensive division operation (stripe_width / data_chunk_count) below.
-  if (len > stripe_width / 2) {
-    return {false, false};
-  }
   uint64_t data_chunk_count = pi->get_ec_data_shard_count();
-  uint32_t chunk_size = pi->get_stripe_width() / data_chunk_count;
+  uint64_t stripe_width = chunk_size * data_chunk_count;
 
   // Chunk_size should never be zero, so this is paranoia.
   if (len > chunk_size || chunk_size == 0) {
@@ -743,7 +738,8 @@ bool validate_flags(const pg_pool_t *pi, Objecter::Op *op, CephContext *cct) {
  * @param[out] single_direct_op Set to true if op can be sent directly to single OSD
  * @return true if a suitable read operation was found, false otherwise
  */
-bool validate_operations(Objecter::Op *op, const pg_pool_t *pi, bool is_erasure,
+bool validate_operations(Objecter::Op *op, const pg_pool_t *pi,
+                        uint64_t ec_chunk_size, bool is_erasure,
                         uint64_t replica_min_read_size, CephContext *cct,
                         bool &has_primary_ops, bool &single_direct_op) {
   bool is_first_chunk = true;
@@ -765,7 +761,8 @@ bool validate_operations(Objecter::Op *op, const pg_pool_t *pi, bool is_erasure,
           suitable_read_found = true;
         }
         if (single_direct_op) {
-          auto [single_chunk, first_chunk] = is_single_chunk(pi, o.op.extent.offset, o.op.extent.length);
+          auto [single_chunk, first_chunk] = is_single_chunk(
+            pi, ec_chunk_size, o.op.extent.offset, o.op.extent.length);
           is_first_chunk = is_first_chunk && first_chunk;
           single_direct_op = single_direct_op && single_chunk;
         }
@@ -812,7 +809,8 @@ bool validate_operations(Objecter::Op *op, const pg_pool_t *pi, bool is_erasure,
  *         - single_direct_op: true if operation can be sent to single OSD
  */
 std::pair<bool, bool> validate(Objecter::Op *op, Objecter &objecter,
-                               const pg_pool_t *pi, CephContext *cct) {
+                               const pg_pool_t *pi, uint64_t ec_chunk_size,
+                               CephContext *cct) {
   bool is_erasure = pi->is_erasure();
 
   // Validate flags
@@ -834,7 +832,8 @@ std::pair<bool, bool> validate(Objecter::Op *op, Objecter &objecter,
   uint64_t replica_min_read_size = replica_min_shard_read_size * kReplicaMinShardReads;
 
   // Validate operations and read sizes
-  bool suitable_read_found = validate_operations(op, pi, is_erasure,
+  bool suitable_read_found = validate_operations(op, pi, ec_chunk_size,
+                                                 is_erasure,
                                                  replica_min_read_size, cct,
                                                  has_primary_ops, single_direct_op);
 
@@ -885,14 +884,15 @@ void debug_op_summary(const std::string &str, Objecter::Op *op, CephContext *cct
  * @param objecter Objecter instance
  * @param cct CephContext for logging
  */
-void SplitOp::prepare_single_op(Objecter::Op *op, Objecter &objecter, CephContext *cct) {
+void SplitOp::prepare_single_op(Objecter::Op *op, Objecter &objecter,
+                                CephContext *cct, uint64_t ec_chunk_size) {
   auto &target = op->target;
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(target.base_oloc.pool);
   ceph_assert(pi);
 
   objecter._calc_target(&op->target, op);
   uint64_t data_chunk_count = pi->get_ec_data_shard_count();
-  uint32_t chunk_size = pi->get_stripe_width() / data_chunk_count;
+  const uint64_t chunk_size = ec_chunk_size;
 
   // Find the first read to work out where the IO goes.
   for (auto o : op->ops) {
@@ -977,7 +977,26 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     return false;
   }
 
-  auto [validated, single_op] = validate(op, objecter, pi, cct);
+  /* In a pool with dynamic chunk sizes each object may have its own geometry,
+   * which the client can only work out from the object size hint. Without
+   * one, the read goes to the primary. The OSD rejects direct reads planned
+   * with the wrong chunk size, so a wrong hint only costs a retry. */
+  uint64_t ec_chunk_size = 0;
+  if (pi->is_erasure()) {
+    if (pi->allows_ec_dynamic_chunk_size()) {
+      if (op->object_size_hint == 0) {
+        ldout(cct, DBG_LVL) << __func__
+                            << " REJECT: no object size hint" << dendl;
+        return false;
+      }
+      ec_chunk_size =
+        pi->get_ec_chunk_size_for_object_size(op->object_size_hint);
+    } else {
+      ec_chunk_size = pi->get_ec_default_chunk_size();
+    }
+  }
+
+  auto [validated, single_op] = validate(op, objecter, pi, ec_chunk_size, cct);
 
   if (!validated) {
     return false;
@@ -985,7 +1004,7 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
 
   if (single_op) {
     ldout(cct, DBG_LVL) << __func__ <<" reusing original op " << dendl;
-    prepare_single_op(op, objecter, cct);
+    prepare_single_op(op, objecter, cct, ec_chunk_size);
     return false;
   }
 
@@ -994,6 +1013,10 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
 
   if (pi->is_erasure()) {
     split_read = std::make_shared<ECSplitOp>(op, objecter, cct, pi->size);
+    split_read->ec_chunk_size = ec_chunk_size;
+    if (pi->allows_ec_dynamic_chunk_size()) {
+      split_read->declared_ec_chunk_size = ec_chunk_size;
+    }
   } else {
     split_read = std::make_shared<ReplicaSplitOp>(op, objecter, cct, pi->size);
   }
@@ -1038,7 +1061,7 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
   // fails, then this will catch the cases (albeit less efficiently).
   if (split_read->sub_reads.size() <= 1) {
     ldout(cct, DBG_LVL) << __func__ <<" reusing original op - inefficient" << dendl;
-    prepare_single_op(op, objecter, cct);
+    prepare_single_op(op, objecter, cct, ec_chunk_size);
     split_read->abort = true; // Required for destructor.
     return false;
   }

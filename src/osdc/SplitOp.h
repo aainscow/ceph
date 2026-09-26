@@ -210,11 +210,12 @@ class SplitOp {
     ECStripeView(
       uint64_t offset,
       uint64_t length,
-      const pg_pool_t *pi)
+      const pg_pool_t *pi,
+      uint64_t chunk_size)
       : start_offset(offset),
         total_length(length),
         data_chunk_count(pi->get_ec_data_shard_count()),
-        chunk_size(pi->get_stripe_width() / data_chunk_count) {
+        chunk_size(chunk_size) {
     }
 
     ECStripeIterator begin() const {
@@ -342,6 +343,10 @@ class SplitOp {
   bool abort = false;
   int flags = 0;
   int reference_sub_read = -1;
+  // EC only: the chunk size of the object being read.
+  uint64_t ec_chunk_size = 0;
+  // EC only: the chunk size to declare to the OSDs, if they must check it.
+  uint64_t declared_ec_chunk_size = 0;
   std::map<int, std::vector<int>> op_offset_map;
 
  public:
@@ -376,7 +381,8 @@ class SplitOp {
   * @param objecter Objecter instance
   * @param cct CephContext for logging
   */
- static void prepare_single_op(Objecter::Op *op, Objecter &objecter, CephContext *cct);
+ static void prepare_single_op(Objecter::Op *op, Objecter &objecter,
+                               CephContext *cct, uint64_t ec_chunk_size);
  
  /**
   * @brief Add version tracking to sub-operations for consistency.

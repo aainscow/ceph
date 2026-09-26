@@ -466,7 +466,7 @@ You may set values for the following keys:
 
 .. describe:: ec_dynamic_chunk_size_max
 
-   :Description: The largest chunk size that a pool with ``allow_ec_dynamic_chunk_size`` chooses for an object. Changing it affects only objects created afterwards.
+   :Description: The largest chunk size that a pool with ``allow_ec_dynamic_chunk_size`` chooses for an object. Changing it affects only objects created afterwards. Clients work out the chunk size of an object for direct reads from the current value, so after a change, direct reads of existing objects whose chunk size was limited by the old value go through the primary OSD. It is best set before the pool holds data.
    :Type: Integer (bytes)
    :Valid Range: A multiple of 4 KiB, at least the pool's stripe unit and at most 4 MiB.
    :Default: 1 MiB

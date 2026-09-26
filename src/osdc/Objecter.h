@@ -1516,10 +1516,15 @@ struct ObjectOperation {
     osd_op.op.assert_ver.ver = ver;
   }
 
+  /* ec_chunk_size, if not 0, is the chunk size an EC direct read that carries
+   * this op was planned with; the OSD rejects the read if the object's chunk
+   * size differs. */
   void get_internal_versions(boost::system::error_code* ec,
-		buffer::list *pbl) {
-  	ceph::buffer::list bl;
-  	add_op(CEPH_OSD_OP_GET_INTERNAL_VERSIONS);
+		buffer::list *pbl, uint64_t ec_chunk_size = 0) {
+  	OSDOp &osd_op = add_op(CEPH_OSD_OP_GET_INTERNAL_VERSIONS);
+  	if (ec_chunk_size) {
+  	  ceph::encode(ec_chunk_size, osd_op.indata);
+  	}
   	out_bl.back() = pbl;
   	out_ec.back() = ec;
   }

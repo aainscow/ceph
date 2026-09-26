@@ -503,5 +503,243 @@ TEST_P(LibRadosSplitOpPP, CancelReplica)
   EXPECT_EQ(-ECANCELED, ret);
 }
 
+// An optimized EC pool (k=2, m=1) with dynamic chunk sizes. The parameter
+// selects balanced reads, which is what makes the client split reads.
+class LibRadosSplitOpECDynamicPP : public RadosTestPPBase,
+                                   public ::testing::TestWithParam<bool> {
+protected:
+  static std::string pool_name;
+  std::string nspace;
+  uint64_t default_chunk_size = 0;
+
+  static void SetUpTestCase() {
+    SKIP_IF_CRIMSON();
+    pool_name = get_temp_pool_name("LibRadosSplitOpECDynamicPP_");
+    std::map<std::string, std::string> config =
+      {{"rados_replica_read_policy", "default"}};
+    ASSERT_EQ("", connect_cluster_pp(s_cluster, config));
+    ASSERT_EQ("", create_ec_pool_pp(pool_name, s_cluster, true));
+    ASSERT_EQ(0, s_cluster.mon_command(
+      fmt::format(R"({{"prefix": "osd pool set", "pool": "{}", )"
+                  R"("var": "allow_ec_dynamic_chunk_size", "val": "true", )"
+                  R"("yes_i_really_mean_it": true}})",
+                  pool_name),
+      {}, nullptr, nullptr));
+    s_cluster.wait_for_latest_osdmap();
+  }
+
+  static void TearDownTestCase() {
+    SKIP_IF_CRIMSON();
+    ASSERT_EQ(0, destroy_pool_pp(pool_name, s_cluster));
+    s_cluster.shutdown();
+  }
+
+  void SetUp() override {
+    SKIP_IF_CRIMSON();
+    split_ops = GetParam();
+    balanced_read_flags = split_ops ? librados::OPERATION_BALANCE_READS : 0;
+    ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
+    nspace = get_temp_pool_name();
+    ioctx.set_namespace(nspace);
+    uint64_t stripe_width = 0;
+    ASSERT_EQ(0, ioctx.pool_required_alignment2(&stripe_width));
+    default_chunk_size = stripe_width / 2;
+    ASSERT_NE(0u, default_chunk_size);
+  }
+
+  void TearDown() override {
+    SKIP_IF_CRIMSON();
+    cleanup_namespace(ioctx, nspace);
+    ioctx.close();
+  }
+
+  static bufferlist make_data(uint64_t size) {
+    bufferlist bl;
+    for (uint64_t i = 0; i < size; i += sizeof(uint64_t)) {
+      ceph::encode(i, bl);
+    }
+    bl.splice(size, bl.length() - size);
+    return bl;
+  }
+
+  // Write an object in one operation, optionally with an allocation hint,
+  // and return its contents.
+  bufferlist write_object(const std::string &oid, uint64_t size,
+                          uint64_t expected_object_size = 0) {
+    bufferlist bl = make_data(size);
+    ObjectWriteOperation write;
+    if (expected_object_size) {
+      write.set_alloc_hint2(expected_object_size, 0, 0);
+    }
+    write.write_full(bl);
+    EXPECT_TRUE(AssertOperateWithoutSplitOp(0, oid, &write));
+    ensure_log_committed(oid.c_str(), 0, size);
+    return bl;
+  }
+
+  bufferlist expected(const bufferlist &bl, uint64_t off, uint64_t len) {
+    bufferlist sub;
+    sub.substr_of(bl, off, len);
+    return sub;
+  }
+};
+
+std::string LibRadosSplitOpECDynamicPP::pool_name;
+
+TEST_P(LibRadosSplitOpECDynamicPP, WholeObjectWithHint) {
+  SKIP_IF_CRIMSON();
+  // Chunk size is 8 default chunks: one stripe of two data shards.
+  const uint64_t size = 16 * default_chunk_size;
+  bufferlist data = write_object("foo", size);
+
+  ioctx.set_no_version_on_read(true);
+  ObjectReadOperation read;
+  read.read(0, size, nullptr, nullptr);
+  read.set_object_size_hint(size);
+  bufferlist bl;
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl,
+                                       balanced_read_flags));
+  ioctx.set_no_version_on_read(false);
+  ASSERT_TRUE(data.contents_equal(bl));
+}
+
+TEST_P(LibRadosSplitOpECDynamicPP, OneShardWithHint) {
+  SKIP_IF_CRIMSON();
+  const uint64_t size = 16 * default_chunk_size;
+  const uint64_t chunk_size = size / 2;
+  bufferlist data = write_object("foo", size);
+
+  // Wholly within the second data shard.
+  ioctx.set_no_version_on_read(true);
+  ObjectReadOperation read;
+  read.read(chunk_size + default_chunk_size, 2 * default_chunk_size,
+            nullptr, nullptr);
+  read.set_object_size_hint(size);
+  bufferlist bl;
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl,
+                                       balanced_read_flags));
+  ioctx.set_no_version_on_read(false);
+  ASSERT_TRUE(expected(data, chunk_size + default_chunk_size,
+                       2 * default_chunk_size).contents_equal(bl));
+}
+
+TEST_P(LibRadosSplitOpECDynamicPP, NoHintReadsFromPrimary) {
+  SKIP_IF_CRIMSON();
+  const uint64_t size = 16 * default_chunk_size;
+  bufferlist data = write_object("foo", size);
+
+  ioctx.set_no_version_on_read(true);
+  ObjectReadOperation read;
+  read.read(0, size, nullptr, nullptr);
+  bufferlist bl;
+  ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &read, &bl,
+                                          balanced_read_flags));
+  ioctx.set_no_version_on_read(false);
+  ASSERT_TRUE(data.contents_equal(bl));
+}
+
+TEST_P(LibRadosSplitOpECDynamicPP, SmallObjectKeepsDefaultChunk) {
+  SKIP_IF_CRIMSON();
+  const uint64_t size = default_chunk_size;
+  bufferlist data = write_object("foo", size);
+
+  ioctx.set_no_version_on_read(true);
+  ObjectReadOperation read;
+  read.read(0, size, nullptr, nullptr);
+  read.set_object_size_hint(size);
+  bufferlist bl;
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl,
+                                       balanced_read_flags));
+  ioctx.set_no_version_on_read(false);
+  ASSERT_TRUE(data.contents_equal(bl));
+}
+
+TEST_P(LibRadosSplitOpECDynamicPP, AllocHintChoosesChunk) {
+  SKIP_IF_CRIMSON();
+  // The allocation hint sizes the chunk, so this object sits in the first
+  // data shard.
+  const uint64_t expected_size = 64 * default_chunk_size;
+  const uint64_t size = 8 * default_chunk_size;
+  bufferlist data = write_object("foo", size, expected_size);
+
+  ioctx.set_no_version_on_read(true);
+  ObjectReadOperation read;
+  read.read(0, size, nullptr, nullptr);
+  read.set_object_size_hint(expected_size);
+  bufferlist bl;
+  ASSERT_TRUE(AssertOperateWithSplitOp(0, "foo", &read, &bl,
+                                       balanced_read_flags));
+  ioctx.set_no_version_on_read(false);
+  ASSERT_TRUE(data.contents_equal(bl));
+}
+
+// An object that is removed and written again, in one operation or in two,
+// gets the chunk size of its new contents.
+TEST_P(LibRadosSplitOpECDynamicPP, RewriteChoosesChunkAgain) {
+  SKIP_IF_CRIMSON();
+  write_object("foo", 64 * default_chunk_size);
+
+  const uint64_t size = 16 * default_chunk_size;
+  bufferlist data = make_data(size);
+  ObjectWriteOperation rewrite;
+  rewrite.remove();
+  rewrite.write_full(data);
+  ASSERT_TRUE(AssertOperateWithoutSplitOp(0, "foo", &rewrite));
+  ensure_log_committed("foo", 0, size);
+
+  ioctx.set_no_version_on_read(true);
+  {
+    ObjectReadOperation read;
+    read.read(0, size, nullptr, nullptr);
+    read.set_object_size_hint(size);
+    bufferlist bl;
+    ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl,
+                                         balanced_read_flags));
+    ASSERT_TRUE(data.contents_equal(bl));
+  }
+
+  ASSERT_EQ(0, ioctx.remove("foo"));
+  const uint64_t small_size = 4 * default_chunk_size;
+  data = write_object("foo", small_size);
+  {
+    ObjectReadOperation read;
+    read.read(0, small_size, nullptr, nullptr);
+    read.set_object_size_hint(small_size);
+    bufferlist bl;
+    ASSERT_TRUE(AssertOperateWithSplitOp(0, 2, "foo", &read, &bl,
+                                         balanced_read_flags));
+    ASSERT_TRUE(data.contents_equal(bl));
+  }
+  ioctx.set_no_version_on_read(false);
+}
+
+// A hint that gives the wrong chunk size costs a retry through the primary
+// but never returns wrong data.
+TEST_P(LibRadosSplitOpECDynamicPP, WrongHint) {
+  SKIP_IF_CRIMSON();
+  const uint64_t size = 16 * default_chunk_size;
+  bufferlist data = write_object("foo", size);
+
+  for (uint64_t hint : {default_chunk_size, 4 * default_chunk_size,
+                        64 * default_chunk_size}) {
+    SCOPED_TRACE(fmt::format("hint={}", hint));
+    for (auto [off, len] : {std::pair<uint64_t, uint64_t>{0, size},
+                            {0, default_chunk_size},
+                            {size / 2, default_chunk_size},
+                            {default_chunk_size, 2 * default_chunk_size}}) {
+      SCOPED_TRACE(fmt::format("read {}~{}", off, len));
+      ObjectReadOperation read;
+      read.read(off, len, nullptr, nullptr);
+      read.set_object_size_hint(hint);
+      bufferlist bl;
+      ASSERT_EQ(0, ioctx.operate("foo", &read, &bl, balanced_read_flags));
+      ASSERT_TRUE(expected(data, off, len).contents_equal(bl));
+    }
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P_REPLICA(LibRadosSplitOpPP);
 INSTANTIATE_TEST_SUITE_P_EC(LibRadosSplitOpECPP);
+INSTANTIATE_TEST_SUITE_P(LibRadosSplitOpECDynamicPPParamCombination,
+                         LibRadosSplitOpECDynamicPP,
+                         ::testing::Bool()); /* split_ops */
