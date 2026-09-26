@@ -6639,6 +6639,7 @@ void object_info_t::copy_user_bits(const object_info_t& other)
   user_version = other.user_version;
   data_digest = other.data_digest;
   omap_digest = other.omap_digest;
+  ec_chunk_size = other.ec_chunk_size;
 }
 
 void object_info_t::encode(ceph::buffer::list& bl, uint64_t features) const
@@ -6648,7 +6649,7 @@ void object_info_t::encode(ceph::buffer::list& bl, uint64_t features) const
   for (auto i = watchers.cbegin(); i != watchers.cend(); ++i) {
     old_watchers.insert(make_pair(i->first.second, i->second));
   }
-  ENCODE_START(18, 8, bl);
+  ENCODE_START(19, 8, bl);
   encode(soid, bl);
   encode(myoloc, bl);	//Retained for compatibility
   encode((__u32)0, bl); // was category, no longer used
@@ -6683,13 +6684,14 @@ void object_info_t::encode(ceph::buffer::list& bl, uint64_t features) const
     encode(manifest, bl);
   }
   encode(shard_versions, bl);
+  encode(ec_chunk_size, bl);
   ENCODE_FINISH(bl);
 }
 
 void object_info_t::decode(ceph::buffer::list::const_iterator& bl)
 {
   object_locator_t myoloc;
-  DECODE_START_LEGACY_COMPAT_LEN(18, 8, 8, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(19, 8, 8, bl);
   map<entity_name_t, watch_info_t> old_watchers;
   decode(soid, bl);
   decode(myoloc, bl);
@@ -6778,6 +6780,11 @@ void object_info_t::decode(ceph::buffer::list::const_iterator& bl)
   if (struct_v >= 18) {
     decode(shard_versions, bl);
   }
+  if (struct_v >= 19) {
+    decode(ec_chunk_size, bl);
+  } else {
+    ec_chunk_size = 0;
+  }
   DECODE_FINISH(bl);
 }
 
@@ -6807,6 +6814,7 @@ void object_info_t::dump(Formatter *f) const
   f->dump_unsigned("expected_object_size", expected_object_size);
   f->dump_unsigned("expected_write_size", expected_write_size);
   f->dump_unsigned("alloc_hint_flags", alloc_hint_flags);
+  f->dump_unsigned("ec_chunk_size", ec_chunk_size);
   f->dump_object("manifest", manifest);
   f->open_object_section("watchers");
   for (auto p = watchers.cbegin(); p != watchers.cend(); ++p) {
@@ -6831,8 +6839,9 @@ list<object_info_t> object_info_t::generate_test_instances()
 {
   list<object_info_t> o;
   o.push_back(object_info_t());
-  
-  // fixme
+  o.push_back(object_info_t());
+  o.back().size = 3 << 20;
+  o.back().ec_chunk_size = 786432;
   return o;
 }
 
@@ -6856,6 +6865,8 @@ ostream& operator<<(ostream& out, const object_info_t& oi)
     out << " " << oi.manifest;
   if (!oi.shard_versions.empty())
     out << " shard_versions=" << oi.shard_versions;
+  if (oi.ec_chunk_size)
+    out << " ec_chunk_size " << oi.ec_chunk_size;
   out << ")";
   return out;
 }

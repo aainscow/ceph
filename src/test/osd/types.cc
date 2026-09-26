@@ -2807,6 +2807,36 @@ TEST(pool_opts_t, ec_dynamic_chunk_size_max)
   EXPECT_EQ(262144u, decoded.get_ec_chunk_size_for_object_size(4u << 20));
 }
 
+TEST(object_info_t, ec_chunk_size_encoding)
+{
+  object_info_t oi(hobject_t(object_t("obj"), "", CEPH_NOSNAP, 0, 1, ""));
+  oi.size = 3 << 20;
+  oi.ec_chunk_size = 786432;
+
+  bufferlist bl;
+  oi.encode(bl, CEPH_FEATURES_ALL);
+  object_info_t decoded;
+  auto p = bl.cbegin();
+  decoded.decode(p);
+  EXPECT_EQ(786432u, decoded.ec_chunk_size);
+  EXPECT_EQ(oi.size, decoded.size);
+
+  // A new object has no chunk size of its own.
+  EXPECT_EQ(0u, object_info_t().ec_chunk_size);
+}
+
+TEST(object_info_t, ec_chunk_size_copied_to_clone)
+{
+  object_info_t head(hobject_t(object_t("obj"), "", CEPH_NOSNAP, 0, 1, ""));
+  head.size = 1 << 20;
+  head.ec_chunk_size = 262144;
+
+  object_info_t clone(hobject_t(object_t("obj"), "", 4, 0, 1, ""));
+  clone.copy_user_bits(head);
+  EXPECT_EQ(head.ec_chunk_size, clone.ec_chunk_size);
+  EXPECT_EQ(head.size, clone.size);
+}
+
 /*
  * Local Variables:
  * compile-command: "cd ../.. ;

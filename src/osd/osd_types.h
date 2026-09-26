@@ -6468,6 +6468,10 @@ struct object_info_t {
 
   std::map<shard_id_t,eversion_t> shard_versions;
 
+  // Erasure coded pools with FLAG_EC_DYNAMIC_CHUNK_SIZE: the object's chunk
+  // size, fixed while the object holds data. 0 means the pool's default.
+  uint64_t ec_chunk_size = 0;
+
   void copy_user_bits(const object_info_t& other);
 
   bool test_flag(flag_t f) const {
