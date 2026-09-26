@@ -1325,3 +1325,73 @@ TEST(ECCommon, decode8) {
 
   test_decode(k, m, chunk_size, object_size, want, acting_set);
 }
+
+TEST(ECCommon, reads_use_object_chunk_size)
+{
+  const unsigned int k = 4;
+  const unsigned int m = 2;
+  const uint64_t swidth = k * EC_ALIGN_SIZE;
+  const uint64_t object_chunk = 16 * EC_ALIGN_SIZE;
+
+  ECUtil::stripe_info_base_t s_base(k, m, swidth, vector<shard_id_t>(0));
+  const ECUtil::stripe_info_t object_sinfo = s_base.for_chunk_size(object_chunk);
+  ECListenerStub listenerStub;
+  ErasureCodeInterfaceRef ec_impl(new MockErasureCode());
+  ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s_base, &listenerStub);
+  for (unsigned i = 0; i < k + m; i++) {
+    listenerStub.acting_shards.insert(pg_shard_t(i, shard_id_t(i)));
+  }
+  hobject_t hoid;
+
+  // The second chunk of the object is all on data shard 1.
+  {
+    const uint64_t object_size = k * object_chunk;
+    ec_align_t to_read(object_chunk, object_chunk, 0);
+    ECUtil::shard_extent_set_t want(k + m);
+    pipeline.get_min_want_to_read_shards(object_sinfo, to_read, want);
+    ECUtil::shard_extent_set_t expected(k + m);
+    expected[shard_id_t(1)].insert(0, object_chunk);
+    ASSERT_EQ(expected, want);
+
+    ECCommon::read_request_t read_request(
+      want, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
+      ECCommon::WantOmapKeys::No, "", 0, object_size, object_chunk);
+    ASSERT_EQ(0, pipeline.get_min_avail_to_read_shards(
+      hoid, false, false, read_request));
+    ASSERT_EQ(1u, read_request.shard_reads.size());
+    ASSERT_TRUE(read_request.shard_reads.contains(shard_id_t(1)));
+    ASSERT_EQ(expected.at(shard_id_t(1)),
+              read_request.shard_reads.at(shard_id_t(1)).extents);
+  }
+
+  // The same range in the default geometry is spread over every data shard.
+  {
+    ec_align_t to_read(object_chunk, object_chunk, 0);
+    ECUtil::shard_extent_set_t want(k + m);
+    pipeline.get_min_want_to_read_shards(s_base.for_default(), to_read, want);
+    for (shard_id_t shard; shard < k; ++shard) {
+      ASSERT_TRUE(want.contains(shard));
+      ASSERT_EQ(object_chunk / k, want.at(shard).size());
+    }
+  }
+
+  // Read masks follow the object's geometry: an object of one and a half
+  // chunks has no data on shards 2 and 3.
+  {
+    const uint64_t object_size = object_chunk + object_chunk / 2;
+    ec_align_t to_read(0, object_size, 0);
+    ECUtil::shard_extent_set_t want(k + m);
+    pipeline.get_min_want_to_read_shards(object_sinfo, to_read, want);
+    ECCommon::read_request_t read_request(
+      want, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
+      ECCommon::WantOmapKeys::No, "", 0, object_size, object_chunk);
+    ASSERT_EQ(0, pipeline.get_min_avail_to_read_shards(
+      hoid, false, false, read_request));
+    ASSERT_EQ(2u, read_request.shard_reads.size());
+    extent_set shard0, shard1;
+    shard0.insert(0, object_chunk);
+    shard1.insert(0, object_chunk / 2);
+    ASSERT_EQ(shard0, read_request.shard_reads.at(shard_id_t(0)).extents);
+    ASSERT_EQ(shard1, read_request.shard_reads.at(shard_id_t(1)).extents);
+  }
+}
