@@ -37,10 +37,18 @@ public:
     ec_plugin = config.ec_plugin;
     ec_technique = config.ec_technique;
     pool_flags = config.pool_flags;
+    expected_object_size = config.expected_object_size;
   }
   
   void SetUp() override {
     ECPeeringTestFixture::SetUp();
+  }
+
+  // The stripe width of an object created with size bytes. With dynamic
+  // chunk sizes it can be larger than the pool's.
+  uint64_t object_stripe_width(uint64_t size) const {
+    const uint64_t hint = expected_object_size ? expected_object_size : size;
+    return k * get_pool().get_ec_chunk_size_for_object_size(hint);
   }
 };
 
@@ -86,18 +94,27 @@ TEST_P(TestECFailoverWithPeering, OSDFailureWithPeering) {
   int failed_osd = 1;  // Fail shard 1 which contains part of the data
 
   create_and_write_verify(obj_name, test_data_full);
+  // A read sends a request to, and gets a reply from, each shard it reads.
+  // With the default chunk size this read spans two data shards; a larger
+  // chunk size can put it all on the first.
+  const uint64_t chunk_size = ECUtil::stripe_info_base_t(k, m, k * stripe_unit).
+    for_object_chunk_size(get_object_ec_chunk_size(obj_name)).get_chunk_size();
+  const int shards_read =
+    std::min<int>(k, (read_length + chunk_size - 1) / chunk_size);
   event_loop->reset_stats();
   bufferlist pre_failover_read;
   verify_object(obj_name, test_data_read, 0, object_size);
-  EXPECT_EQ(4, event_loop->get_stats_by_type().at(EventLoop::EventType::OSD_MESSAGE));
+  EXPECT_EQ(2 * shards_read, event_loop->get_stats_by_type().at(EventLoop::EventType::OSD_MESSAGE));
 
   // Use fixture helper to mark OSD as down
   mark_osd_down(failed_osd);
   
-  // Reset EventLoop stats before post-failover read
+  // Reset EventLoop stats before post-failover read. If the read needs the
+  // failed shard, it decodes from k others.
   event_loop->reset_stats();
   verify_object(obj_name, test_data_read, 0, object_size);
-  EXPECT_EQ(k * 2, event_loop->get_stats_by_type().at(EventLoop::EventType::OSD_MESSAGE));
+  EXPECT_EQ(shards_read > failed_osd ? k * 2 : 2 * shards_read,
+            event_loop->get_stats_by_type().at(EventLoop::EventType::OSD_MESSAGE));
 }
 
 TEST_P(TestECFailoverWithPeering, PrimaryFailoverWithPeering) {
@@ -366,6 +383,13 @@ const std::vector<BackendConfig> kECPeeringConfigs = {
   {PGBackendTestFixture::EC, "jerasure", "reed_sol_van", pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS,  16384, 4, 2, "EC_Jerasure_Opt_k4m2_su16k"},
   {PGBackendTestFixture::EC, "jerasure", "reed_sol_van", pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS,  4096,  2, 1, "EC_Jerasure_Opt_k2m1_su4k"},
   {PGBackendTestFixture::EC, "jerasure", "reed_sol_van", pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS,  4096,  8, 3, "EC_Jerasure_Opt_k8m3_su4k"},
+
+  // Dynamic chunk sizes. With an expected object size every object gets a
+  // chunk larger than the stripe unit; without one, objects written by one
+  // write get a chunk that fits them.
+  {PGBackendTestFixture::EC, "isa", "reed_sol_van", pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS | pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE,  4096,  4, 2, "EC_ISA_Dyn_k4m2_su4k_hint256k", 256 * 1024},
+  {PGBackendTestFixture::EC, "isa", "reed_sol_van", pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS | pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE,  4096,  8, 3, "EC_ISA_Dyn_k8m3_su4k"},
+  {PGBackendTestFixture::EC, "jerasure", "reed_sol_van", pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS | pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE,  4096,  2, 1, "EC_Jerasure_Dyn_k2m1_su4k_hint64k", 64 * 1024},
 };
 
 }  // namespace
@@ -392,7 +416,8 @@ TEST_P(
   int failing_shard = k + m - 1;
   int blocked_shard = 1;
   const std::string obj_name = "test";
-  const size_t data_size = stripe_unit * k;  // One full stripe.
+  // One full stripe, so that the writes reach the blocked shard.
+  const size_t data_size = object_stripe_width(stripe_unit * k);
   std::string pattern_a(data_size, 'A');
   std::string pattern_b(data_size, 'B');
   std::string pattern_c(data_size, 'C');
@@ -623,14 +648,15 @@ TEST_P(TestECFailoverWithPeering, MultiObjectRecoveryReadCrash) {
   ASSERT_TRUE(all_shards_active()) << "Initial peering must complete";
 
   // Create objects of different sizes with initial pattern
+  const uint64_t chunk_size = object_stripe_width(stripe_unit) / k;
   const std::string obj1_name = "crash_test_obj1";
-  const std::string obj1_pattern_a(stripe_unit, 'A');  // 1 chunk
+  const std::string obj1_pattern_a(chunk_size, 'A');  // 1 chunk
 
   const std::string obj2_name = "crash_test_obj2";
-  const std::string obj2_pattern_a(2 * stripe_unit, 'A');  // 2 chunks
+  const std::string obj2_pattern_a(2 * chunk_size, 'A');  // 2 chunks
 
   const std::string obj3_name = "crash_test_obj3";
-  const std::string obj3_pattern_a(3 * stripe_unit, 'A');  // 3 chunks
+  const std::string obj3_pattern_a(3 * chunk_size, 'A');  // 3 chunks
 
   // Write initial pattern to all objects
   int result = create_and_write(obj1_name, obj1_pattern_a);
@@ -650,9 +676,9 @@ TEST_P(TestECFailoverWithPeering, MultiObjectRecoveryReadCrash) {
 
   // Write new pattern to all objects while OSD 1 is down
   // This creates objects that need recovery on OSD 1
-  const std::string obj1_pattern_b(stripe_unit, 'B');
-  const std::string obj2_pattern_b(2 * stripe_unit, 'B');
-  const std::string obj3_pattern_b(3 * stripe_unit, 'B');
+  const std::string obj1_pattern_b(chunk_size, 'B');
+  const std::string obj2_pattern_b(2 * chunk_size, 'B');
+  const std::string obj3_pattern_b(3 * chunk_size, 'B');
 
   result = write(obj1_name, 0, obj1_pattern_b, obj1_pattern_b.length());
   EXPECT_EQ(result, 0) << "First object update should complete";
@@ -716,14 +742,15 @@ TEST_P(TestECFailoverWithPeering, MultiObjectParallelRecoveryCrash) {
   ASSERT_TRUE(all_shards_active()) << "Initial peering must complete";
 
   // Create objects of different sizes with initial pattern
+  const uint64_t chunk_size = object_stripe_width(stripe_unit) / k;
   const std::string obj1_name = "crash_test_obj1";
-  const std::string obj1_pattern_a(stripe_unit, 'A');  // 1 chunk
+  const std::string obj1_pattern_a(chunk_size, 'A');  // 1 chunk
 
   const std::string obj2_name = "crash_test_obj2";
-  const std::string obj2_pattern_a(2 * stripe_unit, 'A');  // 2 chunks
+  const std::string obj2_pattern_a(2 * chunk_size, 'A');  // 2 chunks
 
   const std::string obj3_name = "crash_test_obj3";
-  const std::string obj3_pattern_a(3 * stripe_unit, 'A');  // 3 chunks
+  const std::string obj3_pattern_a(3 * chunk_size, 'A');  // 3 chunks
 
   // Write initial pattern to all objects
   int result = create_and_write(obj1_name, obj1_pattern_a);
@@ -743,9 +770,9 @@ TEST_P(TestECFailoverWithPeering, MultiObjectParallelRecoveryCrash) {
 
   // Write new pattern to all objects while OSD 1 is down
   // This creates objects that need recovery on OSD 1
-  const std::string obj1_pattern_b(stripe_unit, 'B');
-  const std::string obj2_pattern_b(2 * stripe_unit, 'B');
-  const std::string obj3_pattern_b(3 * stripe_unit, 'B');
+  const std::string obj1_pattern_b(chunk_size, 'B');
+  const std::string obj2_pattern_b(2 * chunk_size, 'B');
+  const std::string obj3_pattern_b(3 * chunk_size, 'B');
 
   result = write(obj1_name, 0, obj1_pattern_b, obj1_pattern_b.length());
   EXPECT_EQ(result, 0) << "First object update should complete";

@@ -49,6 +49,8 @@ struct BackendConfig {
   int m = 2;  // coding chunks (EC only)
   // Label for test naming
   std::string label;
+  // EC only: see PGBackendTestFixture::expected_object_size
+  uint64_t expected_object_size = 0;
 };
 
 /**
