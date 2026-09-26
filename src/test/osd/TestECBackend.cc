@@ -288,7 +288,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(0, 0, 0);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ASSERT_EQ(want_to_read,  empty_extent_set_map);
   }
 
@@ -296,14 +296,14 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(2048, 0, 0);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ASSERT_EQ(want_to_read,  empty_extent_set_map);
   }
   // read nothing at the the second stripe (0-sized partial read)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth, 0, 0);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ASSERT_EQ(want_to_read,  empty_extent_set_map);
   }
 
@@ -311,7 +311,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(2048, 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(2)].insert(0, 42);
     ASSERT_EQ(want_to_read, ref);
@@ -321,7 +321,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth+2048, 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(2)].insert(csize, 42);
     ASSERT_EQ(want_to_read, ref);
@@ -331,7 +331,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(csize, csize + 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(1)].insert(0, csize);
     ref[shard_id_t(2)].insert(0, 42);
@@ -342,7 +342,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth + csize, csize + 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(1)].insert(csize, csize);
     ref[shard_id_t(2)].insert(csize, 42);
@@ -353,7 +353,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(0, 3*csize, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(0)].insert(0, csize);
     ref[shard_id_t(1)].insert(0, csize);
@@ -365,7 +365,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth, 3*csize, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(0)].insert(csize, csize);
     ref[shard_id_t(1)].insert(csize, csize);
@@ -377,7 +377,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(csize, swidth - csize, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(1)].insert(0, csize);
     ref[shard_id_t(2)].insert(0, csize);
@@ -389,7 +389,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth + csize, swidth - csize, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(1)].insert(csize, csize);
     ref[shard_id_t(2)].insert(csize, csize);
@@ -404,7 +404,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(csize, swidth * 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(0)].insert(csize, csize*42);
     ref[shard_id_t(1)].insert(0, csize*42);
@@ -420,7 +420,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth + csize, swidth * 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
     ref[shard_id_t(0)].insert(csize*2, csize*42);
     ref[shard_id_t(1)].insert(csize, csize*42);
@@ -433,7 +433,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(0, swidth * 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
 
     ref[shard_id_t(0)].insert(0, csize*42);
@@ -447,7 +447,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(0, swidth * 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
 
     ref[shard_id_t(0)].insert(0, csize*42);
@@ -461,7 +461,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth, swidth * 42, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
 
     ref[shard_id_t(0)].insert(csize, csize*42);
@@ -475,7 +475,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth, swidth+csize/2, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
 
     ref[shard_id_t(0)].insert(csize, csize+csize/2);
@@ -489,7 +489,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth-csize, swidth+csize/2, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
 
     ref[shard_id_t(0)].insert(csize, csize);
@@ -502,7 +502,7 @@ TEST(ECCommon, get_min_want_to_read_shards)
   {
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
     ec_align_t to_read(swidth-csize/2, swidth, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECUtil::shard_extent_set_t ref(s.get_k_plus_m());
 
     ref[shard_id_t(0)].insert(csize, csize);
@@ -546,13 +546,13 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     hobject_t hoid;
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request);
 
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
 
     ASSERT_EQ(read_request,  ref);
@@ -569,13 +569,13 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
 
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request);
 
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     for (shard_id_t shard_id; shard_id < k; ++shard_id) {
       ref.shard_reads[shard_id].extents = to_read_list[shard_id];
@@ -596,14 +596,14 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
 
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
 
     pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request);
 
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     for (shard_id_t i; i<k; ++i) {
       shard_id_t shard_id(i);
@@ -626,11 +626,11 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     }
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     for (int i=0; i < (int)k; i++) {
       shard_id_t shard_id(i);
@@ -655,7 +655,7 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
 
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
 
     shard_id_t missing_shard(1);
@@ -666,7 +666,7 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
 
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     for (shard_id_t i; i<k; ++i) {
       if (i != missing_shard) {
@@ -702,11 +702,11 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     to_read_list[shard_id_t(3)].insert(3*align_size, align_size);
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
 
     // Populating reference manually to check that adjacent shards get correctly combined.
@@ -747,14 +747,14 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     }
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
 
     pipeline.get_min_avail_to_read_shards(hoid, false, true, read_request);
 
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     for (unsigned int i=0; i<k+2; i++) {
       ECCommon::shard_read_t shard_read;
@@ -777,7 +777,7 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     }
     ECCommon::read_request_t read_request(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
 
     shard_id_t missing_shard(1);
@@ -790,7 +790,7 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
 
     ECCommon::read_request_t ref(
       to_read_list, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
     for (shard_id_t i; i<k; ++i) {
@@ -845,17 +845,17 @@ TEST(ECCommon, shard_read_combo_tests)
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
 
     ec_align_t to_read(36*1024,10*1024, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECCommon::read_request_t read_request(
       want_to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
 
     pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request);
 
     ECCommon::read_request_t ref(
       want_to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     {
       ECCommon::shard_read_t shard_read;
@@ -879,16 +879,16 @@ TEST(ECCommon, shard_read_combo_tests)
     ECUtil::shard_extent_set_t want_to_read(s.get_k_plus_m());
 
     ec_align_t to_read(12*1024,12*1024, 1);
-    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    pipeline.get_min_want_to_read_shards(s, to_read, want_to_read);
     ECCommon::read_request_t read_request(
       want_to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request);
 
     ECCommon::read_request_t ref(
       want_to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     {
       ECCommon::shard_read_t shard_read;
@@ -942,11 +942,11 @@ TEST(ECCommon, get_min_want_to_read_shards_bug67087)
   // multi-region reads. This will create multiple extents in want_to_read,
   {
     pipeline.get_min_want_to_read_shards(
-     to_read1, want_to_read);
+     s, to_read1, want_to_read);
     ASSERT_EQ(want_to_read, ref);
 
     pipeline.get_min_want_to_read_shards(
-     to_read2, want_to_read);
+     s, to_read2, want_to_read);
     // We have 4 data shards per stripe.
     ref[shard_id_t(0)].insert(512+4*1024, 512);
   }
@@ -992,7 +992,7 @@ TEST(ECCommon, get_remaining_shards)
     to_read[shard_id_t(0)].insert(0, 4096);
     ECCommon::read_request_t read_request(
       to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     int missing_shard = 0;
 
@@ -1004,7 +1004,7 @@ TEST(ECCommon, get_remaining_shards)
 
     ECCommon::read_request_t ref(
       to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     int parity_shard = 4;
     for (unsigned int i=0; i<k; i++) {
@@ -1027,7 +1027,7 @@ TEST(ECCommon, get_remaining_shards)
     s.ro_range_to_shard_extent_set(chunk_size/2, chunk_size+align_size, to_read);
     ECCommon::read_request_t read_request(
       to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     unsigned int missing_shard = 1;
 
@@ -1045,7 +1045,7 @@ TEST(ECCommon, get_remaining_shards)
     // is currently missing.
     ECCommon::read_request_t ref(
       to_read, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-      ECCommon::WantOmapKeys::No, "", 0, object_size
+      ECCommon::WantOmapKeys::No, "", 0, object_size, 0
     );
     int parity_shard = 4;
     for (unsigned int i=0; i<k; i++) {
@@ -1137,7 +1137,7 @@ void test_decode(unsigned int k, unsigned int m, uint64_t chunk_size, uint64_t o
   hobject_t hoid;
   ECCommon::read_request_t read_request(
     want, ECCommon::WantAttrs::No, ECCommon::WantOmapHeader::No,
-    ECCommon::WantOmapKeys::No, "", 0, object_size
+    ECCommon::WantOmapKeys::No, "", 0, object_size, 0
   );
   ASSERT_EQ(0, pipeline.get_min_avail_to_read_shards(hoid, false, false, read_request));
   for (auto [shard, read] : read_request.shard_reads) {

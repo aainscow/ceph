@@ -607,6 +607,9 @@ public:
   stripe_info_t for_chunk_size(uint64_t chunk_size) const;
   /* The geometry for the default chunk size. */
   stripe_info_t for_default() const;
+  /* The geometry for an object whose object_info_t::ec_chunk_size is
+   * chunk_size, where 0 means the default. */
+  stripe_info_t for_object_chunk_size(uint64_t chunk_size) const;
 
   /**
    * Return true if shard does not require metadata updates
@@ -953,6 +956,11 @@ inline stripe_info_t stripe_info_base_t::for_chunk_size(
 
 inline stripe_info_t stripe_info_base_t::for_default() const {
   return for_chunk_size(default_chunk_size);
+}
+
+inline stripe_info_t stripe_info_base_t::for_object_chunk_size(
+    uint64_t chunk_size) const {
+  return for_chunk_size(chunk_size ? chunk_size : default_chunk_size);
 }
 
 class shard_extent_map_t {

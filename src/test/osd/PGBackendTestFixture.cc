@@ -1019,6 +1019,7 @@ int PGBackendTestFixture::read_object(
     ec_switch->objects_read_async(
       hoid,
       object_size,
+      0,
       to_read,
       on_complete,
       false
@@ -1040,7 +1041,8 @@ int PGBackendTestFixture::read_object(
       offset,
       length,
       0,
-      &out_data
+      &out_data,
+      0
     );
 
     return result;

@@ -350,7 +350,8 @@ TEST_P(TestBackendBasics, DirectRead) {
       0,                                    // offset
       stripe_width,                         // length (full stripe)
       CEPH_OSD_RMW_FLAG_EC_DIRECT_READ,    // op_flags with direct read flag
-      &shard_data
+      &shard_data,
+      0                                     // default chunk size
     );
 
     EXPECT_GE(read_result, 0)

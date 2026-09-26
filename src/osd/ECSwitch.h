@@ -260,6 +260,7 @@ public:
 
   int objects_read_sync(const hobject_t &hoid, uint64_t off, uint64_t len,
                         uint32_t op_flags, ceph::buffer::list *bl, uint64_t object_size,
+                        uint64_t chunk_size,
                         std::optional<CoroHandles> coro) override
   {
     // Sync reads are only supported in FastEC, and from a coroutine
@@ -270,14 +271,17 @@ public:
     ec_align_t align{off, len, op_flags};
     std::list<std::pair<ec_align_t, std::pair<bufferlist*, Context*>>> to_read;
     to_read.push_back({ align, { bl, nullptr } });
-    return optimized.objects_read_sync(hoid, object_size, to_read, *coro);
+    return optimized.objects_read_sync(hoid, object_size, chunk_size, to_read,
+                                       *coro);
   }
 
   int objects_read_local(const hobject_t &hoid, uint64_t off, uint64_t len,
-                      uint32_t op_flags, ceph::buffer::list *bl) override
+                      uint32_t op_flags, ceph::buffer::list *bl,
+                      uint64_t chunk_size) override
   {
     if (is_optimized()) {
-      return optimized.objects_read_local(hoid, off, len, op_flags, bl);
+      return optimized.objects_read_local(hoid, off, len, op_flags, bl,
+                                          chunk_size);
     }
     return -EOPNOTSUPP;
   }
@@ -285,18 +289,19 @@ public:
   int objects_readv_sync(const hobject_t &hoid,
      std::map<uint64_t, uint64_t>& m,
      uint32_t op_flags,
-     ceph::buffer::list *bl) override
+     ceph::buffer::list *bl,
+     uint64_t chunk_size) override
   {
     if (is_optimized()) {
-      return optimized.objects_readv_sync(hoid, m, op_flags, bl);
+      return optimized.objects_readv_sync(hoid, m, op_flags, bl, chunk_size);
     }
     ceph_abort_msg("Sync reads legacy EC");
   }
 
   std::pair<uint64_t, uint64_t> extent_to_shard_extent(
-    uint64_t off, uint64_t len) override {
+    uint64_t off, uint64_t len, uint64_t chunk_size) override {
     if (is_optimized()) {
-      return optimized.extent_to_shard_extent(off, len);
+      return optimized.extent_to_shard_extent(off, len, chunk_size);
     }
     ceph_abort_msg("Extent conversion not supported in legacy EC");
   }
@@ -304,14 +309,15 @@ public:
   void objects_read_async(
     const hobject_t &hoid,
     uint64_t object_size,
+    uint64_t chunk_size,
     const std::list<std::pair<ec_align_t,
                               std::pair<ceph::buffer::list*, Context*>>> &
     to_read,
     Context *on_complete, bool fast_read = false) override
   {
     if (is_optimized()) {
-      optimized.objects_read_async(hoid, object_size, to_read, on_complete,
-                                   fast_read);
+      optimized.objects_read_async(hoid, object_size, chunk_size, to_read,
+                                   on_complete, fast_read);
     }
     else {
       legacy.objects_read_async(hoid, object_size, to_read, on_complete,

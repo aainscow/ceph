@@ -641,6 +641,9 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      const hobject_t &hoid,
      std::map<std::string, ceph::buffer::list, std::less<>> *out);
 
+   /* In the reads below, chunk_size is the object's
+    * object_info_t::ec_chunk_size (0 for the pool default). Replicated
+    * backends ignore it. */
    virtual int objects_read_sync(
      const hobject_t &hoid,
      uint64_t off,
@@ -648,6 +651,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      uint32_t op_flags,
      ceph::buffer::list *bl,
      uint64_t object_size,
+     uint64_t chunk_size,
      std::optional<CoroHandles> coro
    ) = 0;
 
@@ -656,24 +660,27 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
       uint64_t off,
       uint64_t len,
       uint32_t op_flags,
-      ceph::buffer::list *bl) = 0;
+      ceph::buffer::list *bl,
+      uint64_t chunk_size) = 0;
 
    virtual int objects_readv_sync(
      const hobject_t &hoid,
      std::map<uint64_t, uint64_t>& m,
      uint32_t op_flags,
-     ceph::buffer::list *bl) {
+     ceph::buffer::list *bl,
+     uint64_t chunk_size) {
      return -EOPNOTSUPP;
    }
 
    virtual std::pair<uint64_t, uint64_t> extent_to_shard_extent(
-       uint64_t off, uint64_t len) {
+       uint64_t off, uint64_t len, uint64_t chunk_size) {
      return std::pair(off, len);
    }
 
    virtual void objects_read_async(
      const hobject_t &hoid,
      uint64_t object_size,
+     uint64_t chunk_size,
      const std::list<std::pair<ec_align_t,
 		std::pair<ceph::buffer::list*, Context*>>> &to_read,
      Context *on_complete, bool fast_read = false) = 0;

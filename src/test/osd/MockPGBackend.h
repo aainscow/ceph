@@ -170,6 +170,7 @@ public:
      uint32_t op_flags,
      ceph::buffer::list *bl,
      uint64_t object_size,
+     uint64_t chunk_size,
      std::optional<CoroHandles> coro
      ) override {
     return 0;
@@ -180,13 +181,15 @@ public:
      uint64_t off,
      uint64_t len,
      uint32_t op_flags,
-     ceph::buffer::list *bl) override {
+     ceph::buffer::list *bl,
+     uint64_t chunk_size) override {
     return 0;
   }
 
   void objects_read_async(
     const hobject_t &hoid,
     uint64_t object_size,
+    uint64_t chunk_size,
     const std::list<std::pair<ec_align_t,
       std::pair<ceph::buffer::list*, Context*>>> &to_read,
     Context *on_complete, bool fast_read = false) override {
