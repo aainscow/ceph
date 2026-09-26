@@ -1676,3 +1676,129 @@ TEST(ECUtil, erase_after_ro_offset_single_byte)
   // Shard 1 should be empty
   ASSERT_FALSE(semap.contains_shard(shard_id_t(1)));
 }
+
+TEST(ECUtil, base_view_default_matches_legacy)
+{
+  const unsigned int k = 4;
+  const unsigned int m = 2;
+  const uint64_t chunk_size = 4096;
+
+  stripe_info_base_t base(k, m, chunk_size * k);
+  ASSERT_EQ(base.get_default_chunk_size(), chunk_size);
+  ASSERT_EQ(base.get_default_stripe_width(), chunk_size * k);
+
+  stripe_info_t v = base.for_default();
+  ASSERT_EQ(v.get_chunk_size(), chunk_size);
+  ASSERT_EQ(v.get_stripe_width(), chunk_size * k);
+  ASSERT_EQ(v.get_k(), k);
+  ASSERT_EQ(v.get_m(), m);
+  // Invariant getters forward to the base.
+  ASSERT_EQ(v.get_k_plus_m(), base.get_k_plus_m());
+}
+
+TEST(ECUtil, shard_extent_map_at_object_chunk_size)
+{
+  const unsigned int k = 4;
+  const unsigned int m = 2;
+  const uint64_t chunk = 64 * 1024;
+  stripe_info_base_t base(k, m, 4096 * k, vector<shard_id_t>(0));
+  const stripe_info_t sinfo = base.for_chunk_size(chunk);
+
+  // One and a half chunks: data shard 0 holds a whole chunk, data shard 1
+  // the first half of one, and data shards 2 and 3 nothing.
+  const uint64_t size = chunk + chunk / 2;
+  bufferlist bl;
+  for (uint64_t i = 0; i < size; i += sizeof(uint64_t)) {
+    ceph::encode(i, bl);
+  }
+  extent_map emap;
+  emap.insert(0, size, bl);
+  shard_extent_map_t semap(sinfo);
+  semap.insert_ro_extent_map(emap);
+
+  extent_set whole_chunk;
+  whole_chunk.insert(0, chunk);
+  extent_set half_chunk;
+  half_chunk.insert(0, chunk / 2);
+  ASSERT_EQ(2u, semap.shard_count());
+  ASSERT_EQ(whole_chunk, semap.get_extent_set(shard_id_t(0)));
+  ASSERT_EQ(half_chunk, semap.get_extent_set(shard_id_t(1)));
+  bufferlist shard1;
+  semap.get_buffer(shard_id_t(1), 0, chunk / 2, shard1);
+  bufferlist expected1;
+  expected1.substr_of(bl, chunk, chunk / 2);
+  ASSERT_TRUE(shard1.contents_equal(expected1));
+  ASSERT_TRUE(semap.get_ro_buffer(0, size).contents_equal(bl));
+
+  // The same data in the default geometry is on every data shard.
+  shard_extent_map_t default_semap(base.for_default());
+  default_semap.insert_ro_extent_map(emap);
+  ASSERT_EQ(size_t(k), default_semap.shard_count());
+
+  // Read masks follow the object's geometry.
+  shard_extent_set_t read_mask(k + m);
+  sinfo.ro_size_to_read_mask(size, read_mask);
+  shard_extent_set_t expected_mask(k + m);
+  expected_mask[shard_id_t(0)] = whole_chunk;
+  expected_mask[shard_id_t(1)] = half_chunk;
+  expected_mask[shard_id_t(4)] = whole_chunk;
+  expected_mask[shard_id_t(5)] = whole_chunk;
+  ASSERT_EQ(expected_mask, read_mask);
+}
+
+TEST(ECUtil, view_for_chunk_size_geometry)
+{
+  const unsigned int k = 2;
+  const unsigned int m = 1;
+  const uint64_t default_chunk = 4096;
+
+  stripe_info_base_t base(k, m, default_chunk * k);
+
+  // A larger, per-object chunk size scales the whole geometry.
+  const uint64_t big = 16384;
+  stripe_info_t v = base.for_chunk_size(big);
+  ASSERT_EQ(v.get_chunk_size(), big);
+  ASSERT_EQ(v.get_stripe_width(), big * k);
+
+  // The default view is unaffected by the per-object view.
+  ASSERT_EQ(base.for_default().get_chunk_size(), default_chunk);
+
+  // ro_offset <-> shard_offset round-trips under the per-object chunk size.
+  for (uint64_t ro = 0; ro < big * k * 3; ro += 512) {
+    raw_shard_id_t raw((ro / big) % k);
+    uint64_t shard_off = v.ro_offset_to_shard_offset(ro, raw);
+    uint64_t back = v.shard_offset_to_ro_offset(v.get_shard(raw), shard_off);
+    ASSERT_EQ(back, ro) << "ro=" << ro << " chunk=" << big;
+  }
+}
+
+TEST(ECUtil, object_size_to_shard_size_scales_with_chunk)
+{
+  const unsigned int k = 4;
+  const unsigned int m = 2;
+  stripe_info_base_t base(k, m, 4096 * k);
+
+  // One full stripe at a given chunk size => each data shard holds one chunk.
+  for (uint64_t cs : {uint64_t(4096), uint64_t(8192), uint64_t(65536)}) {
+    stripe_info_t v = base.for_chunk_size(cs);
+    uint64_t object_size = cs * k; // exactly one stripe
+    for (raw_shard_id_t raw; raw < k; ++raw) {
+      shard_id_t shard = v.get_shard(raw);
+      ASSERT_EQ(v.object_size_to_shard_size(object_size, shard), cs)
+          << "chunk=" << cs << " raw_shard=" << int(raw);
+    }
+  }
+
+  // One and a half chunks fill data shard 0, half of data shard 1 and
+  // nothing of the others; parity is as large as data shard 0.
+  for (uint64_t cs : {uint64_t(8192), uint64_t(65536)}) {
+    stripe_info_t v = base.for_chunk_size(cs);
+    const uint64_t object_size = cs + cs / 2;
+    const std::vector<uint64_t> expected = {cs, cs / 2, 0, 0, cs, cs};
+    for (raw_shard_id_t raw; raw < k + m; ++raw) {
+      ASSERT_EQ(expected[int(raw)],
+                v.object_size_to_shard_size(object_size, v.get_shard(raw)))
+          << "chunk=" << cs << " raw_shard=" << int(raw);
+    }
+  }
+}
