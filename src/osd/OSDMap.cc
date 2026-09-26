@@ -364,24 +364,48 @@ bool OSDMap::containing_subtree_is_down(CephContext *cct, int id, int subtree_ty
   }
 }
 
-void OSDMap::get_stretch_zones(const pg_pool_t& pool,
-                               map<int, set<int>>* zone_osds) const
+const OSDMap::StretchZoneCache&
+OSDMap::_get_stretch_zone_cache(int crush_rule, int barrier_type) const
 {
+  auto key = std::make_pair(crush_rule, barrier_type);
+  auto it = stretch_zone_cache.find(key);
+  if (it != stretch_zone_cache.end()) {
+    return it->second;
+  }
+
+  StretchZoneCache& cache = stretch_zone_cache[key];
   set<int> rule_roots;
-  crush->find_takes_by_rule(pool.crush_rule, &rule_roots);
+  crush->find_takes_by_rule(crush_rule, &rule_roots);
   for (int root : rule_roots) {
     vector<int> zones;
     // A device-class rule takes a shadow root, whose zones are shadow buckets
-    crush->get_children_of_type(root, pool.peering_crush_bucket_barrier, &zones,
-                                false);
+    crush->get_children_of_type(root, barrier_type, &zones, false);
     for (int zone : zones) {
       vector<int> osds;
       crush->get_children_of_type(zone, 0, &osds);
       // A zone with no OSDs the rule can use cannot hold any of the pool
-      if (!osds.empty()) {
-        (*zone_osds)[zone].insert(osds.begin(), osds.end());
+      if (osds.empty()) {
+        continue;
+      }
+      cache.zones.push_back(zone);
+      auto& osd_set = cache.zone_osds[zone];
+      int non_shadow_zone = crush->get_non_shadow_id(zone);
+      for (int osd : osds) {
+        osd_set.insert(osd);
+        cache.osd_to_zone[osd] = non_shadow_zone;
       }
     }
+  }
+  return cache;
+}
+
+void OSDMap::get_stretch_zones(const pg_pool_t& pool,
+                               map<int, set<int>>* zone_osds) const
+{
+  const StretchZoneCache& cache = _get_stretch_zone_cache(
+    pool.crush_rule, pool.peering_crush_bucket_barrier);
+  for (int zone : cache.zones) {
+    (*zone_osds)[zone] = cache.zone_osds.at(zone);
   }
 }
 
@@ -397,13 +421,12 @@ bool OSDMap::at_least_one_zone_has_min_size(const pg_pool_t& pool,
         ++zone_acting;
       }
     }
-
     if (zone_acting >= pool.min_size) {
       return true;
     }
   }
   return false;
-}                                      
+}
 
 unsigned OSDMap::stretch_num_acting_below_min_size(const pg_pool_t& pool,
                                         const vector<int>& acting) const
@@ -2458,6 +2481,8 @@ bool OSDMap::clean_pg_upmaps(
 
 int OSDMap::apply_incremental(const Incremental &inc)
 {
+  stretch_zone_cache.clear();
+
   new_blocklist_entries = false;
   if (inc.epoch == 1)
     fsid = inc.fsid;
