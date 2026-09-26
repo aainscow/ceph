@@ -3273,6 +3273,24 @@ CEPH_RADOS_API void rados_release_read_op(rados_read_op_t read_op);
 CEPH_RADOS_API void rados_read_op_set_flags(rados_read_op_t read_op, int flags);
 
 /**
+ * Tell the client the size of the object being read.
+ *
+ * In an erasure coded pool where each object may have its own chunk size,
+ * the client needs the object's size to read directly from the shards that
+ * hold the data. Without the hint, such reads go to the primary.
+ *
+ * Pass the size the object was created to hold: its expected size from the
+ * allocation hint it was written with, or its size after the write that
+ * created it. For an object written by a single write, that is its size.
+ * A wrong hint does not return wrong data; the read goes to the primary.
+ *
+ * @param read_op operation to set the hint on
+ * @param object_size the object's size
+ */
+CEPH_RADOS_API void rados_read_op_set_object_size_hint(rados_read_op_t read_op,
+                                                       uint64_t object_size);
+
+/**
  * Ensure that the object exists before reading
  * @param read_op operation to add this action to
  */

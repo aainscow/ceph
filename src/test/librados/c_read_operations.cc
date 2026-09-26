@@ -4,6 +4,7 @@
 #include <cstring> // For memcpy
 #include <errno.h>
 #include <string>
+#include <vector>
 
 #include "include/buffer.h"
 #include "include/denc.h"
@@ -202,6 +203,29 @@ TEST_P(CReadOpsTest, SetOpFlags) {
   EXPECT_EQ(0u, bytes_read);
   EXPECT_EQ((char*)NULL, out);
   rados_release_read_op(op);
+
+  remove_object();
+}
+
+TEST_P(CReadOpsTest, ObjectSizeHint) {
+  write_object();
+
+  // The hint only matters for direct reads of erasure coded objects; on any
+  // other object, a right or wrong hint leaves the result unchanged.
+  for (uint64_t hint : {uint64_t(len), uint64_t(1) << 20}) {
+    rados_read_op_t op = rados_create_read_op();
+    std::vector<char> buf(len);
+    size_t bytes_read = 0;
+    int rval = 0;
+    rados_read_op_read(op, 0, len, buf.data(), &bytes_read, &rval);
+    rados_read_op_set_object_size_hint(op, hint);
+    ASSERT_EQ(0, rados_read_op_operate(op, ioctx, obj,
+                                       LIBRADOS_OPERATION_BALANCE_READS));
+    rados_release_read_op(op);
+    ASSERT_EQ(0, rval);
+    ASSERT_EQ(len, bytes_read);
+    ASSERT_EQ(0, memcmp(data, buf.data(), len));
+  }
 
   remove_object();
 }

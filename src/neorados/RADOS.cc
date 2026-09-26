@@ -573,6 +573,11 @@ std::ostream& operator <<(std::ostream& m, const Op& o) {
 
 // ReadOp / WriteOp
 
+ReadOp& ReadOp::object_size_hint(uint64_t object_size) & {
+  reinterpret_cast<OpImpl*>(&impl)->op.object_size_hint = object_size;
+  return *this;
+}
+
 ReadOp& ReadOp::read(size_t off, uint64_t len, cb::list* out,
 		      bs::error_code* ec) & {
   reinterpret_cast<OpImpl*>(&impl)->op.read(off, len, ec, out);

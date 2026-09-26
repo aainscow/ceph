@@ -232,6 +232,21 @@ CORO_TEST_F(NeoRadosReadOps, Read, ReadOpTest) {
   co_return;
 }
 
+CORO_TEST_F(NeoRadosReadOps, ObjectSizeHint, ReadOpTest) {
+  // The hint only matters for direct reads of erasure coded objects; on any
+  // other object, a right or wrong hint leaves the result unchanged.
+  for (uint64_t hint : {uint64_t(data.length()), uint64_t(1) << 20}) {
+    buffer::list bl;
+    co_await execute(oid, ReadOp{}
+		     .read(0, 0, &bl)
+		     .object_size_hint(hint)
+		     .balance_reads());
+    EXPECT_TRUE((data.length() == bl.length()) &&
+		(0 == std::memcmp(data.data(), bl.c_str(), data.length())));
+  }
+  co_return;
+}
+
 inline std::uint32_t crc32c(uint32_t seed, std::string_view v) {
   return ceph_crc32c(
     seed, reinterpret_cast<const uint8_t*>(v.data()),

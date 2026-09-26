@@ -4104,6 +4104,14 @@ extern "C" void LIBRADOS_C_API_DEFAULT_F(rados_read_op_set_flags)(
 }
 LIBRADOS_C_API_BASE_DEFAULT(rados_read_op_set_flags);
 
+extern "C" void LIBRADOS_C_API_DEFAULT_F(rados_read_op_set_object_size_hint)(
+  rados_read_op_t read_op,
+  uint64_t object_size)
+{
+  ((::ObjectOperation *)read_op)->object_size_hint = object_size;
+}
+LIBRADOS_C_API_BASE_DEFAULT(rados_read_op_set_object_size_hint);
+
 extern "C" void LIBRADOS_C_API_DEFAULT_F(rados_read_op_assert_version)(
   rados_read_op_t read_op,
   uint64_t ver)

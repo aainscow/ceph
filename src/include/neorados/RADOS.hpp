@@ -458,6 +458,16 @@ public:
 		boost::system::error_code* ec = nullptr) && {
     return std::move(read(off, len, out, ec));
   }
+
+  /// Tell the client the size of the object being read. In an erasure coded
+  /// pool where each object may have its own chunk size, this lets reads go
+  /// directly to the shards holding the data. Pass the size the object was
+  /// created to hold (for an object written by a single write, its size). A
+  /// wrong hint does not return wrong data; the read goes to the primary.
+  ReadOp& object_size_hint(uint64_t object_size) &;
+  ReadOp&& object_size_hint(uint64_t object_size) && {
+    return std::move(object_size_hint(object_size));
+  }
   ReadOp& get_xattr(std::string_view name, ceph::buffer::list* out,
 		    boost::system::error_code* ec = nullptr) &;
   ReadOp&& get_xattr(std::string_view name, ceph::buffer::list* out,

@@ -213,6 +213,12 @@ void librados::ObjectReadOperation::read(size_t off, uint64_t len, bufferlist *p
   o->read(off, len, pbl, prval, NULL);
 }
 
+void librados::ObjectReadOperation::set_object_size_hint(uint64_t object_size)
+{
+  ceph_assert(impl);
+  impl->o.object_size_hint = object_size;
+}
+
 void librados::ObjectReadOperation::sparse_read(uint64_t off, uint64_t len,
 						std::map<uint64_t,uint64_t> *m,
 						bufferlist *data_bl, int *prval,

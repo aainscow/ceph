@@ -92,6 +92,11 @@ struct ObjectOperation {
   osdc_opvec ops;
   int flags = 0;
   int priority = 0;
+  // For reads: the size the object was created to hold (its
+  // expected_object_size, or its size after the write that created it). EC
+  // pools with dynamic chunk sizes use it to find the object's geometry for
+  // direct reads. 0 if unknown.
+  uint64_t object_size_hint = 0;
 
   boost::container::small_vector<ceph::buffer::list*, osdc_opvec_len> out_bl;
   boost::container::small_vector<
@@ -117,6 +122,7 @@ struct ObjectOperation {
     ops.clear();
     flags = 0;
     priority = 0;
+    object_size_hint = 0;
     out_bl.clear();
     out_handler.clear();
     out_rval.clear();
@@ -2020,6 +2026,8 @@ public:
 				   osdc_opvec_len> out_ec;
 
     int priority = 0;
+    /// see ObjectOperation::object_size_hint
+    uint64_t object_size_hint = 0;
     using OpSig = void(boost::system::error_code);
     using OpComp = boost::asio::any_completion_handler<OpSig>;
     // Due to an irregularity of cmpxattr, we actualy need the 'int'
@@ -3145,6 +3153,7 @@ public:
     Op *o = new Op(oid, oloc, std::move(op.ops), get_read_flags(flags) & flags_mask, onack, objver,
 		   data_offset, parent_trace);
     o->priority = op.priority;
+    o->object_size_hint = op.object_size_hint;
     o->snapid = snapid;
     o->outbl = pbl;
     if (!o->outbl && op.size() == 1 && op.out_bl[0] && op.out_bl[0]->length())
@@ -3182,6 +3191,7 @@ public:
 		   std::move(onack), objver,
 		   data_offset, parent_trace, subsystem);
     o->priority = op.priority;
+    o->object_size_hint = op.object_size_hint;
     o->snapid = snapid;
     o->outbl = pbl;
     // XXX

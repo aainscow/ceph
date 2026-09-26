@@ -602,6 +602,14 @@ inline namespace v14_2_0 {
     void getxattr(const char *name, bufferlist *pbl, int *prval);
     void getxattrs(std::map<std::string, bufferlist> *pattrs, int *prval);
     void read(size_t off, uint64_t len, bufferlist *pbl, int *prval);
+
+    /**
+     * Tell the client the size of the object being read, so that reads of
+     * erasure coded objects with their own chunk size can go directly to
+     * the shards; see rados_read_op_set_object_size_hint().
+     */
+    void set_object_size_hint(uint64_t object_size);
+
     void checksum(rados_checksum_type_t type, const bufferlist &init_value_bl,
 		  uint64_t off, size_t len, size_t chunk_size, bufferlist *pbl,
 		  int *prval);
