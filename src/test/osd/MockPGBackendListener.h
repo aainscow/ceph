@@ -15,6 +15,7 @@
 #pragma once
 
 #include <functional>
+#include <sstream>
 #include <vector>
 #include <map>
 #include "osd/PGBackend.h"
@@ -675,7 +676,11 @@ public:
   hobject_t get_temp_recovery_object(
     const hobject_t& target,
     eversion_t version) override {
-    return hobject_t();
+    // Unique per object and version, like PrimaryLogPG's.
+    std::ostringstream ss;
+    ss << "temp_recovering_" << info.pgid << "_" << version << "_"
+       << target.snap;
+    return target.make_temp_hobject(ss.str());
   }
 
   void send_message_osd_cluster(
