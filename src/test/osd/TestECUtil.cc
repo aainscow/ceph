@@ -1832,3 +1832,94 @@ TEST(ECUtil, object_size_to_shard_size_scales_with_chunk)
     }
   }
 }
+
+namespace {
+pg_pool_t dynamic_ec_pool(uint8_t k, uint64_t stripe_unit)
+{
+  pg_pool_t pool;
+  pool.type = pg_pool_t::TYPE_ERASURE;
+  pool.ec_data_shard_count = k;
+  pool.ec_coding_shard_count = 2;
+  pool.set_stripe_width(k * stripe_unit);
+  pool.set_flag(pg_pool_t::FLAG_EC_OVERWRITES |
+                pg_pool_t::FLAG_EC_OPTIMIZATIONS |
+                pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE);
+  return pool;
+}
+
+OSDOp read_op(uint64_t offset, uint64_t length, int op = CEPH_OSD_OP_READ)
+{
+  OSDOp o;
+  o.op.op = op;
+  o.op.extent.offset = offset;
+  o.op.extent.length = length;
+  return o;
+}
+
+OSDOp internal_versions_op(std::optional<uint64_t> chunk_size)
+{
+  OSDOp o;
+  o.op.op = CEPH_OSD_OP_GET_INTERNAL_VERSIONS;
+  if (chunk_size) {
+    ceph::encode(*chunk_size, o.indata);
+  }
+  return o;
+}
+} // anonymous namespace
+
+TEST(ECUtil, direct_read_geometry_split_reads)
+{
+  const pg_pool_t pool = dynamic_ec_pool(4, 4096);
+  const uint64_t big = 256 * 1024;
+  const raw_shard_id_t raw1(1);
+
+  // The declared chunk size must be the object's.
+  std::vector<OSDOp> ops = {read_op(0, 4 * big), internal_versions_op(big)};
+  EXPECT_TRUE(direct_read_matches_geometry(pool, raw1, big, ops));
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw1, 0, ops));
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw1, 2 * big, ops));
+
+  // No declaration means the pool default, as from an older client.
+  ops = {read_op(0, 4 * big), internal_versions_op(std::nullopt)};
+  EXPECT_TRUE(direct_read_matches_geometry(pool, raw1, 0, ops));
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw1, big, ops));
+
+  // Declaring the default size explicitly is the same.
+  ops = {read_op(0, 4 * big), internal_versions_op(4096)};
+  EXPECT_TRUE(direct_read_matches_geometry(pool, raw1, 0, ops));
+
+  // Malformed input is rejected.
+  OSDOp bad;
+  bad.op.op = CEPH_OSD_OP_GET_INTERNAL_VERSIONS;
+  bad.indata.append("x");
+  ops = {read_op(0, 4096), bad};
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw1, 0, ops));
+}
+
+TEST(ECUtil, direct_read_geometry_single_reads)
+{
+  const pg_pool_t pool = dynamic_ec_pool(4, 4096);
+  const uint64_t big = 256 * 1024;
+
+  // A read within chunk 1 of an object with 256 KiB chunks is on raw shard 1.
+  std::vector<OSDOp> ops = {read_op(big + 100, 8192)};
+  EXPECT_TRUE(direct_read_matches_geometry(pool, raw_shard_id_t(1), big, ops));
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw_shard_id_t(0), big, ops));
+  // With the default chunk size the same range is spread over several
+  // shards, so it cannot be served by one of them.
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw_shard_id_t(1), 0, ops));
+
+  // Crossing a chunk boundary is rejected.
+  ops = {read_op(big - 4096, 8192)};
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw_shard_id_t(0), big, ops));
+
+  // Chunks wrap around the data shards: chunk 5 is on raw shard 1.
+  ops = {read_op(5 * big, 4096, CEPH_OSD_OP_SPARSE_READ)};
+  EXPECT_TRUE(direct_read_matches_geometry(pool, raw_shard_id_t(1), big, ops));
+
+  // Every read in the op must qualify, and a whole-object read cannot.
+  ops = {read_op(0, 4096), read_op(big, 4096)};
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw_shard_id_t(0), big, ops));
+  ops = {read_op(0, 0)};
+  EXPECT_FALSE(direct_read_matches_geometry(pool, raw_shard_id_t(0), big, ops));
+}

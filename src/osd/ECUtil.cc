@@ -150,6 +150,57 @@ void ECUtil::stripe_info_t::ro_range_to_shards(
   }
 }
 
+bool ECUtil::direct_read_matches_geometry(const pg_pool_t &pool,
+                                          raw_shard_id_t raw_shard,
+                                          uint64_t object_chunk_size,
+                                          const std::vector<OSDOp> &ops) {
+  const uint64_t default_chunk_size = pool.get_ec_default_chunk_size();
+  const uint64_t chunk_size =
+    object_chunk_size ? object_chunk_size : default_chunk_size;
+
+  bool declared = false;
+  for (const auto &osd_op : ops) {
+    if (osd_op.op.op != CEPH_OSD_OP_GET_INTERNAL_VERSIONS) {
+      continue;
+    }
+    declared = true;
+    uint64_t client_chunk_size = default_chunk_size;
+    if (osd_op.indata.length()) {
+      try {
+        auto p = osd_op.indata.cbegin();
+        decode(client_chunk_size, p);
+      } catch (const buffer::error &) {
+        return false;
+      }
+    }
+    if (client_chunk_size != chunk_size) {
+      return false;
+    }
+  }
+  if (declared) {
+    return true;
+  }
+
+  const uint64_t k = pool.get_ec_data_shard_count();
+  for (const auto &osd_op : ops) {
+    if (osd_op.op.op != CEPH_OSD_OP_READ &&
+        osd_op.op.op != CEPH_OSD_OP_SPARSE_READ) {
+      continue;
+    }
+    const uint64_t offset = osd_op.op.extent.offset;
+    const uint64_t length = osd_op.op.extent.length;
+    if (length == 0) {
+      return false;
+    }
+    const uint64_t chunk = offset / chunk_size;
+    if (chunk != (offset + length - 1) / chunk_size ||
+        raw_shard_id_t(static_cast<int8_t>(chunk % k)) != raw_shard) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void ECUtil::stripe_info_t::trim_shard_extent_set_for_ro_offset(
     uint64_t ro_offset,
     shard_extent_set_t &shard_extent_set) const {

@@ -451,6 +451,23 @@ inline uint64_t align_prev(uint64_t val) {
 
 class stripe_info_t;
 
+/* A client plans a direct read of an EC object with the chunk size it expects
+ * the object to have. Check that the client's geometry is the object's, so
+ * that the shard can serve the read; if not, the client must redrive the read
+ * to the primary.
+ *
+ * A split read declares its chunk size in the input of the
+ * GET_INTERNAL_VERSIONS op each sub-read carries; no input means the pool
+ * default. A single direct read carries no declaration, but is correct
+ * whatever the client assumed if each of its extents lies within one chunk
+ * held by this shard.
+ *
+ * object_chunk_size is the object's object_info_t::ec_chunk_size. */
+bool direct_read_matches_geometry(const pg_pool_t &pool,
+                                  raw_shard_id_t raw_shard,
+                                  uint64_t object_chunk_size,
+                                  const std::vector<OSDOp> &ops);
+
 /* The pool-invariant part of the EC geometry: plugin flags, k and m, the
  * shard mapping and the pool's default chunk size (stripe_width / k).
  *
