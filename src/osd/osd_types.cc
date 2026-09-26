@@ -34,6 +34,7 @@
 
 #include "include/ceph_features.h"
 #include "include/encoding.h"
+#include "include/intarith.h"
 #include "include/stringify.h"
 
 #include "crush/CrushWrapper.h"
@@ -1409,7 +1410,9 @@ static opt_mapping_t opt_mapping = boost::assign::map_list_of
 	   ("read_ratio", pool_opts_t::opt_desc_t(
              pool_opts_t::READ_RATIO, pool_opts_t::INT))
 	   ("pct_update_delay", pool_opts_t::opt_desc_t(
-             pool_opts_t::PCT_UPDATE_DELAY, pool_opts_t::INT));
+             pool_opts_t::PCT_UPDATE_DELAY, pool_opts_t::INT))
+	   ("ec_dynamic_chunk_size_max", pool_opts_t::opt_desc_t(
+             pool_opts_t::EC_DYNAMIC_CHUNK_SIZE_MAX, pool_opts_t::INT));
 
 bool pool_opts_t::is_opt_name(const std::string& name)
 {
@@ -1869,6 +1872,28 @@ ps_t pg_pool_t::raw_pg_to_pps(pg_t pg) const
       ceph_stable_mod(pg.ps(), pgp_num, pgp_num_mask) +
       pg.pool();
   }
+}
+
+uint64_t pg_pool_t::get_ec_dynamic_chunk_size_max() const
+{
+  int64_t max = 0;
+  if (opts.get(pool_opts_t::EC_DYNAMIC_CHUNK_SIZE_MAX, &max) && max > 0) {
+    return max;
+  }
+  return EC_DYNAMIC_CHUNK_SIZE_MAX_DEFAULT;
+}
+
+uint64_t pg_pool_t::get_ec_chunk_size_for_object_size(uint64_t object_size) const
+{
+  const uint64_t default_chunk_size = get_ec_default_chunk_size();
+  if (!allows_ec_dynamic_chunk_size() || object_size == 0) {
+    return default_chunk_size;
+  }
+  const uint64_t k = get_ec_data_shard_count();
+  uint64_t chunk_size = p2roundup((object_size + k - 1) / k,
+                                  EC_DYNAMIC_CHUNK_SIZE_ALIGN);
+  chunk_size = std::min(chunk_size, get_ec_dynamic_chunk_size_max());
+  return std::max(chunk_size, default_chunk_size);
 }
 
 uint32_t pg_pool_t::get_random_pg_position(pg_t pg, uint32_t seed) const

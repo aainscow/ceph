@@ -1147,6 +1147,13 @@ public:
      * completion if there are no other in progress writes.
      */
     PCT_UPDATE_DELAY,
+    /**
+     * EC_DYNAMIC_CHUNK_SIZE_MAX
+     *
+     * Largest chunk size, in bytes, that may be chosen for an object in an
+     * erasure coded pool with FLAG_EC_DYNAMIC_CHUNK_SIZE.
+     */
+    EC_DYNAMIC_CHUNK_SIZE_MAX,
   };
 
   enum type_t {
@@ -1334,6 +1341,9 @@ struct pg_pool_t {
     // Allow decreasing pg_num/pgp_num (PG merge) for crimson pools.
     // Note: requires that the pool is currently all bluestore.
     FLAG_CRIMSON_ALLOW_PG_MERGE = 1<<22,
+    // Optimized EC may choose a chunk size per object (object_info_t::
+    // ec_chunk_size). Cannot be cleared once set.
+    FLAG_EC_DYNAMIC_CHUNK_SIZE = 1<<23,
   };
 
   static const char *get_flag_name(uint64_t f) {
@@ -1361,6 +1371,7 @@ struct pg_pool_t {
     case FLAG_CLIENT_SPLIT_READS: return "split_reads";
     case FLAG_OMAP: return "supports_omap";
     case FLAG_CRIMSON_ALLOW_PG_MERGE: return "crimson_allow_pg_merge";
+    case FLAG_EC_DYNAMIC_CHUNK_SIZE: return "ec_dynamic_chunk_size";
     default: return "???";
     }
   }
@@ -1419,6 +1430,8 @@ struct pg_pool_t {
       return FLAG_CRIMSON;
     if (name == "crimson_allow_pg_merge")
       return FLAG_CRIMSON_ALLOW_PG_MERGE;
+    if (name == "ec_dynamic_chunk_size")
+      return FLAG_EC_DYNAMIC_CHUNK_SIZE;
     if (name == "ec_optimizations")
       return FLAG_EC_OPTIMIZATIONS;
     if (name == "split_reads")
@@ -1863,6 +1876,35 @@ public:
   bool allows_ecoptimizations() const {
     return has_flag(FLAG_EC_OPTIMIZATIONS);
   }
+
+  bool allows_ec_dynamic_chunk_size() const {
+    return has_flag(FLAG_EC_DYNAMIC_CHUNK_SIZE);
+  }
+
+  static constexpr uint64_t EC_DYNAMIC_CHUNK_SIZE_MAX_DEFAULT = 1ull << 20;
+  static constexpr uint64_t EC_DYNAMIC_CHUNK_SIZE_MAX_LIMIT = 4ull << 20;
+  static constexpr uint64_t EC_DYNAMIC_CHUNK_SIZE_ALIGN = 4096;
+
+  /// The chunk size of an erasure coded object without its own chunk size.
+  uint64_t get_ec_default_chunk_size() const {
+    return stripe_width / get_ec_data_shard_count();
+  }
+
+  uint64_t get_ec_dynamic_chunk_size_max() const;
+
+  /**
+   * The chunk size to use for a new erasure coded object, given the size the
+   * object is expected to reach (0 if unknown).
+   *
+   * The object fits in one stripe if possible: the size is divided between
+   * the data shards and rounded up to EC_DYNAMIC_CHUNK_SIZE_ALIGN, then
+   * clamped between the default chunk size and the pool maximum. Pools
+   * without FLAG_EC_DYNAMIC_CHUNK_SIZE always get the default chunk size.
+   *
+   * Clients use this to find an object's geometry from a size hint, so the
+   * result must depend only on the argument and the pool.
+   */
+  uint64_t get_ec_chunk_size_for_object_size(uint64_t object_size) const;
 
   bool is_crimson() const {
     return has_flag(FLAG_CRIMSON);

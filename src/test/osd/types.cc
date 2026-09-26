@@ -26,6 +26,7 @@
 #include "osd/ReplicatedBackend.h"
 
 #include <iostream> // for std::cout
+#include <fmt/format.h>
 #include <sstream>
 
 using namespace std;
@@ -2689,6 +2690,121 @@ TEST(chunk_info_test, calc_refs_inc_match) {
     mk_manifest({{256, {0, 256, "aaa"}}, {4096, {0, 1024, "foo"}}}),
     mk_manifest({{256, {0, 256, "aaa"}}, {4096, {0, 1024, "ccc"}}}),
     mk_delta({}));
+}
+
+namespace {
+pg_pool_t make_ec_pool(uint8_t k, uint64_t stripe_unit, bool dynamic)
+{
+  pg_pool_t pool;
+  pool.type = pg_pool_t::TYPE_ERASURE;
+  pool.ec_data_shard_count = k;
+  pool.ec_coding_shard_count = 2;
+  pool.set_stripe_width(k * stripe_unit);
+  pool.set_flag(pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS);
+  if (dynamic) {
+    pool.set_flag(pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE);
+  }
+  return pool;
+}
+} // anonymous namespace
+
+TEST(pg_pool_t, ec_dynamic_chunk_size_flag)
+{
+  EXPECT_EQ(pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE,
+            pg_pool_t::get_flag_by_name("ec_dynamic_chunk_size"));
+  EXPECT_EQ(std::string("ec_dynamic_chunk_size"),
+            pg_pool_t::get_flag_name(pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE));
+  EXPECT_FALSE(make_ec_pool(4, 4096, false).allows_ec_dynamic_chunk_size());
+  EXPECT_TRUE(make_ec_pool(4, 4096, true).allows_ec_dynamic_chunk_size());
+}
+
+TEST(pg_pool_t, ec_chunk_size_disabled_pool)
+{
+  pg_pool_t pool = make_ec_pool(4, 16384, false);
+  EXPECT_EQ(16384u, pool.get_ec_default_chunk_size());
+  for (uint64_t size : {0ull, 1ull, 65536ull, 4ull << 20, 1ull << 40}) {
+    EXPECT_EQ(16384u, pool.get_ec_chunk_size_for_object_size(size))
+      << "size " << size;
+  }
+}
+
+TEST(pg_pool_t, ec_chunk_size_for_object_size)
+{
+  pg_pool_t pool = make_ec_pool(4, 4096, true);
+  const uint64_t max = pg_pool_t::EC_DYNAMIC_CHUNK_SIZE_MAX_DEFAULT;
+  EXPECT_EQ(max, pool.get_ec_dynamic_chunk_size_max());
+
+  // Unknown or small sizes keep the default.
+  EXPECT_EQ(4096u, pool.get_ec_chunk_size_for_object_size(0));
+  EXPECT_EQ(4096u, pool.get_ec_chunk_size_for_object_size(1));
+  EXPECT_EQ(4096u, pool.get_ec_chunk_size_for_object_size(4 * 4096));
+  // One byte more needs a second page on each shard.
+  EXPECT_EQ(8192u, pool.get_ec_chunk_size_for_object_size(4 * 4096 + 1));
+  // Rounded to 4 KiB, not to a power of two.
+  EXPECT_EQ(540u << 10,
+            pool.get_ec_chunk_size_for_object_size((2150ull << 10) + 400));
+  EXPECT_EQ(12288u, pool.get_ec_chunk_size_for_object_size(40000));
+  // A 4 MiB RGW stripe object fits in a single stripe.
+  EXPECT_EQ(1u << 20, pool.get_ec_chunk_size_for_object_size(4u << 20));
+  // Larger objects are clamped to the maximum.
+  EXPECT_EQ(max, pool.get_ec_chunk_size_for_object_size((4u << 20) + 1));
+  EXPECT_EQ(max, pool.get_ec_chunk_size_for_object_size(1ull << 40));
+}
+
+TEST(pg_pool_t, ec_chunk_size_properties)
+{
+  for (uint8_t k : {2, 3, 4, 6, 8, 12}) {
+    for (uint64_t stripe_unit : {4096ull, 16384ull, 65536ull}) {
+      pg_pool_t pool = make_ec_pool(k, stripe_unit, true);
+      const uint64_t maxes[] = {stripe_unit, 262144, 1ull << 20, 4ull << 20};
+      for (uint64_t max : maxes) {
+        if (max < stripe_unit) {
+          continue;
+        }
+        pool.opts.set(pool_opts_t::EC_DYNAMIC_CHUNK_SIZE_MAX,
+                      static_cast<int64_t>(max));
+        for (uint64_t size = 1; size < (64ull << 20); size = size * 3 + 7) {
+          uint64_t cs = pool.get_ec_chunk_size_for_object_size(size);
+          SCOPED_TRACE(fmt::format("k={} su={} max={} size={} cs={}",
+                                   k, stripe_unit, max, size, cs));
+          EXPECT_EQ(0u, cs % pg_pool_t::EC_DYNAMIC_CHUNK_SIZE_ALIGN);
+          EXPECT_GE(cs, stripe_unit);
+          EXPECT_LE(cs, max);
+          if (size <= k * max) {
+            // Fits in one stripe, with less than one page of slack per shard
+            // unless held up by the default chunk size.
+            EXPECT_GE(cs * k, size);
+            if (cs > stripe_unit) {
+              EXPECT_LT(cs * k - size,
+                        k * pg_pool_t::EC_DYNAMIC_CHUNK_SIZE_ALIGN);
+            }
+          } else {
+            EXPECT_EQ(max, cs);
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(pool_opts_t, ec_dynamic_chunk_size_max)
+{
+  EXPECT_TRUE(pool_opts_t::is_opt_name("ec_dynamic_chunk_size_max"));
+  EXPECT_EQ(pool_opts_t::get_opt_desc("ec_dynamic_chunk_size_max"),
+            pool_opts_t::opt_desc_t(pool_opts_t::EC_DYNAMIC_CHUNK_SIZE_MAX,
+                                    pool_opts_t::INT));
+
+  pg_pool_t pool = make_ec_pool(4, 4096, true);
+  pool.opts.set(pool_opts_t::EC_DYNAMIC_CHUNK_SIZE_MAX,
+                static_cast<int64_t>(262144));
+  bufferlist bl;
+  pool.encode(bl, CEPH_FEATURES_ALL);
+  pg_pool_t decoded;
+  auto p = bl.cbegin();
+  decoded.decode(p);
+  EXPECT_TRUE(decoded.allows_ec_dynamic_chunk_size());
+  EXPECT_EQ(262144u, decoded.get_ec_dynamic_chunk_size_max());
+  EXPECT_EQ(262144u, decoded.get_ec_chunk_size_for_object_size(4u << 20));
 }
 
 /*
