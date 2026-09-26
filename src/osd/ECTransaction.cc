@@ -140,7 +140,8 @@ ECTransaction::WritePlanObj::WritePlanObj(
   hoid(hoid),
   will_write(sinfo.get_k_plus_m()),
   orig_size(orig_size), // On-disk object sizes are rounded up to the next page.
-  projected_size(soi?soi->size:(oi?oi->size:0))
+  projected_size(soi?soi->size:(oi?oi->size:0)),
+  chunk_size(sinfo.get_chunk_size())
 {
   extent_set unaligned_ro_writes;
   hobject_t source;
@@ -680,7 +681,7 @@ void ECTransaction::Generate::apply_omap_updates_without_journal() {
 ECTransaction::Generate::Generate(PGTransaction &t,
     ErasureCodeInterfaceRef &ec_impl,
     pg_t &pgid,
-    const ECUtil::stripe_info_t &sinfo,
+    const ECUtil::stripe_info_base_t &sinfo_base,
     const std::map<hobject_t, ECUtil::shard_extent_map_t> &partial_extents,
     std::map<hobject_t, ECUtil::shard_extent_map_t> *written_map,
     shard_id_map<ceph::os::Transaction> &transactions,
@@ -696,7 +697,7 @@ ECTransaction::Generate::Generate(PGTransaction &t,
   : t(t),
     ec_impl(ec_impl),
     pgid(pgid),
-    sinfo(sinfo),
+    sinfo(sinfo_base.for_chunk_size(plan.chunk_size)),
     transactions(transactions),
     dpp(dpp),
     osdmap(osdmap),
@@ -1271,7 +1272,7 @@ void ECTransaction::generate_transactions(
     WritePlan &plans,
     ErasureCodeInterfaceRef &ec_impl,
     pg_t pgid,
-    const ECUtil::stripe_info_t &sinfo,
+    const ECUtil::stripe_info_base_t &sinfo,
     const map<hobject_t, ECUtil::shard_extent_map_t> &partial_extents,
     vector<pg_log_entry_t> &entries,
     map<hobject_t, ECUtil::shard_extent_map_t> *written_map,

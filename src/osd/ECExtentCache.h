@@ -93,7 +93,8 @@ class ECExtentCache {
   struct BackendReadListener {
     virtual void backend_read(hobject_t oid,
                               ECUtil::shard_extent_set_t const &request,
-                              uint64_t object_size) = 0;
+                              uint64_t object_size,
+                              uint64_t chunk_size) = 0;
     virtual ~BackendReadListener() = default;
   };
 
@@ -150,6 +151,8 @@ class ECExtentCache {
     friend class ECExtentCache;
 
     Object &object;
+    // The geometry of the object as this op writes it.
+    const ECUtil::stripe_info_t sinfo;
     std::optional<ECUtil::shard_extent_set_t> const reads;
     ECUtil::shard_extent_set_t const writes;
     ECUtil::shard_extent_map_t result;
@@ -171,6 +174,7 @@ class ECExtentCache {
     explicit Op(
         GenContextURef<OpRef&> &&cache_ready_cb,
         Object &object,
+        const ECUtil::stripe_info_t &sinfo,
         std::optional<ECUtil::shard_extent_set_t> const &to_read,
         ECUtil::shard_extent_set_t const &write,
         uint64_t projected_size,
@@ -181,6 +185,7 @@ class ECExtentCache {
     const  ECUtil::shard_extent_set_t &get_writes() const { return writes; }
     const Object &get_object() const { return object; }
     const hobject_t &get_hoid() const { return object.oid; }
+    const ECUtil::stripe_info_t &get_sinfo() const { return sinfo; }
     const ECUtil::shard_extent_map_t &get_result() { return result; }
 
     void add_on_write(std::function<void(void)> &&cb) {
@@ -225,6 +230,11 @@ private:
     uint64_t current_size = 0;
     uint64_t projected_size = 0;
     uint64_t line_size = 0;
+    // The geometry of the cached data. An op that writes the object with
+    // another chunk size must invalidate the cache, which switches to it.
+    ECUtil::stripe_info_t sinfo;
+    // The chunk size of the most recently prepared op.
+    uint64_t projected_chunk_size;
     bool reading = false;
     bool cache_invalidate_expected = false;
 
@@ -238,20 +248,25 @@ private:
    public:
     hobject_t oid;
 
-    Object(ECExtentCache &pg, hobject_t const &oid, uint64_t size) :
+    Object(ECExtentCache &pg, hobject_t const &oid, uint64_t size,
+           const ECUtil::stripe_info_t &sinfo) :
       pg(pg),
       requesting(pg.sinfo.get_k_plus_m()),
       do_not_read(pg.sinfo.get_k_plus_m()),
       current_size(size),
       projected_size(size),
-      oid(oid) {
-      line_size = std::max(MIN_LINE_SIZE, pg.sinfo.get_default_chunk_size());
-    }
+      line_size(std::max(MIN_LINE_SIZE, sinfo.get_chunk_size())),
+      sinfo(sinfo),
+      projected_chunk_size(sinfo.get_chunk_size()),
+      oid(oid) {}
 
     void insert(ECUtil::shard_extent_map_t const &buffers) const;
     void write_done(ECUtil::shard_extent_map_t const &buffers, uint64_t new_size);
     void read_done(ECUtil::shard_extent_map_t const &result);
     [[nodiscard]] uint64_t get_projected_size() const { return projected_size; }
+    [[nodiscard]] uint64_t get_projected_chunk_size() const {
+      return projected_chunk_size;
+    }
     ECUtil::shard_extent_map_t get_cache(
         std::optional<ECUtil::shard_extent_set_t> const &set) const;
     uint64_t line_align(uint64_t line) const;
@@ -272,9 +287,16 @@ private:
       std::shared_ptr<ECUtil::shard_extent_map_t> c = object.pg.lru.find(
         object.oid, offset);
 
+      if (c != nullptr && c->sinfo != object.sinfo) {
+        /* Cached with the object's previous chunk size, which changed while
+         * the object was idle. (When the chunk size of an active object
+         * changes, the cache is invalidated, which removes its lines from
+         * the LRU.) */
+        update_mempool(-1, -static_cast<int64_t>(c->size()));
+        c = nullptr;
+      }
       if (c == nullptr) {
-        cache = std::make_shared<ECUtil::shard_extent_map_t>(
-          object.pg.sinfo.for_default());
+        cache = std::make_shared<ECUtil::shard_extent_map_t>(object.sinfo);
         size = 0;
         /* We are creating an empty cache line */
         update_mempool(1, 0);
@@ -314,7 +336,8 @@ private:
                 ECUtil::shard_extent_set_t const &write,
                 uint64_t orig_size,
                 uint64_t projected_size,
-                bool invalidates_cache);
+                bool invalidates_cache,
+                const ECUtil::stripe_info_t &sinfo);
 
  public:
   ~ECExtentCache() {
@@ -341,6 +364,7 @@ private:
   void on_change2() const;
   [[nodiscard]] bool contains_object(hobject_t const &oid) const;
   [[nodiscard]] uint64_t get_projected_size(hobject_t const &oid) const;
+  [[nodiscard]] uint64_t get_projected_chunk_size(hobject_t const &oid) const;
 
   template <typename CacheReadyCb>
   OpRef prepare(hobject_t const &oid,
@@ -349,13 +373,14 @@ private:
                 uint64_t orig_size,
                 uint64_t projected_size,
                 bool invalidates_cache,
+                const ECUtil::stripe_info_t &sinfo,
                 CacheReadyCb &&ready_cb) {
     GenContextURef<OpRef&> ctx =
         make_gen_lambda_context<OpRef&, CacheReadyCb>(
           std::forward<CacheReadyCb>(ready_cb));
 
     return prepare(std::move(ctx), oid, to_read, write, orig_size,
-                   projected_size, invalidates_cache);
+                   projected_size, invalidates_cache, sinfo);
   }
 
   void execute(std::list<OpRef> &op_list);

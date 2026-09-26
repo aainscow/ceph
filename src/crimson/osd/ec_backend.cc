@@ -257,7 +257,7 @@ struct ECCrimsonOp : ECCommon::RMWPipeline::Op {
   void generate_transactions(
       ceph::ErasureCodeInterfaceRef &ec_impl,
       pg_t pgid,
-      const ECUtil::stripe_info_t &sinfo,
+      const ECUtil::stripe_info_base_t &sinfo,
       std::map<hobject_t, ECUtil::shard_extent_map_t> *written,
       shard_id_map<ceph::os::Transaction> *transactions,
       DoutPrefixProvider *dpp,
@@ -344,7 +344,7 @@ ECBackend::submit_transaction(const std::set<pg_shard_t> &pg_shards,
   //  op->trace = client_op->pg_trace;
   //}
   op->plan = ECCommon::get_write_plan(
-    sinfo.for_default(),
+    sinfo,
     *(op->t),
     read_pipeline,
     rmw_pipeline,

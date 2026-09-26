@@ -34,6 +34,8 @@ class WritePlanObj {
   ECUtil::shard_extent_set_t will_write;
   const uint64_t orig_size;
   const uint64_t projected_size;
+  // The object's chunk size; the plan is made with this geometry.
+  const uint64_t chunk_size;
   bool invalidates_cache;
   bool do_parity_delta_write = false;
 
@@ -55,6 +57,7 @@ class WritePlanObj {
        << " will_write: " << will_write
        << " orig_size: " << orig_size
        << " projected_size: " << projected_size
+       << " chunk_size: " << chunk_size
        << " invalidates_cache: " << invalidates_cache
        << " do_pdw: " << do_parity_delta_write
        << "}";
@@ -163,7 +166,8 @@ class Generate {
   PGTransaction &t;
   const ErasureCodeInterfaceRef &ec_impl;
   const pg_t &pgid;
-  const ECUtil::stripe_info_t &sinfo;
+  // The geometry of this object, from the write plan.
+  const ECUtil::stripe_info_t sinfo;
   shard_id_map<ceph::os::Transaction> &transactions;
   DoutPrefixProvider *dpp;
   const OSDMapRef &osdmap;
@@ -207,7 +211,7 @@ class Generate {
  public:
   Generate(PGTransaction &t,
     ErasureCodeInterfaceRef &ec_impl, pg_t &pgid,
-    const ECUtil::stripe_info_t &sinfo,
+    const ECUtil::stripe_info_base_t &sinfo,
     const std::map<hobject_t, ECUtil::shard_extent_map_t> &partial_extents,
     std::map<hobject_t, ECUtil::shard_extent_map_t> *written_map,
     shard_id_map<ceph::os::Transaction> &transactions,
@@ -226,7 +230,7 @@ void generate_transactions(
     WritePlan &plan,
     ceph::ErasureCodeInterfaceRef &ec_impl,
     pg_t pgid,
-    const ECUtil::stripe_info_t &sinfo,
+    const ECUtil::stripe_info_base_t &sinfo,
     const std::map<hobject_t, ECUtil::shard_extent_map_t> &partial_extents,
     std::vector<pg_log_entry_t> &entries,
     std::map<hobject_t, ECUtil::shard_extent_map_t> *written_map,

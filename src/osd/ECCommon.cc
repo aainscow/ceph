@@ -951,6 +951,7 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op) {
       plan.orig_size,
       plan.projected_size,
       plan.invalidates_cache,
+      sinfo.for_chunk_size(plan.chunk_size),
       [op](ECExtentCache::OpRef const &cop)
       {
         op->cache_ready(cop->get_hoid(), cop->get_result());
@@ -977,7 +978,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   op.generate_transactions(
     ec_impl,
     get_parent()->get_info().pgid.pgid,
-    sinfo.for_default(),
+    sinfo,
     &written,
     &trans,
     get_parent()->get_dpp(),
@@ -1103,7 +1104,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
     if (written.contains(oid)) {
       extent_cache.write_done(cop, std::move(written.at(oid)));
     } else {
-      extent_cache.write_done(cop, ECUtil::shard_extent_map_t(sinfo.for_default()));
+      extent_cache.write_done(cop, ECUtil::shard_extent_map_t(cop->get_sinfo()));
     }
   }
 }
@@ -1116,7 +1117,7 @@ struct ECDummyOp final : ECCommon::RMWPipeline::Op {
   void generate_transactions(
       ceph::ErasureCodeInterfaceRef &ec_impl,
       pg_t pgid,
-      const ECUtil::stripe_info_t &sinfo,
+      const ECUtil::stripe_info_base_t &sinfo,
       map<hobject_t, ECUtil::shard_extent_map_t> *written,
       shard_id_map<ObjectStore::Transaction> *transactions,
       DoutPrefixProvider *dpp,
@@ -1925,7 +1926,7 @@ std::optional<object_info_t> ECCommon::get_object_info_from_obc(
 }
 
 ECTransaction::WritePlan ECCommon::get_write_plan(
-  const ECUtil::stripe_info_t &sinfo,
+  const ECUtil::stripe_info_base_t &sinfo,
   PGTransaction &t,
   ECCommon::ReadPipeline &read_pipeline,
   ECCommon::RMWPipeline &rmw_pipeline,
@@ -1962,13 +1963,30 @@ ECTransaction::WritePlan ECCommon::get_write_plan(
         }
       }
 
+      /* The object context holds the chunk size this write uses: the
+       * primary updates it before submitting the transaction. */
+      const ECUtil::stripe_info_t obj_sinfo =
+        sinfo.for_object_chunk_size(oi.ec_chunk_size);
+
+      /* The chunk size only changes while the object holds no data, or when
+       * the write removes the object first. Cached data from before the
+       * change cannot be reused. */
+      const bool chunk_size_changed = object_in_cache &&
+        rmw_pipeline.extent_cache.get_projected_chunk_size(oid) !=
+          obj_sinfo.get_chunk_size();
+      ceph_assert(!chunk_size_changed || old_object_size == 0 ||
+                  inner_op.delete_first);
+
       auto [readable_shards, writable_shards] =
         read_pipeline.get_readable_writable_shard_id_sets();
-      ECTransaction::WritePlanObj plan(oid, inner_op, sinfo, readable_shards,
+      ECTransaction::WritePlanObj plan(oid, inner_op, obj_sinfo, readable_shards,
                                        writable_shards,
                                        object_in_cache, old_object_size,
                                        oi, soi,
                                        rmw_pipeline.ec_pdw_write_mode);
+      if (chunk_size_changed) {
+        plan.invalidates_cache = true;
+      }
 
       if (plan.to_read) plans.want_read = true;
       plans.plans.emplace_back(std::move(plan));

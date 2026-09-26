@@ -613,7 +613,7 @@ struct ECCommon {
       virtual void generate_transactions(
           ceph::ErasureCodeInterfaceRef &ec_impl,
           pg_t pgid,
-          const ECUtil::stripe_info_t &sinfo,
+          const ECUtil::stripe_info_base_t &sinfo,
           std::map<hobject_t, ECUtil::shard_extent_map_t> *written,
           shard_id_map<ceph::os::Transaction> *transactions,
           DoutPrefixProvider *dpp,
@@ -656,13 +656,13 @@ struct ECCommon {
     };
 
     void backend_read(hobject_t oid, ECUtil::shard_extent_set_t const &request,
-                      uint64_t object_size) override {
+                      uint64_t object_size, uint64_t chunk_size) override {
       std::map<hobject_t, read_request_t> to_read;
       to_read.emplace(
         oid,
         read_request_t(
           request, WantAttrs::No, WantOmapHeader::No, WantOmapKeys::No,
-          "", 0, object_size, 0
+          "", 0, object_size, chunk_size
         )
       );
 
@@ -933,7 +933,7 @@ struct ECCommon {
     );
 
   static ECTransaction::WritePlan get_write_plan(
-    const ECUtil::stripe_info_t &sinfo,
+    const ECUtil::stripe_info_base_t &sinfo,
     PGTransaction &t,
     ECCommon::ReadPipeline &read_pipeline,
     ECCommon::RMWPipeline &rmw_pipeline,
