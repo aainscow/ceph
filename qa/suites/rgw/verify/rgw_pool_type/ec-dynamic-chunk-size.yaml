@@ -1,0 +1,12 @@
+overrides:
+  ceph:
+    conf:
+      global:
+        osd_pool_default_flag_ec_optimizations: true
+        osd_pool_default_flag_ec_dynamic_chunk_size: true
+      client:
+        rados_replica_read_policy: balance
+  rgw:
+    ec-data-pool: true
+  s3tests:
+    slow_backend: true
