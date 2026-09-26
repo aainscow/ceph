@@ -2030,6 +2030,8 @@ public:
     std::map<std::string, ceph::buffer::list, std::less<>> *out);
   int get_internal_versions(const hobject_t& soid,
                             std::map<shard_id_t, eversion_t>* out);
+  bool ec_direct_read_matches_geometry(const MOSDOp *m,
+                                       const object_info_t &oi) const;
 
 public:
   void set_dynamic_perf_stats_queries(

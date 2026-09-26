@@ -2569,6 +2569,14 @@ void PrimaryLogPG::do_op_impl(OpRequestRef op)
     return;
   }
 
+  if (op->ec_direct_read() &&
+      !ec_direct_read_matches_geometry(m, obc->obs.oi)) {
+    dout(20) << __func__ << ": direct read does not match the chunk size of "
+	     << obc->obs.oi.soid << ", bouncing to primary" << dendl;
+    reply_ctx(ctx, -EAGAIN);
+    return;
+  }
+
   op->mark_started();
 
   execute_ctx(ctx);
@@ -16330,6 +16338,17 @@ int PrimaryLogPG::getattrs_maybe_cache(
   }
   tmp.swap(*out);
   return r;
+}
+
+bool PrimaryLogPG::ec_direct_read_matches_geometry(
+  const MOSDOp *m, const object_info_t &oi) const
+{
+  if (!pool.info.allows_ec_dynamic_chunk_size()) {
+    return true;
+  }
+  return ECUtil::direct_read_matches_geometry(
+    pool.info, pgbackend->ec_get_sinfo().get_raw_shard(pg_whoami.shard),
+    oi.ec_chunk_size, m->ops);
 }
 
 int PrimaryLogPG::get_internal_versions(const hobject_t& soid,
