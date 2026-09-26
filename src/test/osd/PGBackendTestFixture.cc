@@ -70,6 +70,10 @@ void PGBackendTestFixture::setup_ec_pool()
   osdmap->apply_incremental(inc);
 
   pg_pool_t pool = OSDMapTestHelpers::create_ec_pool(k, m, stripe_unit * k, pool_flags);
+  if (ec_dynamic_chunk_size_max) {
+    pool.opts.set(pool_opts_t::EC_DYNAMIC_CHUNK_SIZE_MAX,
+                  static_cast<int64_t>(ec_dynamic_chunk_size_max));
+  }
   OSDMapTestHelpers::add_pool(osdmap, pool_id, pool);
 
   pgid = pg_t(0, pool_id);
@@ -442,6 +446,10 @@ int PGBackendTestFixture::do_create_and_write_impl(
   new_oi.version = at_version;
   new_oi.prior_version = obc->obs.oi.version;
   new_oi.size = bl.length();
+  if (!obc->obs.exists) {
+    new_oi.expected_object_size = expected_object_size;
+  }
+  choose_ec_chunk_size(obc->obs, new_oi);
 
   // Encode new OI and put into PGTransaction as an attr update.
   // This matches PrimaryLogPG::finish_ctx() lines 9127-9130,9142.
@@ -523,6 +531,89 @@ int PGBackendTestFixture::create_and_write(
   });
   event_loop->run_until_idle();
   
+  return result;
+}
+
+int PGBackendTestFixture::do_remove_and_write_impl(
+  const std::string& obj_name,
+  const std::string& data)
+{
+  eversion_t at_version = get_next_version();
+  hobject_t hoid = make_test_object(obj_name);
+  ObjectContextRef obc = get_object_context(hoid, true);
+  const ObjectState old_obs = obc->obs;
+
+  PGTransactionUPtr pg_t = std::make_unique<PGTransaction>();
+  pg_t->remove(hoid);
+  pg_t->create(hoid);
+  pg_t->obc_map[hoid] = obc;
+  outstanding_writes[hoid]++;
+
+  bufferlist bl;
+  bl.append(data);
+  if (bl.length() > 0) {
+    pg_t->write(hoid, 0, bl.length(), bl);
+  }
+
+  object_stat_sum_t delta_stats;
+  delta_stats.num_objects = old_obs.exists ? 0 : 1;
+  delta_stats.num_bytes = static_cast<int64_t>(bl.length()) -
+    static_cast<int64_t>(old_obs.oi.size);
+
+  // PrimaryLogPG::_delete_oid() resets the size and the chunk size.
+  object_info_t new_oi = old_obs.oi;
+  new_oi.version = at_version;
+  new_oi.prior_version = old_obs.oi.version;
+  new_oi.size = bl.length();
+  new_oi.ec_chunk_size = 0;
+  new_oi.expected_object_size = expected_object_size;
+  choose_ec_chunk_size(old_obs, new_oi, true);
+  {
+    bufferlist oi_bl;
+    new_oi.encode(oi_bl,
+      osdmap->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
+    pg_t->setattr(hoid, OI_ATTR, oi_bl);
+  }
+  if (hoid.snap == CEPH_NOSNAP) {
+    bufferlist bss;
+    encode(SnapSet(), bss);
+    pg_t->setattr(hoid, SS_ATTR, bss);
+  }
+  obc->obs.oi = new_oi;
+  obc->obs.exists = true;
+
+  std::vector<pg_log_entry_t> log_entries;
+  pg_log_entry_t entry;
+  entry.mark_unrollbackable();
+  entry.op = pg_log_entry_t::MODIFY;
+  entry.soid = hoid;
+  entry.version = at_version;
+  entry.prior_version = old_obs.oi.version;
+  log_entries.push_back(entry);
+
+  auto write_complete = [this, hoid](int r) {
+    if (outstanding_writes[hoid] > 0 && --outstanding_writes[hoid] == 0) {
+      outstanding_writes.erase(hoid);
+    }
+  };
+  return do_transaction_and_complete(
+    hoid, std::move(pg_t), delta_stats, at_version, std::move(log_entries),
+    write_complete);
+}
+
+int PGBackendTestFixture::remove_and_write(
+  const std::string& obj_name,
+  const std::string& data)
+{
+  int primary_osd = osdmap->get_pg_acting_primary(pgid);
+  ceph_assert(primary_osd >= 0);
+
+  int result = -1;
+  event_loop->schedule_transaction(primary_osd,
+    [this, &result, obj_name, data]() {
+      result = do_remove_and_write_impl(obj_name, data);
+    });
+  event_loop->run_until_idle();
   return result;
 }
 
@@ -654,6 +745,7 @@ int PGBackendTestFixture::do_write_impl(
   new_oi.version = at_version;
   new_oi.prior_version = prior_version;
   new_oi.size = new_size;
+  choose_ec_chunk_size(obc->obs, new_oi);
 
   // Encode new OI into PGTransaction
   {
@@ -777,6 +869,10 @@ int PGBackendTestFixture::do_truncate_and_write_impl(
   new_oi.version = at_version;
   new_oi.prior_version = prior_version;
   new_oi.size = new_size;
+  if (!obc->obs.exists) {
+    new_oi.expected_object_size = expected_object_size;
+  }
+  choose_ec_chunk_size(obc->obs, new_oi);
 
   // Encode new OI into PGTransaction
   {
@@ -870,6 +966,8 @@ int PGBackendTestFixture::create_snapshot(
     if (snap_obc && !snap_obc->obs.exists) {
       snap_obc->obs.exists = true;
       snap_obc->obs.oi.size = snap_size;
+      // make_writeable() copies the chunk size with copy_user_bits().
+      snap_obc->obs.oi.ec_chunk_size = obc->obs.oi.ec_chunk_size;
     }
     pg_t->obc_map[snap_hoid] = snap_obc;
 
@@ -940,6 +1038,8 @@ int PGBackendTestFixture::rollback(
     new_oi.version = at_version;
     new_oi.prior_version = prior_version;
     new_oi.size = snap_size;
+    // _do_rollback_to() gives the head the snapshot's chunk size.
+    new_oi.ec_chunk_size = snap_obc->obs.oi.ec_chunk_size;
 
     {
       bufferlist oi_bl;
@@ -1019,7 +1119,7 @@ int PGBackendTestFixture::read_object(
     ec_switch->objects_read_async(
       hoid,
       object_size,
-      0,
+      get_object_ec_chunk_size(obj_name),
       to_read,
       on_complete,
       false
@@ -1397,6 +1497,51 @@ int PGBackendTestFixture::write_attribute(
   event_loop->run_until_idle();
   
   return result;
+}
+
+void PGBackendTestFixture::choose_ec_chunk_size(
+  const ObjectState &old_obs,
+  object_info_t &new_oi,
+  bool removed) const
+{
+  if (pool_type != EC) {
+    return;
+  }
+  // The fixture does not keep ObjectState::exists up to date for objects
+  // created by truncate_and_write(), so only the size tells if there is data.
+  const bool had_data = old_obs.oi.size > 0 && !removed;
+  const uint64_t size_hint = new_oi.expected_object_size ?
+    new_oi.expected_object_size : new_oi.size;
+  new_oi.ec_chunk_size = get_pool().get_ec_object_chunk_size(
+    new_oi.ec_chunk_size, had_data, size_hint);
+}
+
+uint64_t PGBackendTestFixture::get_object_ec_chunk_size(
+  const std::string& obj_name)
+{
+  const hobject_t hoid = make_test_object(obj_name);
+  const int primary_osd = osdmap->get_pg_acting_primary(pgid);
+  if (auto osd = object_contexts.find(primary_osd);
+      osd != object_contexts.end()) {
+    if (auto obc = osd->second.find(hoid); obc != osd->second.end()) {
+      return obc->second->obs.oi.ec_chunk_size;
+    }
+  }
+  auto ch_it = chs.find(primary_osd);
+  if (ch_it == chs.end()) {
+    return 0;
+  }
+  ceph::buffer::ptr value_ptr;
+  ghobject_t ghoid(hoid, ghobject_t::NO_GEN, shard_id_t(primary_osd));
+  if (store->getattr(ch_it->second, ghoid, OI_ATTR, value_ptr) < 0) {
+    return 0;
+  }
+  bufferlist bl;
+  bl.append(value_ptr);
+  auto p = bl.cbegin();
+  object_info_t oi;
+  oi.decode(p);
+  return oi.ec_chunk_size;
 }
 
 object_info_t PGBackendTestFixture::read_shard_object_info(

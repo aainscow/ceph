@@ -61,6 +61,14 @@ protected:
   // setup_ec_pool() uses this value when creating the pool.
   // Default includes both OVERWRITES and OPTIMIZATIONS flags.
   uint64_t pool_flags = pg_pool_t::FLAG_EC_OVERWRITES | pg_pool_t::FLAG_EC_OPTIMIZATIONS;
+
+  // Pool option ec_dynamic_chunk_size_max, if not 0.
+  uint64_t ec_dynamic_chunk_size_max = 0;
+
+  // The expected_object_size given to objects when they are created, as an
+  // allocation hint sent with the create would. In a pool with
+  // FLAG_EC_DYNAMIC_CHUNK_SIZE it chooses the chunk size of new objects.
+  uint64_t expected_object_size = 0;
   
   std::unique_ptr<MockStore> store;
   std::string data_dir;
@@ -291,6 +299,22 @@ public:
   }
     
   /**
+   * Choose the chunk size of an EC object the way PrimaryLogPG::finish_ctx()
+   * does. old_obs is the object's state before the write and new_oi its
+   * object_info after it. removed is true if the write removes the object
+   * first.
+   */
+  void choose_ec_chunk_size(const ObjectState &old_obs,
+                            object_info_t &new_oi,
+                            bool removed = false) const;
+
+  /**
+   * The object_info_t::ec_chunk_size of an object as the primary sees it:
+   * from its cached object context, else from its store, else 0.
+   */
+  uint64_t get_object_ec_chunk_size(const std::string& obj_name);
+
+  /**
    * Set the next version number for auto-generation.
    * This can be used by tests after rollback to set the version to a specific value.
    * The epoch will still come from the osdmap.
@@ -355,6 +379,10 @@ public:
     const std::string& obj_name,
     const std::string& data);
   
+  int do_remove_and_write_impl(
+    const std::string& obj_name,
+    const std::string& data);
+
   int do_write_impl(
     const std::string& obj_name,
     uint64_t offset,
@@ -387,6 +415,14 @@ public:
     const std::string& data,
     uint64_t object_size,
     bool run = true);
+
+  /**
+   * Remove an object and write it again in one transaction, as a remove
+   * followed by a write_full in one operation does.
+   */
+  int remove_and_write(
+    const std::string& obj_name,
+    const std::string& data);
 
   /**
    * Write operation with optional truncate and multiple writes in a single transaction.
