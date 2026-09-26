@@ -153,9 +153,14 @@ public:
       ceph_assert(pgb_is_primary());
     }
 
-    // Call into PeeringState to update recovery state
+    // Call into PeeringState to update recovery state. The peering fixture
+    // queues any transaction it is given to write, so give it only the
+    // peering updates rather than the whole recovery transaction.
     if (peering_state) {
-      peering_state->recover_got(recovery_info.soid, recovery_info.version, is_delete, *t);
+      ObjectStore::Transaction peering_t;
+      peering_state->recover_got(recovery_info.soid, recovery_info.version,
+                                 is_delete, peering_t);
+      t->append(peering_t);
     }
 
     // Register transaction callbacks (similar to PrimaryLogPG::on_local_recover)
