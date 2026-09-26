@@ -1396,8 +1396,13 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
                     bool follow_olh, optional_yield y,
                     bool assume_noent = false);
 
-  using iterate_obj_cb = int (*)(const DoutPrefixProvider*, const rgw_raw_obj&, off_t, off_t,
-                                 off_t, bool, RGWObjState*, void*);
+  // read_obj_size is the size of the RADOS object read_obj, which reads pass
+  // as the object size hint.
+  using iterate_obj_cb = int (*)(const DoutPrefixProvider *dpp,
+                                 const rgw_raw_obj &read_obj, off_t obj_ofs,
+                                 off_t read_ofs, off_t len,
+                                 uint64_t read_obj_size, bool is_head_obj,
+                                 RGWObjState *astate, void *arg);
 
   int iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& ctx, RGWBucketInfo& bucket_info,
                   const rgw_obj& obj, off_t ofs, off_t end,
@@ -1408,8 +1413,8 @@ int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
 
   virtual int get_obj_iterate_cb(const DoutPrefixProvider *dpp,
                          const rgw_raw_obj& read_obj, off_t obj_ofs,
-                         off_t read_ofs, off_t len, bool is_head_obj,
-                         RGWObjState *astate, void *arg);
+                         off_t read_ofs, off_t len, uint64_t read_obj_size,
+                         bool is_head_obj, RGWObjState *astate, void *arg);
 
   /**
    * a simple object read without keeping state

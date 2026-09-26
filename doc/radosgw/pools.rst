@@ -20,6 +20,23 @@ but others (especially those listed in ``placement_pools`` for the bucket index
 and data) will require additional tuning. See :ref:`rados_pools` for details on
 pool creation.
 
+Erasure-Coded Data Pools
+------------------------
+
+A data pool may be erasure coded. With :ref:`dynamic chunk sizes
+<rados_ops_erasure_coding_dynamic_chunk_size>` enabled on the pool, each RADOS
+object that ``radosgw`` writes gets a chunk size that fits it in a single
+stripe, while the pool keeps its small stripe unit for small objects:
+
+.. prompt:: bash $
+
+   ceph osd pool set default.rgw.buckets.data allow_ec_optimizations true
+   ceph osd pool set default.rgw.buckets.data allow_ec_dynamic_chunk_size true --yes-i-really-mean-it
+
+``radosgw`` passes the size of each RADOS object with its reads, so if
+:confval:`rados_replica_read_policy` is set to ``balance`` for ``radosgw``,
+reads go directly to the OSDs that hold the data.
+
 .. _radosgw-pool-namespaces:
 
 Pool Namespaces

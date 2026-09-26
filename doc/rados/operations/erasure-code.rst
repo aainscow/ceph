@@ -296,8 +296,9 @@ stored in a single stripe. Existing objects are not changed.
 
 Clients read objects directly from the OSDs that hold the data (see
 :confval:`rados_replica_read_policy`) only if they supply the size of the
-object with the read. Other clients read through the primary OSD. A client
-that supplies a wrong size gets correct data from the primary OSD.
+object with the read. RGW does this. Other clients read through the
+primary OSD. A client that supplies a wrong size gets correct data from
+the primary OSD.
 
 The flag is experimental. Every OSD that serves the pool must support it:
 an OSD that does not would read and write objects with their own chunk size

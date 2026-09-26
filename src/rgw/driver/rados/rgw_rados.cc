@@ -8612,6 +8612,7 @@ int RGWRados::Object::Read::read(int64_t ofs, int64_t end,
   else
     len = end - ofs + 1;
 
+  uint64_t read_obj_size;
   if (manifest && manifest->has_tail()) {
     /* now get the relevant object part */
     RGWObjManifest::obj_iterator iter = manifest->obj_find(dpp, ofs);
@@ -8620,9 +8621,11 @@ int RGWRados::Object::Read::read(int64_t ofs, int64_t end,
     read_obj = iter.get_location().get_raw_obj(store);
     len = std::min(len, iter.get_stripe_size() - (ofs - stripe_ofs));
     read_ofs = iter.location_ofs() + (ofs - stripe_ofs);
+    read_obj_size = iter.location_ofs() + iter.get_stripe_size();
     reading_from_head = (read_obj == state.head_obj);
   } else {
     read_obj = state.head_obj;
+    read_obj_size = astate->size;
   }
 
   r = store->get_max_chunk_size(read_obj.pool, &max_chunk_size, dpp);
@@ -8667,6 +8670,7 @@ int RGWRados::Object::Read::read(int64_t ofs, int64_t end,
 
   ldpp_dout(dpp, 20) << "rados->read obj-ofs=" << ofs << " read_ofs=" << read_ofs << " read_len=" << read_len << dendl;
   op.read(read_ofs, read_len, pbl, NULL);
+  op.set_object_size_hint(read_obj_size);
 
   if (state.cur_pool != read_obj.pool) {
     auto iter = state.io_ctxs.find(read_obj.pool);
@@ -8737,17 +8741,20 @@ int get_obj_data::flush(rgw::AioResultList&& results) {
 
 static int _get_obj_iterate_cb(const DoutPrefixProvider *dpp,
                                const rgw_raw_obj& read_obj, off_t obj_ofs,
-                               off_t read_ofs, off_t len, bool is_head_obj,
+                               off_t read_ofs, off_t len,
+                               uint64_t read_obj_size, bool is_head_obj,
                                RGWObjState *astate, void *arg)
 {
   struct get_obj_data* d = static_cast<struct get_obj_data*>(arg);
   return d->rgwrados->get_obj_iterate_cb(dpp, read_obj, obj_ofs, read_ofs, len,
-                                      is_head_obj, astate, arg);
+                                         read_obj_size, is_head_obj, astate,
+                                         arg);
 }
 
 int RGWRados::get_obj_iterate_cb(const DoutPrefixProvider *dpp,
                                  const rgw_raw_obj& read_obj, off_t obj_ofs,
-                                 off_t read_ofs, off_t len, bool is_head_obj,
+                                 off_t read_ofs, off_t len,
+                                 uint64_t read_obj_size, bool is_head_obj,
                                  RGWObjState *astate, void *arg)
 {
   ObjectReadOperation op;
@@ -8789,6 +8796,7 @@ int RGWRados::get_obj_iterate_cb(const DoutPrefixProvider *dpp,
 
   ldpp_dout(dpp, 20) << "rados->get_obj_iterate_cb oid=" << read_obj.oid << " obj-ofs=" << obj_ofs << " read_ofs=" << read_ofs << " len=" << len << dendl;
   op.read(read_ofs, len, nullptr, nullptr);
+  op.set_object_size_hint(read_obj_size);
 
   const uint64_t cost = len;
   const uint64_t id = obj_ofs; // use logical object offset for sorting replies
@@ -8858,6 +8866,11 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
     for (; iter != obj_end && ofs <= end; ++iter) {
       off_t stripe_ofs = iter.get_stripe_ofs();
       off_t next_stripe_ofs = stripe_ofs + iter.get_stripe_size();
+      // Moving to the last stripe of an object without parts leaves the
+      // iterator's stripe size at the full stripe size.
+      const uint64_t read_obj_size = iter.location_ofs() +
+        std::min<uint64_t>(iter.get_stripe_size(),
+                           manifest->get_obj_size() - stripe_ofs);
 
       while (ofs < next_stripe_ofs && ofs <= end) {
         read_obj = iter.get_location().get_raw_obj(this);
@@ -8869,7 +8882,8 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
         }
 
         reading_from_head = (read_obj == head_obj);
-        r = cb(dpp, read_obj, ofs, read_ofs, read_len, reading_from_head, astate, arg);
+        r = cb(dpp, read_obj, ofs, read_ofs, read_len, read_obj_size,
+               reading_from_head, astate, arg);
 	if (r < 0) {
 	  return r;
         }
@@ -8883,7 +8897,8 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
       read_obj = head_obj;
       uint64_t read_len = std::min(len, max_chunk_size);
 
-      r = cb(dpp, read_obj, ofs, ofs, read_len, reading_from_head, astate, arg);
+      r = cb(dpp, read_obj, ofs, ofs, read_len, astate->size,
+             reading_from_head, astate, arg);
       if (r < 0) {
 	return r;
       }

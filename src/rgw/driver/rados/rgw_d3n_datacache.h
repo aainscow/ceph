@@ -157,13 +157,15 @@ public:
   }
 
   int get_obj_iterate_cb(const DoutPrefixProvider *dpp, const rgw_raw_obj& read_obj, off_t obj_ofs,
-                         off_t read_ofs, off_t len, bool is_head_obj,
-                         RGWObjState *astate, void *arg) override;
+                         off_t read_ofs, off_t len, uint64_t read_obj_size,
+                         bool is_head_obj, RGWObjState *astate,
+                         void *arg) override;
 };
 
 template<typename T>
 int D3nRGWDataCache<T>::get_obj_iterate_cb(const DoutPrefixProvider *dpp, const rgw_raw_obj& read_obj, off_t obj_ofs,
-                                 off_t read_ofs, off_t len, bool is_head_obj,
+                                 off_t read_ofs, off_t len,
+                                 uint64_t read_obj_size, bool is_head_obj,
                                  RGWObjState *astate, void *arg) {
   lsubdout(g_ceph_context, rgw_datacache, 30) << "D3nDataCache::" << __func__ << "(): is head object : " << is_head_obj << dendl;
   librados::ObjectReadOperation op;
@@ -203,6 +205,7 @@ int D3nRGWDataCache<T>::get_obj_iterate_cb(const DoutPrefixProvider *dpp, const 
 
     ldpp_dout(dpp, 20) << "D3nDataCache::" << __func__ << "(): oid=" << read_obj.oid << " obj-ofs=" << obj_ofs << " read_ofs=" << read_ofs << " len=" << len << dendl;
     op.read(read_ofs, len, nullptr, nullptr);
+    op.set_object_size_hint(read_obj_size);
 
     const uint64_t cost = len;
     const uint64_t id = obj_ofs; // use logical object offset for sorting replies
@@ -214,6 +217,7 @@ int D3nRGWDataCache<T>::get_obj_iterate_cb(const DoutPrefixProvider *dpp, const 
     int r;
 
     op.read(read_ofs, len, nullptr, nullptr);
+    op.set_object_size_hint(read_obj_size);
 
     const uint64_t cost = len;
     const uint64_t id = obj_ofs; // use logical object offset for sorting replies

@@ -151,7 +151,17 @@ void RadosWriter::add_write_hint(librados::ObjectWriteOperation& op) {
     alloc_hint_flags |= librados::ALLOC_HINT_FLAG_INCOMPRESSIBLE;
   }
 
-  op.set_alloc_hint2(0, 0, alloc_hint_flags);
+  op.set_alloc_hint2(stripe_expected_size, 0, alloc_hint_flags);
+}
+
+// The expected size to hint for a stripe object. An erasure coded pool with
+// dynamic chunk sizes picks an object's chunk size from its expected size, or
+// if there is none from its size after the first write. That suits a stripe
+// written by one write; a stripe that may take several writes needs the hint.
+static uint64_t expected_stripe_object_size(uint64_t stripe_max_size,
+                                            uint64_t chunk_size)
+{
+  return stripe_max_size > chunk_size ? stripe_max_size : 0;
 }
 
 void RadosWriter::set_head_obj(const rgw_obj& head)
@@ -159,8 +169,10 @@ void RadosWriter::set_head_obj(const rgw_obj& head)
   head_obj = head;
 }
 
-int RadosWriter::set_stripe_obj(const rgw_raw_obj& raw_obj)
+int RadosWriter::set_stripe_obj(const rgw_raw_obj& raw_obj,
+                                uint64_t expected_size)
 {
+  stripe_expected_size = expected_size;
   return rgw_get_rados_ref(dpp, store->get_rados_handle(), raw_obj,
 			   &stripe_obj);
 }
@@ -273,13 +285,15 @@ int ManifestObjectProcessor::next(uint64_t offset, uint64_t *pstripe_size)
   if (r < 0) {
     return r;
   }
-  r = writer.set_stripe_obj(stripe_obj);
+  const uint64_t stripe_size = manifest_gen.cur_stripe_max_size();
+  r = writer.set_stripe_obj(
+    stripe_obj, expected_stripe_object_size(stripe_size, chunk_size));
   if (r < 0) {
     return r;
   }
 
   chunk = ChunkProcessor(&writer, chunk_size);
-  *pstripe_size = manifest_gen.cur_stripe_max_size();
+  *pstripe_size = stripe_size;
   return 0;
 }
 
@@ -503,11 +517,12 @@ int MultipartObjectProcessor::prepare_head()
   // point part uploads at the part head instead of the final multipart head
   writer.set_head_obj(head_obj);
 
-  r = writer.set_stripe_obj(stripe_obj);
+  stripe_size = manifest_gen.cur_stripe_max_size();
+  r = writer.set_stripe_obj(
+    stripe_obj, expected_stripe_object_size(stripe_size, chunk_size));
   if (r < 0) {
     return r;
   }
-  stripe_size = manifest_gen.cur_stripe_max_size();
   set_head_chunk_size(stripe_size);
 
   chunk = ChunkProcessor(&writer, chunk_size);
@@ -743,12 +758,13 @@ int AppendObjectProcessor::prepare(optional_yield y)
   if (r < 0) {
     return r;
   }
-  r = writer.set_stripe_obj(std::move(stripe_obj));
+  uint64_t stripe_size = manifest_gen.cur_stripe_max_size();
+  r = writer.set_stripe_obj(
+    std::move(stripe_obj),
+    expected_stripe_object_size(stripe_size, chunk_size));
   if (r < 0) {
     return r;
   }
-
-  uint64_t stripe_size = manifest_gen.cur_stripe_max_size();
 
   uint64_t max_head_size = std::min(chunk_size, stripe_size);
   set_head_chunk_size(max_head_size);

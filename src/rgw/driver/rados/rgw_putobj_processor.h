@@ -70,6 +70,7 @@ class RadosWriter : public rgw::sal::DataProcessor {
   RGWObjectCtx& obj_ctx;
   rgw_obj head_obj;
   rgw_rados_ref stripe_obj; // current stripe object
+  uint64_t stripe_expected_size = 0; // alloc hint for the current stripe
   RawObjSet written; // set of written objects for deletion
   const DoutPrefixProvider *dpp;
   optional_yield y;
@@ -91,8 +92,9 @@ class RadosWriter : public rgw::sal::DataProcessor {
   // change the head object
   void set_head_obj(const rgw_obj& head);
 
-  // change the current stripe object
-  int set_stripe_obj(const rgw_raw_obj& obj);
+  // change the current stripe object. expected_size, if not 0, is the size
+  // the object is expected to reach, sent to the OSD as an allocation hint.
+  int set_stripe_obj(const rgw_raw_obj& obj, uint64_t expected_size = 0);
 
   // write the data at the given offset of the current stripe object
   int process(bufferlist&& data, uint64_t stripe_offset) override;
