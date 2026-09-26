@@ -90,8 +90,9 @@ public:
     return {0};
   }
 
-  ECUtil::stripe_info_t ec_get_sinfo() const override {
-    return {0, 0, 0};
+  const ECUtil::stripe_info_base_t &ec_get_sinfo() const override {
+    static const ECUtil::stripe_info_base_t sinfo(1, 1, 4096);
+    return sinfo;
   }
 
   using OmapIterFunction = std::function<ObjectStore::omap_iter_ret_t(std::string_view, std::string_view)>;

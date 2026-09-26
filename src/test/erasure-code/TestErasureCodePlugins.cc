@@ -574,8 +574,8 @@ TEST_P(PluginTest, CRCEncodeDecodeSupport) {
       }
     }
 
-    ECUtil::stripe_info_t sinfo{get_k(), get_m(), get_k() * chunk_size,
-                                erasure_code->get_chunk_mapping()};
+    ECUtil::stripe_info_base_t sinfo{get_k(), get_m(), get_k() * chunk_size,
+                                     erasure_code->get_chunk_mapping()};
 
     // Decode CRCs as if 1 to m-1 data CRCs are missing and assert decoded CRC
     // is equal to missing CRC
