@@ -91,9 +91,11 @@ class MockPgScrubBeListener : public Scrub::PgScrubBeListener {
 
   const pg_info_t& get_pg_info(ScrubberPasskey) const override { return info; }
 
-  uint64_t logical_to_ondisk_size(uint64_t logical_size, shard_id_t shard_id,
+  uint64_t logical_to_ondisk_size(uint64_t logical_size, uint64_t chunk_size,
+                                  shard_id_t shard_id,
                                   bool object_is_legacy_ec) const override {
-    return backend->be_get_ondisk_size(logical_size, shard_id_t(shard_id),
+    return backend->be_get_ondisk_size(logical_size, chunk_size,
+                                       shard_id_t(shard_id),
                                        object_is_legacy_ec);
   }
 

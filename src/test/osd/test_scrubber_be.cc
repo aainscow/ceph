@@ -96,6 +96,7 @@ class TestPg : public PgScrubBeListener {
   const pg_info_t& get_pg_info(ScrubberPasskey) const final { return m_info; }
 
   virtual uint64_t logical_to_ondisk_size(uint64_t logical_size,
+                                          uint64_t chunk_size,
                                           shard_id_t shard_id,
                                           bool unused) const
   {
@@ -1000,6 +1001,7 @@ class ECOptimisedPg : public TestPg {
   static uint64_t raw(shard_id_t s) { return static_cast<uint64_t>(int8_t(s)); }
 
   uint64_t logical_to_ondisk_size(uint64_t logical_size,
+                                  uint64_t chunk_size,
                                   shard_id_t shard_id,
                                   bool object_is_legacy_ec) const final {
     if (object_is_legacy_ec) {

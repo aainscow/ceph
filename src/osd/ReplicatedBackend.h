@@ -547,8 +547,9 @@ private:
     ScrubMap::object& smap_object);
 
   uint64_t be_get_ondisk_size(uint64_t logical_size,
-                              shard_id_t unused,
-                              bool unused2) const final {
+                              uint64_t unused,
+                              shard_id_t unused2,
+                              bool unused3) const final {
     return logical_size;
   }
 };

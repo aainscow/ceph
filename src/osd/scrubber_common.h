@@ -271,8 +271,10 @@ struct PgScrubBeListener {
                                     eversion_t version) = 0;
   virtual const pg_info_t& get_pg_info(ScrubberPasskey) const = 0;
 
-  // query the PG backend for the on-disk size of an object
+  // query the PG backend for the on-disk size of an object; chunk_size is
+  // the object's object_info_t::ec_chunk_size
   virtual uint64_t logical_to_ondisk_size(uint64_t logical_size,
+                                 uint64_t chunk_size,
                                  shard_id_t shard_id,
                                  bool object_is_legacy_ec) const = 0;
 

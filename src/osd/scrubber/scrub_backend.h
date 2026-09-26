@@ -557,8 +557,10 @@ class ScrubBackend {
     const SnapSet& snapset,
     Scrub::SnapMapReaderI& snaps_getter);
 
-  // accessing the PG backend for this translation service
+  // accessing the PG backend for this translation service; chunk_size is
+  // the object's object_info_t::ec_chunk_size
   uint64_t logical_to_ondisk_size(uint64_t logical_size,
+                                 uint64_t chunk_size,
                                  shard_id_t shard_id,
                                  bool object_is_legacy_ec = false,
                                  uint64_t expected_size = 0) const;

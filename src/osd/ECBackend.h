@@ -405,13 +405,14 @@ public:
       ScrubMap::object &o
     );
 
-  uint64_t be_get_ondisk_size(uint64_t logical_size, shard_id_t shard_id,
-      bool object_is_legacy_ec) const {
+  uint64_t be_get_ondisk_size(uint64_t logical_size, uint64_t chunk_size,
+      shard_id_t shard_id, bool object_is_legacy_ec) const {
     if (object_is_legacy_ec) {
       // In legacy EC, all shards were padded to the next chunk boundry.
+      // Legacy objects always have the default chunk size.
       return sinfo.for_default().ro_offset_to_next_chunk_offset(logical_size);
     }
-    return object_size_to_shard_size(logical_size, shard_id, 0);
+    return object_size_to_shard_size(logical_size, shard_id, chunk_size);
   }
 
   bool remove_ec_omap_journal_entry(const hobject_t &hoid, const ECOmapJournalEntry &entry);
