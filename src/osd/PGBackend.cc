@@ -197,6 +197,27 @@ void PGBackend::handle_recovery_delete_reply(OpRequestRef op)
   }
 }
 
+uint64_t PGBackend::get_rollback_ec_chunk_size(const ObjectModDesc &mod_desc)
+{
+  struct OldObjectInfo : public ObjectModDesc::Visitor {
+    std::optional<uint64_t> ec_chunk_size;
+    void setattrs(map<string, std::optional<bufferlist> > &attrs) override {
+      if (ec_chunk_size) {
+        return;
+      }
+      if (auto i = attrs.find(OI_ATTR); i != attrs.end() && i->second) {
+        object_info_t oi;
+        auto p = i->second->cbegin();
+        decode(oi, p);
+        ec_chunk_size = oi.ec_chunk_size;
+      }
+    }
+  };
+  OldObjectInfo old;
+  mod_desc.visit(&old);
+  return old.ec_chunk_size.value_or(0);
+}
+
 void PGBackend::rollback(
   const pg_log_entry_t &entry,
   ObjectStore::Transaction *t)
@@ -206,16 +227,21 @@ void PGBackend::rollback(
     const hobject_t &hoid;
     PGBackend *pg;
     const pg_log_entry_t &entry;
+    // The object's chunk size before the write, for the shard sizes the
+    // object is rolled back to.
+    const uint64_t ec_chunk_size;
     ObjectStore::Transaction t;
     RollbackVisitor(
       const hobject_t &hoid,
       PGBackend *pg,
-      const pg_log_entry_t &entry) : hoid(hoid), pg(pg), entry(entry) {}
+      const pg_log_entry_t &entry,
+      uint64_t ec_chunk_size)
+      : hoid(hoid), pg(pg), entry(entry), ec_chunk_size(ec_chunk_size) {}
     void append(uint64_t old_size) override {
       ObjectStore::Transaction temp;
       auto dpp = pg->get_parent()->get_dpp();
       const uint64_t shard_size = pg->object_size_to_shard_size(old_size,
-		       pg->get_parent()->whoami_shard().shard);
+		       pg->get_parent()->whoami_shard().shard, ec_chunk_size);
       ldpp_dout(dpp, 20) << " entry " << entry.version
 			 << " rollback append object_size " << old_size
 			 << " shard_size " << shard_size << dendl;
@@ -299,7 +325,8 @@ void PGBackend::rollback(
 	  // Written shard - rollback extents
 	  const uint64_t shard_size = pg->object_size_to_shard_size(
 					object_size,
-					pg->get_parent()->whoami_shard().shard);
+					pg->get_parent()->whoami_shard().shard,
+					ec_chunk_size);
 	  ldpp_dout(dpp, 20) << " entry " << entry.version
 			     << " written shard rollback_extents "
 			     << entry.written_shards
@@ -332,7 +359,10 @@ void PGBackend::rollback(
   };
 
   ceph_assert(entry.mod_desc.can_rollback());
-  RollbackVisitor vis(entry.soid, this, entry);
+  const uint64_t ec_chunk_size =
+    get_parent()->get_pool().allows_ec_dynamic_chunk_size() ?
+      get_rollback_ec_chunk_size(entry.mod_desc) : 0;
+  RollbackVisitor vis(entry.soid, this, entry, ec_chunk_size);
   entry.mod_desc.visit(&vis);
   t->append(vis.t);
 }

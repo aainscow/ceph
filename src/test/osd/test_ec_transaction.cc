@@ -727,3 +727,53 @@ TEST(ectransaction, write_plan_object_chunk_size_truncate)
   ref_write[shard_id_t(5)].insert(0, object_chunk);
   ASSERT_EQ(ref_write, plan.will_write);
 }
+
+TEST(ectransaction, rollback_ec_chunk_size)
+{
+  object_info_t oi;
+  oi.size = 3 * 65536;
+  oi.ec_chunk_size = 65536;
+  bufferlist oi_bl;
+  oi.encode(oi_bl, CEPH_FEATURES_ALL);
+  bufferlist ss_bl;
+  ss_bl.append("snapset");
+
+  // A write records the attributes it replaces, including the object_info.
+  {
+    ObjectModDesc desc;
+    desc.append(oi.size);
+    std::map<std::string, std::optional<bufferlist>> old_attrs = {
+      {SS_ATTR, ss_bl}, {OI_ATTR, oi_bl}};
+    desc.setattrs(old_attrs);
+    ASSERT_EQ(65536u, PGBackend::get_rollback_ec_chunk_size(desc));
+  }
+
+  // The object had the default chunk size.
+  {
+    object_info_t default_oi = oi;
+    default_oi.ec_chunk_size = 0;
+    bufferlist bl;
+    default_oi.encode(bl, CEPH_FEATURES_ALL);
+    ObjectModDesc desc;
+    std::vector<std::pair<uint64_t, uint64_t>> extents = {{0, 4096}};
+    desc.rollback_extents(1, extents, default_oi.size, {});
+    std::map<std::string, std::optional<bufferlist>> old_attrs = {
+      {OI_ATTR, bl}};
+    desc.setattrs(old_attrs);
+    ASSERT_EQ(0u, PGBackend::get_rollback_ec_chunk_size(desc));
+  }
+
+  // The object did not exist before the write.
+  {
+    ObjectModDesc desc;
+    desc.create();
+    ASSERT_EQ(0u, PGBackend::get_rollback_ec_chunk_size(desc));
+  }
+  {
+    ObjectModDesc desc;
+    std::map<std::string, std::optional<bufferlist>> old_attrs = {
+      {OI_ATTR, std::nullopt}};
+    desc.setattrs(old_attrs);
+    ASSERT_EQ(0u, PGBackend::get_rollback_ec_chunk_size(desc));
+  }
+}
