@@ -153,6 +153,17 @@ add_executable(unittest_ecfailover_with_peering
 add_ceph_unittest(unittest_ecfailover_with_peering)
 target_link_libraries(unittest_ecfailover_with_peering osd os global ${CMAKE_DL_LIBS} ${BLKID_LIBRARIES})
 add_dependencies(unittest_ecfailover_with_peering ${EC_ISA_LIB} ec_jerasure)
+# unittest_ec_dynamic_chunk_size
+add_executable(unittest_ec_dynamic_chunk_size
+  TestECDynamicChunkSize.cc
+  $<TARGET_OBJECTS:unit-main>
+  $<TARGET_OBJECTS:store_test_fixture>
+  $<TARGET_OBJECTS:pg_backend_test_fixture>
+  $<TARGET_OBJECTS:ec_peering_test_fixture>
+  )
+add_ceph_unittest(unittest_ec_dynamic_chunk_size)
+target_link_libraries(unittest_ec_dynamic_chunk_size osd os global ${CMAKE_DL_LIBS} ${BLKID_LIBRARIES})
+add_dependencies(unittest_ec_dynamic_chunk_size ${EC_ISA_LIB} ec_jerasure)
 # unittest_hitset
 add_executable(unittest_hitset
   hitset.cc
@@ -227,6 +238,7 @@ target_link_libraries(unittest_ec_omap_journal osd global ${BLKID_LIBRARIES})
 # Not including unittest_osdmap, as it is slow. It is tested elsewhere.
 set(OSD_UNITTESTS
   unittest_backend_basics
+  unittest_ec_dynamic_chunk_size
   unittest_ec_omap_journal
   unittest_ec_transaction
   unittest_ec_transaction_l
