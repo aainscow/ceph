@@ -1329,8 +1329,10 @@ void ECCommon::RecoveryBackend::handle_recovery_push(
   }
 
   if (op.after_progress.data_complete && op.after_progress.omap_complete) {
-    uint64_t shard_size = sinfo.for_default().object_size_to_shard_size(op.recovery_info.size,
-      get_parent()->whoami_shard().shard);
+    uint64_t shard_size =
+      sinfo.for_object_chunk_size(op.recovery_info.oi.ec_chunk_size).
+        object_size_to_shard_size(op.recovery_info.size,
+                                  get_parent()->whoami_shard().shard);
     ceph_assert(shard_size >= tobj_size);
     if (shard_size != tobj_size) {
       m->t.truncate( coll, tobj, shard_size);
@@ -1390,16 +1392,35 @@ void ECCommon::RecoveryBackend::handle_recovery_push_reply(
   continue_recovery_op(rop, m);
 }
 
+uint64_t ECCommon::RecoveryBackend::get_recovery_end(
+    const RecoveryOp &op) const {
+  ceph_assert(op.obc);
+  const object_info_t &oi = op.obc->obs.oi;
+  const ECUtil::stripe_info_t obj_sinfo =
+    sinfo.for_object_chunk_size(oi.ec_chunk_size);
+  uint64_t end = 0;
+  for (auto shard : op.missing_on_shards) {
+    end = std::max(end, obj_sinfo.object_size_to_shard_size(oi.size, shard));
+  }
+  return end;
+}
+
 void ECCommon::RecoveryBackend::update_object_size_after_read(
-    uint64_t size,
+    const object_info_t &oi,
     read_result_t &res,
     read_request_t &req) {
-  // We didn't know the size before, meaning the zero for decode calculations
-  // will be off. Recalculate them!
+  /* The read was planned without knowing the object's size or chunk size.
+   * Switch to the object's geometry and recalculate the zeros for decode. */
+  req.object_size = oi.size;
+  req.chunk_size = oi.ec_chunk_size;
+  const ECUtil::stripe_info_t obj_sinfo =
+    sinfo.for_object_chunk_size(req.chunk_size);
+  res.buffers_read.set_sinfo(obj_sinfo);
+  const uint64_t size = req.object_size;
   ECUtil::shard_extent_set_t zero_mask(sinfo.get_k_plus_m());
-  sinfo.for_default().ro_size_to_zero_mask(size, zero_mask);
+  obj_sinfo.ro_size_to_zero_mask(size, zero_mask);
   ECUtil::shard_extent_set_t read_mask(sinfo.get_k_plus_m());
-  sinfo.for_default().ro_size_to_read_mask(size, read_mask);
+  obj_sinfo.ro_size_to_read_mask(size, read_mask);
   extent_set superset = res.buffers_read.get_extent_superset();
 
   for (auto &&[shard, eset] : zero_mask) {
@@ -1456,7 +1477,7 @@ void ECCommon::RecoveryBackend::handle_recovery_read_complete(
     ceph_assert(hoid == op.hoid);
 #endif
     if (empty_obc) {
-      update_object_size_after_read(op.recovery_info.size, res, req);
+      update_object_size_after_read(op.obc->obs.oi, res, req);
       
       // Check if object has omap flag - if not, mark omap_complete
       if (get_parent()->get_pool().supports_omap()) {
@@ -1609,36 +1630,48 @@ void ECCommon::RecoveryBackend::continue_recovery_op(
 
       op.state = RecoveryOp::READING;
 
-      /* When beginning recovery, the OI may not be known. As such the object
-       * size is not known. For the first read, attempt to read the default
-       * size.  If this is larger than the object sizes, then the OSD will
-       * return truncated reads.  If the object size is known, then attempt
-       * correctly sized reads.
+      /* Recovery progresses in shard offsets (data_recovered_to is a shard
+       * offset). Each pass recovers the same range of every missing shard,
+       * decoding it from the same range of the shards that are read, which
+       * works whatever the object's size and chunk size.
+       *
+       * When recovery starts without an object context, the size and chunk
+       * size are not known until the first read returns the object_info.
+       * That read covers the whole range on every shard; shards that are
+       * shorter return short reads, which are then treated as zeros.
        */
-      uint64_t available = get_recovery_chunk_size();
-      uint64_t read_size = available;
+      const uint64_t start = op.recovery_progress.data_recovered_to;
+      const uint64_t end = start + get_recovery_shard_read_size();
+      uint64_t object_size;
+      uint64_t chunk_size;
+      uint64_t read_size = end - start;
       if (op.obc) {
-        uint64_t aligned_size = ECUtil::align_next(op.obc->obs.oi.size);
-        uint64_t read_to_end = 0;
-
-        if (aligned_size > op.recovery_progress.data_recovered_to) {
-          read_to_end = aligned_size - op.recovery_progress.data_recovered_to;
+        object_size = op.obc->obs.oi.size;
+        chunk_size = op.obc->obs.oi.ec_chunk_size;
+        const ECUtil::stripe_info_t obj_sinfo =
+          sinfo.for_object_chunk_size(chunk_size);
+        for (auto shard : op.missing_on_shards) {
+          uint64_t shard_size =
+            obj_sinfo.object_size_to_shard_size(object_size, shard);
+          if (shard_size > start) {
+            want[shard].insert(start, std::min(end, shard_size) - start);
+          }
         }
-
-        if (read_to_end < read_size) {
-          read_size = read_to_end;
+        const uint64_t recovery_end = get_recovery_end(op);
+        read_size = recovery_end > start ?
+          std::min(end, recovery_end) - start : 0;
+      } else {
+        // An object of this size has data up to 'end' on every shard in the
+        // default geometry, so the read is not restricted.
+        object_size = end * sinfo.get_k();
+        chunk_size = 0;
+        for (auto shard : op.missing_on_shards) {
+          want[shard].insert(start, end - start);
         }
       }
-      sinfo.for_default().ro_range_to_shard_extent_set_with_parity(
-        op.recovery_progress.data_recovered_to, read_size, want);
-
-      op.recovery_progress.data_recovered_to += read_size;
-      available -= read_size;
-
-      // We only need to recover shards that are missing.
-      for (auto shard : shard_id_set::difference(sinfo.get_all_shards(), op.missing_on_shards)) {
-        want.erase(shard);
-      }
+      op.recovery_progress.data_recovered_to = end;
+      const uint64_t available = get_recovery_chunk_size() -
+        std::min(get_recovery_chunk_size(), read_size * sinfo.get_k());
 
       if (op.recovery_progress.first && op.obc) {
         op.xattrs = op.obc->attr_cache;
@@ -1663,7 +1696,6 @@ void ECCommon::RecoveryBackend::continue_recovery_op(
       if (want_omap_keys == WantOmapKeys::Yes) {
         ceph_assert(get_parent()->get_pool().supports_omap());
       }
-      const auto chunk_size = op.obc ? op.obc->obs.oi.size : get_recovery_chunk_size();
       read_request_t read_request(
         std::move(want),
         want_attrs,
@@ -1671,8 +1703,8 @@ void ECCommon::RecoveryBackend::continue_recovery_op(
         want_omap_keys,
         op.recovery_progress.omap_recovered_to,
         available,
-        chunk_size,
-        0
+        object_size,
+        chunk_size
       );
 
       int r = read_pipeline.get_min_avail_to_read_shards(
@@ -1699,15 +1731,12 @@ void ECCommon::RecoveryBackend::continue_recovery_op(
         ceph_assert(op.obc);
         /* This can happen for several reasons
          * - A zero-sized object.
-         * - The missing shards have no data.
-         * - The previous recovery did not need the last data shard. In this
-         *   case, data_recovered_to may indicate that the last shard still
-         *   needs recovery, when it does not.
+         * - The missing shards have no data in this range.
          * We can just skip the read and fall through below.
          */
         dout(10) << __func__ << " No reads required " << op << dendl;
         // Create an empty read result and fall through.
-        op.returned_data.emplace(sinfo.for_default());
+        op.returned_data.emplace(sinfo.for_object_chunk_size(chunk_size));
       } else {
         m->recovery_read(
           op.hoid,
@@ -1725,7 +1754,7 @@ void ECCommon::RecoveryBackend::continue_recovery_op(
       op.state = RecoveryOp::WRITING;
       ObjectRecoveryProgress after_progress = op.recovery_progress;
       after_progress.first = false;
-      if (after_progress.data_recovered_to >= op.obc->obs.oi.size) {
+      if (after_progress.data_recovered_to >= get_recovery_end(op)) {
         after_progress.data_complete = true;
       }
 

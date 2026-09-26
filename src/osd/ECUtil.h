@@ -1054,6 +1054,13 @@ public:
     return ro_end == invalid_offset;
   }
 
+  /* Interpret the buffers, which are held by shard offset, with another
+   * geometry. */
+  void set_sinfo(const stripe_info_t &new_sinfo) {
+    sinfo = new_sinfo;
+    compute_ro_range();
+  }
+
   uint64_t get_ro_start() const {
     return ro_start;
   }

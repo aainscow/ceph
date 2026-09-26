@@ -890,6 +890,12 @@ struct ECCommon {
                          sinfo.get_default_stripe_width());
     }
 
+    /* Recovery progresses in shard offsets, reading this much of each shard
+     * it needs per pass: an equal share of the recovery chunk. */
+    uint64_t get_recovery_shard_read_size() const {
+      return get_recovery_chunk_size() / sinfo.get_k();
+    }
+
     virtual ~RecoveryBackend() = default;
     virtual void commit_txn_send_replies(
         ceph::os::Transaction &&txn,
@@ -907,8 +913,9 @@ struct ECCommon {
     void continue_recovery_op(
         RecoveryBackend::RecoveryOp &op,
         RecoveryMessages *m);
+    uint64_t get_recovery_end(const RecoveryOp &op) const;
     void update_object_size_after_read(
-        uint64_t size,
+        const object_info_t &oi,
         read_result_t &res,
         read_request_t &req);
     void handle_recovery_read_complete(
