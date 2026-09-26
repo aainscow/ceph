@@ -90,6 +90,21 @@ public:
     return {0};
   }
 
+  // PG log rollback truncates shards to this size.
+  uint64_t object_size_to_shard_size(const uint64_t size,
+                                     shard_id_t shard,
+                                     uint64_t ec_chunk_size) const override {
+    const pg_pool_t &pool = get_parent()->get_pool();
+    if (!pool.is_erasure() || !pool.allows_ecoptimizations()) {
+      return size;
+    }
+    const unsigned k = pool.get_ec_data_shard_count();
+    const ECUtil::stripe_info_base_t sinfo(k, pool.size - k,
+                                           pool.get_stripe_width());
+    return sinfo.for_object_chunk_size(ec_chunk_size).
+      object_size_to_shard_size(size, shard);
+  }
+
   const ECUtil::stripe_info_base_t &ec_get_sinfo() const override {
     static const ECUtil::stripe_info_base_t sinfo(1, 1, 4096);
     return sinfo;
