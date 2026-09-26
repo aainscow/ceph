@@ -885,3 +885,188 @@ TEST(ECExtentCache, CloneInvalidateStaleSize)
   cl.complete_write(*op_x2);
   cl.complete_write(*op_y);
 }
+TEST(ECExtentCache, object_chunk_size)
+{
+  Client cl(4096, 2, 1, 1024 * 1024);
+  const stripe_info_t object_sinfo = cl.sinfo_base.for_chunk_size(4 * 4096);
+  const uint64_t object_size = 2 * object_sinfo.get_chunk_size();
+
+  // Write the object with its own chunk size...
+  {
+    shard_extent_set_t to_write(3);
+    object_sinfo.ro_range_to_shard_extent_set(0, object_size, to_write);
+    optional op = cl.cache.prepare(cl.oid, nullopt, to_write, 0, object_size,
+      false, object_sinfo,
+      [&cl](ECExtentCache::OpRef &op) {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op);
+    ASSERT_EQ(1u, cl.results.size());
+    ASSERT_EQ(object_sinfo, cl.results.front().sinfo);
+    ASSERT_EQ(object_sinfo.get_chunk_size(),
+              cl.cache.get_projected_chunk_size(cl.oid));
+    shard_extent_map_t emap(object_sinfo);
+    emap.insert_ro_zero_buffer(0, object_size);
+    emap.insert_parity_buffers();
+    cl.results.clear();
+    cl.cache.write_done(*op, std::move(emap));
+  }
+
+  // ... and read it back from the cache without touching the backend.
+  {
+    shard_extent_set_t to_read(3);
+    object_sinfo.ro_range_to_shard_extent_set(4096, 4096, to_read);
+    shard_extent_set_t to_write(3);
+    object_sinfo.ro_range_to_shard_extent_set(4096, 4096, to_write);
+    optional op = cl.cache.prepare(cl.oid, to_read, to_write, object_size,
+      object_size, false, object_sinfo,
+      [&cl](ECExtentCache::OpRef &op) {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op);
+    ASSERT_FALSE(cl.active_reads);
+    ASSERT_EQ(1u, cl.results.size());
+    ASSERT_EQ(object_sinfo, cl.results.front().sinfo);
+    ASSERT_EQ(to_read, cl.results.front().get_extent_set());
+    cl.complete_write(*op);
+  }
+}
+
+TEST(ECExtentCache, object_chunk_size_reads)
+{
+  Client cl(4096, 2, 1, 1024 * 1024);
+  const stripe_info_t object_sinfo = cl.sinfo_base.for_chunk_size(4 * 4096);
+  const uint64_t object_size = 2 * object_sinfo.get_chunk_size();
+
+  shard_extent_set_t to_read(3);
+  object_sinfo.ro_range_to_shard_extent_set(0, 4096, to_read);
+  shard_extent_set_t to_write(3);
+  object_sinfo.ro_range_to_shard_extent_set(0, 4096, to_write);
+  optional op = cl.cache.prepare(cl.oid, to_read, to_write, object_size,
+    object_size, false, object_sinfo,
+    [&cl](ECExtentCache::OpRef &op) {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+    });
+  cl.cache_execute(*op);
+
+  // The backend read is made with the object's chunk size.
+  ASSERT_TRUE(cl.active_reads);
+  ASSERT_EQ(object_sinfo.get_chunk_size(), cl.active_read_chunk_size);
+  cl.complete_read();
+  ASSERT_EQ(1u, cl.results.size());
+  ASSERT_EQ(object_sinfo, cl.results.front().sinfo);
+  cl.complete_write(*op);
+}
+
+TEST(ECExtentCache, chunk_size_change_invalidates)
+{
+  Client cl(4096, 2, 1, 1024 * 1024);
+  const stripe_info_t default_sinfo = cl.sinfo_base.for_default();
+  const stripe_info_t object_sinfo = cl.sinfo_base.for_chunk_size(4 * 4096);
+
+  // An op on the empty object with the default chunk size, still in flight...
+  shard_extent_set_t no_writes(3);
+  optional op1 = cl.cache.prepare(cl.oid, nullopt, no_writes, 0, 0, false,
+    default_sinfo,
+    [&cl](ECExtentCache::OpRef &op) {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+    });
+  cl.cache_execute(*op1);
+  ASSERT_EQ(default_sinfo.get_chunk_size(),
+            cl.cache.get_projected_chunk_size(cl.oid));
+
+  // ... when the first data write picks a larger chunk size.
+  const uint64_t object_size = object_sinfo.get_stripe_width();
+  shard_extent_set_t to_write(3);
+  object_sinfo.ro_range_to_shard_extent_set(0, object_size, to_write);
+  optional op2 = cl.cache.prepare(cl.oid, nullopt, to_write, 0, object_size,
+    true, object_sinfo,
+    [&cl](ECExtentCache::OpRef &op) {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+    });
+  cl.cache_execute(*op2);
+  ASSERT_EQ(object_sinfo.get_chunk_size(),
+            cl.cache.get_projected_chunk_size(cl.oid));
+
+  // Neither op needs to read, so both are ready, each in its own geometry.
+  ASSERT_EQ(2u, cl.results.size());
+  ASSERT_EQ(default_sinfo, cl.results.front().sinfo);
+  ASSERT_EQ(object_sinfo, cl.results.back().sinfo);
+  cl.complete_write(*op1);
+  shard_extent_map_t emap(object_sinfo);
+  emap.insert_ro_zero_buffer(0, object_size);
+  emap.insert_parity_buffers();
+  cl.results.clear();
+  cl.cache.write_done(*op2, std::move(emap));
+
+  // Later ops see the cached data in the new geometry.
+  shard_extent_set_t to_read(3);
+  object_sinfo.ro_range_to_shard_extent_set(0, object_size, to_read);
+  optional op3 = cl.cache.prepare(cl.oid, to_read, to_read, object_size,
+    object_size, false, object_sinfo,
+    [&cl](ECExtentCache::OpRef &op) {
+      cl.cache_ready(op->get_hoid(), op->get_result());
+    });
+  cl.cache_execute(*op3);
+  ASSERT_FALSE(cl.active_reads);
+  ASSERT_EQ(1u, cl.results.size());
+  ASSERT_EQ(object_sinfo, cl.results.front().sinfo);
+  ASSERT_EQ(to_read, cl.results.front().get_extent_set());
+  cl.complete_write(*op3);
+}
+
+TEST(ECExtentCache, chunk_size_change_of_idle_object)
+{
+  Client cl(4096, 2, 1, 1024 * 1024);
+  const stripe_info_t default_sinfo = cl.sinfo_base.for_default();
+  const stripe_info_t object_sinfo = cl.sinfo_base.for_chunk_size(4 * 4096);
+
+  // Write the object with the default chunk size and let it go idle, leaving
+  // its data in the LRU.
+  const uint64_t old_size = 2 * default_sinfo.get_stripe_width();
+  {
+    shard_extent_set_t to_write(3);
+    default_sinfo.ro_range_to_shard_extent_set(0, old_size, to_write);
+    optional op = cl.cache.prepare(cl.oid, nullopt, to_write, 0, old_size,
+      false, default_sinfo,
+      [&cl](ECExtentCache::OpRef &op) {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op);
+    cl.complete_write(*op);
+  }
+  ASSERT_FALSE(cl.cache.contains_object(cl.oid));
+
+  // Remove the object and write it again with a larger chunk size.
+  const uint64_t object_size = object_sinfo.get_stripe_width();
+  {
+    shard_extent_set_t to_write(3);
+    object_sinfo.ro_range_to_shard_extent_set(0, object_size, to_write);
+    optional op = cl.cache.prepare(cl.oid, nullopt, to_write, 0, object_size,
+      true, object_sinfo,
+      [&cl](ECExtentCache::OpRef &op) {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op);
+    ASSERT_EQ(1u, cl.results.size());
+    ASSERT_EQ(object_sinfo, cl.results.front().sinfo);
+    cl.complete_write(*op);
+  }
+
+  // The new data is read from the cache, in the new geometry.
+  {
+    shard_extent_set_t to_read(3);
+    object_sinfo.ro_range_to_shard_extent_set(0, object_size, to_read);
+    optional op = cl.cache.prepare(cl.oid, to_read, to_read, object_size,
+      object_size, false, object_sinfo,
+      [&cl](ECExtentCache::OpRef &op) {
+        cl.cache_ready(op->get_hoid(), op->get_result());
+      });
+    cl.cache_execute(*op);
+    ASSERT_FALSE(cl.active_reads);
+    ASSERT_EQ(1u, cl.results.size());
+    ASSERT_EQ(object_sinfo, cl.results.front().sinfo);
+    ASSERT_EQ(to_read, cl.results.front().get_extent_set());
+    cl.complete_write(*op);
+  }
+}
