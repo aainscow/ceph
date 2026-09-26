@@ -1896,6 +1896,17 @@ uint64_t pg_pool_t::get_ec_chunk_size_for_object_size(uint64_t object_size) cons
   return std::max(chunk_size, default_chunk_size);
 }
 
+uint64_t pg_pool_t::get_ec_object_chunk_size(uint64_t chunk_size,
+                                             bool had_data,
+                                             uint64_t size_hint) const
+{
+  if (chunk_size || had_data || !allows_ec_dynamic_chunk_size()) {
+    return chunk_size;
+  }
+  const uint64_t chosen = get_ec_chunk_size_for_object_size(size_hint);
+  return chosen == get_ec_default_chunk_size() ? 0 : chosen;
+}
+
 uint32_t pg_pool_t::get_random_pg_position(pg_t pg, uint32_t seed) const
 {
   uint32_t r = crush_hash32_2(CRUSH_HASH_RJENKINS1, seed, 123);

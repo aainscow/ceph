@@ -1906,6 +1906,21 @@ public:
    */
   uint64_t get_ec_chunk_size_for_object_size(uint64_t object_size) const;
 
+  /**
+   * The object_info_t::ec_chunk_size of an object after a write.
+   *
+   * An object's chunk size is chosen while it holds no data, from the size
+   * it is expected to reach, and then kept until the object is deleted. A
+   * chunk size equal to the default is recorded as 0.
+   *
+   * @param chunk_size the object's ec_chunk_size before the write
+   * @param had_data   whether the object held data before the write
+   * @param size_hint  the object's expected_object_size after the write if
+   *                   set, otherwise its size after the write
+   */
+  uint64_t get_ec_object_chunk_size(uint64_t chunk_size, bool had_data,
+                                    uint64_t size_hint) const;
+
   bool is_crimson() const {
     return has_flag(FLAG_CRIMSON);
   }

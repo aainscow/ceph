@@ -8503,6 +8503,8 @@ inline int PrimaryLogPG::_delete_oid(
   }
   oi.size = 0;
   oi.new_object();
+  // The next write chooses the chunk size again.
+  oi.ec_chunk_size = 0;
 
   // disconnect all watchers
   for (map<pair<uint64_t, entity_name_t>, watch_info_t>::iterator p =
@@ -8768,6 +8770,9 @@ void PrimaryLogPG::_do_rollback_to(OpContext *ctx, ObjectContextRef rollback_to,
 
   // Adjust the cached objectcontext
   maybe_create_new_object(ctx, true);
+  // The head's shards are now a copy of the snapshot's.
+  obs.oi.ec_chunk_size = rollback_to->obs.oi.ec_chunk_size;
+  ctx->ec_chunk_size_from_source = true;
   ctx->delta_stats.num_bytes -= obs.oi.size;
   ctx->delta_stats.num_bytes += rollback_to->obs.oi.size;
   ctx->clean_regions.mark_data_region_dirty(0, std::max(obs.oi.size, rollback_to->obs.oi.size));
@@ -9228,6 +9233,29 @@ int PrimaryLogPG::prepare_transaction(OpContext *ctx)
   return result;
 }
 
+void PrimaryLogPG::update_ec_chunk_size(OpContext *ctx)
+{
+  const object_info_t &old_oi = ctx->obs->oi;
+  object_info_t &oi = ctx->new_obs.oi;
+  // Data on the shards keeps its layout, unless the op removes the object
+  // first.
+  const auto op = ctx->op_t->op_map.find(oi.soid);
+  const bool removed =
+    op != ctx->op_t->op_map.end() && op->second.delete_first;
+  const bool had_data = ctx->obs->exists && old_oi.size > 0 && !removed;
+  if (!ctx->ec_chunk_size_from_source) {
+    const uint64_t size_hint =
+      oi.expected_object_size ? oi.expected_object_size : oi.size;
+    oi.ec_chunk_size = pool.info.get_ec_object_chunk_size(
+      oi.ec_chunk_size, had_data, size_hint);
+  }
+  if (oi.ec_chunk_size != old_oi.ec_chunk_size) {
+    dout(20) << __func__ << " " << oi.soid << " ec_chunk_size "
+	     << old_oi.ec_chunk_size << " -> " << oi.ec_chunk_size << dendl;
+    ceph_assert(!had_data);
+  }
+}
+
 void PrimaryLogPG::finish_ctx(OpContext *ctx, int log_op_type, int result)
 {
   const hobject_t& soid = ctx->obs->oi.soid;
@@ -9264,6 +9292,7 @@ void PrimaryLogPG::finish_ctx(OpContext *ctx, int log_op_type, int result)
   ctx->bytes_written = ctx->op_t->get_bytes_written();
 
   if (ctx->new_obs.exists) {
+    update_ec_chunk_size(ctx);
     ctx->new_obs.oi.version = ctx->at_version;
     ctx->new_obs.oi.prior_version = ctx->obs->oi.version;
     ctx->new_obs.oi.last_reqid = ctx->reqid;
@@ -9992,6 +10021,13 @@ void PrimaryLogPG::process_copy_chunk(hobject_t oid, ceph_tid_t tid, int r)
     cop->attrs.clear();
   }
 
+  if (cop->temp_cursor.is_initial()) {
+    // Choose the destination's chunk size for its final size. The data may
+    // be written to a temporary object first, which must use the same one.
+    cop->results.ec_chunk_size = pool.info.get_ec_object_chunk_size(
+      0, false, cop->results.object_size);
+  }
+
   if (!cop->cursor.is_complete()) {
     // write out what we have so far
     if (cop->temp_cursor.is_initial()) {
@@ -10001,6 +10037,9 @@ void PrimaryLogPG::process_copy_chunk(hobject_t oid, ceph_tid_t tid, int r)
       dout(20) << __func__ << " using temp " << cop->results.temp_oid << dendl;
     }
     ObjectContextRef tempobc = get_object_context(cop->results.temp_oid, true);
+    // Temporary objects have no persistent object_info, so set the chunk
+    // size on the context for every chunk that is written.
+    tempobc->obs.oi.ec_chunk_size = cop->results.ec_chunk_size;
     OpContextUPtr ctx = simple_opc_create(tempobc);
     if (cop->temp_cursor.is_initial()) {
       ctx->new_temp_oid = cop->results.temp_oid;
@@ -10335,6 +10374,8 @@ void PrimaryLogPG::finish_copyfrom(CopyFromCallback *cb)
     ctx->discard_temp_oid = cb->results->temp_oid;
   }
   cb->results->fill_in_final_tx(ctx->op_t.get());
+  obs.oi.ec_chunk_size = cb->results->ec_chunk_size;
+  ctx->ec_chunk_size_from_source = true;
 
   // CopyFromCallback fills this in for us
   obs.oi.user_version = ctx->user_at_version;
@@ -10560,6 +10601,8 @@ void PrimaryLogPG::finish_promote(int r, CopyResults *results,
     if (results->started_temp_obj) {
       tctx->discard_temp_oid = results->temp_oid;
     }
+    tctx->new_obs.oi.ec_chunk_size = results->ec_chunk_size;
+    tctx->ec_chunk_size_from_source = true;
     tctx->new_obs.oi.size = results->object_size;
     tctx->new_obs.oi.user_version = results->user_version;
     tctx->new_obs.oi.mtime = ceph::real_clock::to_timespec(results->mtime);

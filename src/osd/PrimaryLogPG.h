@@ -81,6 +81,8 @@ public:
   struct CopyResults {
     ceph::real_time mtime; ///< the copy source's mtime
     uint64_t object_size; ///< the copied object's size
+    /// the copy's object_info_t::ec_chunk_size, chosen from object_size
+    uint64_t ec_chunk_size = 0;
     bool started_temp_obj; ///< true if the callback needs to delete temp object
     hobject_t temp_oid;    ///< temp object (if any)
 
@@ -698,6 +700,9 @@ public:
     bool ignore_log_op_stats;  // don't log op stats
     bool update_log_only; ///< this is a write that returned an error - just record in pg log for dup detection
     bool use_replace_op = false;  ///< use REPLACE op type instead of MODIFY/DELETE (set by finish_copyfrom)
+    /// new_obs.oi.ec_chunk_size was set from the source of the object's
+    /// data (a clone or a copy), and must not be chosen by finish_ctx()
+    bool ec_chunk_size_from_source = false;
     ObjectCleanRegions clean_regions;
 
     // side effects
@@ -1224,6 +1229,7 @@ protected:
     object_info_t *poi);
   void execute_ctx(OpContext *ctx);
   void finish_ctx(OpContext *ctx, int log_op_type, int result=0);
+  void update_ec_chunk_size(OpContext *ctx);
   void reply_ctx(OpContext *ctx, int err);
   void make_writeable(OpContext *ctx);
   void log_op_stats(const OpRequest& op, uint64_t inb, uint64_t outb);

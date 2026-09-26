@@ -2787,6 +2787,27 @@ TEST(pg_pool_t, ec_chunk_size_properties)
   }
 }
 
+TEST(pg_pool_t, ec_object_chunk_size)
+{
+  pg_pool_t pool = make_ec_pool(4, 4096, true);
+  const uint64_t big = 4u << 20;
+
+  // A new or empty object gets a chunk size for its expected size.
+  EXPECT_EQ(1u << 20, pool.get_ec_object_chunk_size(0, false, big));
+  // The default chunk size is recorded as 0.
+  EXPECT_EQ(0u, pool.get_ec_object_chunk_size(0, false, 4096));
+  EXPECT_EQ(0u, pool.get_ec_object_chunk_size(0, false, 0));
+  // An object that already has data keeps its layout...
+  EXPECT_EQ(0u, pool.get_ec_object_chunk_size(0, true, big));
+  EXPECT_EQ(262144u, pool.get_ec_object_chunk_size(262144, true, big));
+  // ... and so does an empty object whose chunk size is already chosen.
+  EXPECT_EQ(262144u, pool.get_ec_object_chunk_size(262144, false, big));
+
+  // Pools without the flag never choose one.
+  pg_pool_t plain = make_ec_pool(4, 4096, false);
+  EXPECT_EQ(0u, plain.get_ec_object_chunk_size(0, false, big));
+}
+
 TEST(pool_opts_t, ec_dynamic_chunk_size_max)
 {
   EXPECT_TRUE(pool_opts_t::is_opt_name("ec_dynamic_chunk_size_max"));
