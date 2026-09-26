@@ -459,6 +459,18 @@ You may set values for the following keys:
 
    .. versionadded:: 20.2.0
 
+.. describe:: allow_ec_dynamic_chunk_size
+
+   :Description: Lets an erasure-coded pool with ``allow_ec_optimizations`` choose a larger chunk size for each new object, so that objects of up to a few MiB fit in a single stripe. Experimental: every OSD that serves the pool must support it, so setting it requires ``--yes-i-really-mean-it``. Once enabled, it cannot be disabled. For more details, see :ref:`rados_ops_erasure_coding_dynamic_chunk_size`.
+   :Type: Boolean
+
+.. describe:: ec_dynamic_chunk_size_max
+
+   :Description: The largest chunk size that a pool with ``allow_ec_dynamic_chunk_size`` chooses for an object. Changing it affects only objects created afterwards.
+   :Type: Integer (bytes)
+   :Valid Range: A multiple of 4 KiB, at least the pool's stripe unit and at most 4 MiB.
+   :Default: 1 MiB
+
 .. describe:: supports_omap
 
     :Description: Determines whether omap operations can be performed on a pool. On for replicated and erasure-coded pools with EC optimizations enabled (excluding Crimson pools), off for all other erasure-coded pools.

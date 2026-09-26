@@ -268,6 +268,38 @@ of ``k`` more viable. Increasing ``m`` still impacts write performance,
 especially for small writes, so for block and file workloads a value of ``m``
 no larger than 3 is recommended.
 
+.. _rados_ops_erasure_coding_dynamic_chunk_size:
+
+Dynamic Chunk Sizes
+-------------------
+
+A pool with optimizations enabled can also choose the chunk size of each
+object when the object is first written, instead of always using the stripe
+unit:
+
+.. prompt:: bash $
+
+    ceph osd pool set ec_pool allow_ec_dynamic_chunk_size true --yes-i-really-mean-it
+
+Each new object then gets a chunk size large enough to hold the object in a
+single stripe, rounded up to a multiple of 4 KiB and limited by the pool
+setting ``ec_dynamic_chunk_size_max`` (1 MiB by default, at most 4 MiB).
+Objects that fit in one stripe of the stripe unit keep the stripe unit. The
+chunk size is chosen from the expected object size in the allocation hint if
+the client sets one, and otherwise from the size of the object after the
+write that creates it. An object keeps its chunk size until it is deleted,
+or removed and written again in one operation.
+
+This lets a pool keep a small stripe unit for small objects and small random
+I/O while large objects written in one operation, such as RGW objects, are
+stored in a single stripe. Existing objects are not changed.
+
+The flag is experimental. Every OSD that serves the pool must support it:
+an OSD that does not would read and write objects with their own chunk size
+as if they used the stripe unit. Setting it therefore requires
+``--yes-i-really-mean-it``. It cannot be disabled once set, and it is not
+supported for Crimson pools.
+
 Erasure-coded pool overhead
 ---------------------------
 

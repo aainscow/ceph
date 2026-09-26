@@ -760,6 +760,9 @@ public:
 
   tl::expected<void, ErrorNMessage>
   enable_pool_ec_optimizations(pg_pool_t &pool, bool enable);
+  tl::expected<void, ErrorNMessage>
+  enable_pool_ec_dynamic_chunk_size(pg_pool_t &pool, bool enable,
+                                    bool confirmed);
   void maybe_enable_pool_split_ops(pg_pool_t &p);
   int prepare_command_pool_set(const cmdmap_t& cmdmap,
                                std::stringstream& ss);

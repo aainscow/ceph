@@ -5584,7 +5584,7 @@ namespace {
     PG_AUTOSCALE_BIAS, DEDUP_TIER, DEDUP_CHUNK_ALGORITHM, 
     DEDUP_CDC_CHUNK_SIZE, POOL_EIO, BULK, PG_NUM_MAX, READ_RATIO,
     EC_OPTIMIZATIONS, EC_DATA_SHARD_COUNT, EC_CODING_SHARD_COUNT,
-    SUPPORTS_OMAP };
+    SUPPORTS_OMAP, EC_DYNAMIC_CHUNK_SIZE, EC_DYNAMIC_CHUNK_SIZE_MAX };
 
   std::set<osd_pool_get_choices>
     subtract_second_from_first(const std::set<osd_pool_get_choices>& first,
@@ -6407,6 +6407,8 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
       {"ec_data_shard_count", EC_DATA_SHARD_COUNT},
       {"ec_coding_shard_count", EC_CODING_SHARD_COUNT},
       {"supports_omap", SUPPORTS_OMAP},
+      {"allow_ec_dynamic_chunk_size", EC_DYNAMIC_CHUNK_SIZE},
+      {"ec_dynamic_chunk_size_max", EC_DYNAMIC_CHUNK_SIZE_MAX},
     };
 
     typedef std::set<osd_pool_get_choices> choices_set_t;
@@ -6422,7 +6424,8 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
     };
     const choices_set_t ONLY_ERASURE_CHOICES = {
       EC_OVERWRITES, ERASURE_CODE_PROFILE, EC_OPTIMIZATIONS,
-      EC_DATA_SHARD_COUNT, EC_CODING_SHARD_COUNT
+      EC_DATA_SHARD_COUNT, EC_CODING_SHARD_COUNT, EC_DYNAMIC_CHUNK_SIZE,
+      EC_DYNAMIC_CHUNK_SIZE_MAX
     };
     const choices_set_t ONLY_REPLICA_CHOICES = {
       READ_RATIO
@@ -6654,6 +6657,7 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
 	  case DEDUP_CHUNK_ALGORITHM:
 	  case DEDUP_CDC_CHUNK_SIZE:
           case READ_RATIO:
+          case EC_DYNAMIC_CHUNK_SIZE_MAX:
 	    {
 	      pool_opts_t::key_t key = pool_opts_t::get_opt_desc(i->first).key;
 	      if (p->opts.is_set(key)) {
@@ -6681,6 +6685,10 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
 	  break;
           case SUPPORTS_OMAP:
             f->dump_bool("supports_omap", p->supports_omap());
+            break;
+          case EC_DYNAMIC_CHUNK_SIZE:
+            f->dump_bool("allow_ec_dynamic_chunk_size",
+                         p->allows_ec_dynamic_chunk_size());
             break;
 	}
       }
@@ -6835,6 +6843,7 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
 	  case DEDUP_CHUNK_ALGORITHM:
 	  case DEDUP_CDC_CHUNK_SIZE:
           case READ_RATIO:
+          case EC_DYNAMIC_CHUNK_SIZE_MAX:
 	    for (i = ALL_CHOICES.begin(); i != ALL_CHOICES.end(); ++i) {
 	      if (i->second == *it)
 		break;
@@ -6871,6 +6880,10 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
           case SUPPORTS_OMAP:
             ss << "supports_omap: " <<
               (p->supports_omap() ? "true" : "false") << "\n";
+            break;
+          case EC_DYNAMIC_CHUNK_SIZE:
+            ss << "allow_ec_dynamic_chunk_size: " <<
+              (p->allows_ec_dynamic_chunk_size() ? "true" : "false") << "\n";
             break;
 	}
 	rdata.append(ss.str());
@@ -8573,6 +8586,11 @@ int OSDMonitor::prepare_new_pool(string& name,
         // Silently fail if the pool cannot support ec optimizations.
         std::ignore = enable_pool_ec_optimizations(*pi, true);
       }
+      if (cct->_conf.get_val<bool>(
+            "osd_pool_default_flag_ec_dynamic_chunk_size")) {
+        // Silently fail if the pool cannot support dynamic chunk sizes.
+        std::ignore = enable_pool_ec_dynamic_chunk_size(*pi, true, true);
+      }
     }
   }
 
@@ -8688,6 +8706,67 @@ OSDMonitor::enable_pool_ec_optimizations(pg_pool_t &p, bool enable)
   return {};
 }
 
+tl::expected<void, ErrorNMessage>
+OSDMonitor::enable_pool_ec_dynamic_chunk_size(pg_pool_t &p, bool enable,
+                                              bool confirmed)
+{
+  if (!enable) {
+    if (p.allows_ec_dynamic_chunk_size()) {
+      return tl::unexpected(ErrorNMessage{
+	  -EINVAL,
+	  "allow_ec_dynamic_chunk_size cannot be disabled once enabled"});
+    }
+    return {};
+  }
+  if (p.allows_ec_dynamic_chunk_size()) {
+    return {};
+  }
+  if (!p.is_erasure() || !p.allows_ecoptimizations()) {
+    return tl::unexpected(ErrorNMessage{
+	-EINVAL,
+	"allow_ec_dynamic_chunk_size can only be enabled for an erasure coded "
+	"pool with allow_ec_optimizations"});
+  }
+  if (p.is_crimson()) {
+    return tl::unexpected(ErrorNMessage{
+	-EINVAL,
+	"allow_ec_dynamic_chunk_size is not supported for crimson pools"});
+  }
+  ErasureCodeInterfaceRef erasure_code;
+  stringstream tmp;
+  if (get_erasure_code(p.erasure_code_profile, &erasure_code, &tmp) != 0) {
+    return tl::unexpected(ErrorNMessage{
+	-EINVAL, "get_erasure_code failed: " + tmp.str()});
+  }
+  // Objects get the default chunk size or a larger multiple of
+  // EC_DYNAMIC_CHUNK_SIZE_ALIGN. A plugin that keeps two consecutive such
+  // chunk sizes unpadded has an alignment that divides the step, so it
+  // keeps them all.
+  const uint64_t k = erasure_code->get_data_chunk_count();
+  const uint64_t default_chunk_size = p.get_stripe_width() / k;
+  const uint64_t align = pg_pool_t::EC_DYNAMIC_CHUNK_SIZE_ALIGN;
+  for (uint64_t chunk_size : {default_chunk_size + align,
+                              default_chunk_size + 2 * align}) {
+    if (erasure_code->get_chunk_size(k * chunk_size) != chunk_size) {
+      return tl::unexpected(ErrorNMessage{
+	  -EINVAL,
+	  "the erasure code profile does not support chunk sizes that are "
+	  "multiples of " + stringify(align)});
+    }
+  }
+  // No release requirement protects the pool from OSDs that do not
+  // support the feature, so it must be asked for explicitly.
+  if (!confirmed) {
+    return tl::unexpected(ErrorNMessage{
+	-EPERM,
+	"allow_ec_dynamic_chunk_size is experimental: every OSD that serves "
+	"the pool must support it, and it cannot be disabled once set. Pass "
+	"--yes-i-really-mean-it to set it"});
+  }
+  p.set_flag(pg_pool_t::FLAG_EC_DYNAMIC_CHUNK_SIZE);
+  return {};
+}
+
 void OSDMonitor::maybe_enable_pool_split_ops(pg_pool_t &p) {
   if (p.is_erasure()) {
     ErasureCodeInterfaceRef erasure_code;
@@ -8762,6 +8841,7 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
     "compression_min_blob_size",
     "csum_max_block",
     "csum_min_block",
+    "ec_dynamic_chunk_size_max",
   };
   if (count(begin(si_options), end(si_options), var)) {
     n = strict_si_cast<int64_t>(val, &interr);
@@ -9276,6 +9356,22 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
         }
       }
     }
+  } else if (var == "allow_ec_dynamic_chunk_size") {
+    bool enable = false;
+    if (val == "true" || (interr.empty() && n == 1)) {
+      enable = true;
+    } else if (val == "false" || (interr.empty() && n == 0)) {
+      enable = false;
+    } else {
+      ss << "expecting value 'true', 'false', '0', or '1'";
+      return -EINVAL;
+    }
+    bool sure = false;
+    cmd_getval(cmdmap, "yes_i_really_mean_it", sure);
+    if (auto r = enable_pool_ec_dynamic_chunk_size(p, enable, sure); !r) {
+      ss << r.error().message;
+      return r.error().error;
+    }
   } else if (var == "set_pool_flags" || var == "unset_pool_flags") {
     bool force;
     cmd_getval(cmdmap, "yes_i_really_mean_it", force);
@@ -9539,6 +9635,26 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       if (n < 0 || n > 100) {
         ss << "read_ratio must be between 0 and 100";
         return -ERANGE;
+      }
+    } else if (var == "ec_dynamic_chunk_size_max") {
+      if (!p.is_erasure() || !p.allows_ecoptimizations()) {
+        ss << "ec_dynamic_chunk_size_max can only be set for an erasure "
+           << "coded pool with allow_ec_optimizations";
+        return -EINVAL;
+      }
+      if (interr.length()) {
+        ss << "error parsing size value '" << val << "': " << interr;
+        return -EINVAL;
+      }
+      const uint64_t min = p.get_ec_default_chunk_size();
+      const uint64_t max = pg_pool_t::EC_DYNAMIC_CHUNK_SIZE_MAX_LIMIT;
+      if (n != 0 &&
+          (n < static_cast<int64_t>(min) || n > static_cast<int64_t>(max) ||
+           n % pg_pool_t::EC_DYNAMIC_CHUNK_SIZE_ALIGN != 0)) {
+        ss << "ec_dynamic_chunk_size_max must be a multiple of "
+           << pg_pool_t::EC_DYNAMIC_CHUNK_SIZE_ALIGN << " between " << min
+           << " (the pool's chunk size) and " << max;
+        return -EINVAL;
       }
     }
 

@@ -2767,6 +2767,19 @@ options:
   services:
   - mon
   with_legacy: true
+- name: osd_pool_default_flag_ec_dynamic_chunk_size
+  type: bool
+  level: dev
+  desc: Create new erasure coded pools with dynamic chunk sizes turned on
+    (for testing).
+  fmt_desc: Set the experimental ``allow_ec_dynamic_chunk_size`` flag on new
+    erasure coded pools that have ``allow_ec_optimizations`` set, without the
+    confirmation that setting the flag on a pool requires.
+  default: false
+  services:
+  - mon
+  see_also:
+  - osd_pool_default_flag_ec_optimizations
 - name: osd_pool_default_hit_set_bloom_fpp
   type: float
   level: advanced
