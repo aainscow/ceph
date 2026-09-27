@@ -1827,3 +1827,433 @@ INSTANTIATE_TEST_SUITE_P(
     return info.param.label;
   }
 );
+
+/**
+ * TestECTruncateMatrix
+ *
+ * Ops mixing truncates, writes and zeros on optimized EC objects, drawn from
+ * a table of cases with offsets computed from k and the stripe unit. Each
+ * case is run forward, where the objects and their shards must match a model
+ * of the expected contents, including after a data shard goes down, and
+ * rolled back after an OSD fails, where the objects and their shards must be
+ * restored exactly. Rollback is run with the op blocked to shard 1 and the
+ * last parity shard, a data shard other than the first two or the primary
+ * failing, and with the op blocked to the first parity shard, which every op
+ * writes, and a data shard or the primary failing.
+ */
+namespace {
+
+/* Rollback modes block the op to shard 1, which it may not write, or to the
+ * first parity shard, which it always writes, and fail the named shard. */
+enum class TruncateMode {
+  Forward,
+  RollbackParity,
+  RollbackData,
+  RollbackPrimary,
+  BlockParityRollbackData,
+  BlockParityRollbackPrimary,
+};
+
+struct TruncateCase {
+  std::string name;
+  /* The objects of the case for k and stripe unit su, or nullopt if the case
+   * means nothing for them. */
+  std::function<std::optional<std::vector<ObjectScenario>>(uint64_t k,
+                                                           uint64_t su)> make;
+};
+
+constexpr uint64_t PAGE = EC_ALIGN_SIZE;
+
+enum class SizeKind { ChunkAligned, PageAligned, Unaligned, SubStripe };
+
+const std::vector<std::pair<SizeKind, std::string>> kSizeKinds = {
+  {SizeKind::ChunkAligned, "ChunkAligned"},
+  {SizeKind::PageAligned, "PageAligned"},
+  {SizeKind::Unaligned, "Unaligned"},
+  {SizeKind::SubStripe, "SubStripe"},
+};
+
+uint64_t object_size(SizeKind kind, uint64_t k, uint64_t su) {
+  const uint64_t sw = k * su;
+  switch (kind) {
+  case SizeKind::ChunkAligned: return 8 * sw + 3 * su;
+  case SizeKind::PageAligned: return 5 * sw + su + PAGE;
+  case SizeKind::Unaligned: return 5 * sw + su + 123;
+  case SizeKind::SubStripe: return sw / 2 + 1234;
+  }
+  ceph_abort();
+}
+
+enum class TargetKind {
+  Chunk0MidPage,
+  Chunk0Page,
+  ChunkBoundary,
+  MiddleChunkMidPage,
+  LastChunk,
+  StripeBoundary,
+  LastPage,
+  One,
+  Zero,
+  Equal,
+  Grow,
+};
+
+const std::vector<std::pair<TargetKind, std::string>> kTargetKinds = {
+  {TargetKind::Chunk0MidPage, "Chunk0MidPage"},
+  {TargetKind::Chunk0Page, "Chunk0Page"},
+  {TargetKind::ChunkBoundary, "ChunkBoundary"},
+  {TargetKind::MiddleChunkMidPage, "MiddleChunkMidPage"},
+  {TargetKind::LastChunk, "LastChunk"},
+  {TargetKind::StripeBoundary, "StripeBoundary"},
+  {TargetKind::LastPage, "LastPage"},
+  {TargetKind::One, "One"},
+  {TargetKind::Zero, "Zero"},
+  {TargetKind::Equal, "Equal"},
+  {TargetKind::Grow, "Grow"},
+};
+
+/* The size to truncate an object of size s to, or nullopt if the target
+ * means nothing for this geometry. Targets inside chunks are in the second
+ * stripe, if the object has more than two stripes, so that the stripe below
+ * is left intact. */
+std::optional<uint64_t> truncate_target(TargetKind kind, uint64_t s,
+                                        uint64_t k, uint64_t su) {
+  const uint64_t sw = k * su;
+  const uint64_t base = s >= 2 * sw ? sw : 0;
+  std::optional<uint64_t> target;
+  switch (kind) {
+  case TargetKind::Chunk0MidPage:
+    target = base + su / 2 + 1;
+    break;
+  case TargetKind::Chunk0Page:
+    if (su > PAGE) {
+      target = base + PAGE;
+    }
+    break;
+  case TargetKind::ChunkBoundary:
+    target = base + su;
+    break;
+  case TargetKind::MiddleChunkMidPage:
+    if (k > 2) {
+      target = base + (k / 2) * su + su / 2 + 3;
+    }
+    break;
+  case TargetKind::LastChunk:
+    target = base + (k - 1) * su + su / 4 + 5;
+    break;
+  case TargetKind::StripeBoundary:
+    target = base + sw;
+    break;
+  case TargetKind::LastPage: {
+    const uint64_t page_start = (s - 1) / PAGE * PAGE;
+    target = page_start + (s - page_start) / 2;
+    break;
+  }
+  case TargetKind::One:
+    target = 1;
+    break;
+  case TargetKind::Zero:
+    target = 0;
+    break;
+  case TargetKind::Equal:
+    return s;
+  case TargetKind::Grow:
+    return s + sw + 77;
+  }
+  if (target && *target >= s) {
+    return std::nullopt;
+  }
+  return target;
+}
+
+enum class WriteKind {
+  None,
+  Below,
+  EndingAt,
+  Straddling,
+  AboveInPage,
+  InTruncatedRange,
+  PastEnd,
+  Several,
+  ZeroInside,
+};
+
+const std::vector<std::pair<WriteKind, std::string>> kWriteKinds = {
+  {WriteKind::None, "NoWrite"},
+  {WriteKind::Below, "WriteBelow"},
+  {WriteKind::EndingAt, "WriteEndingAt"},
+  {WriteKind::Straddling, "WriteStraddling"},
+  {WriteKind::AboveInPage, "WriteAboveInPage"},
+  {WriteKind::InTruncatedRange, "WriteInTruncatedRange"},
+  {WriteKind::PastEnd, "WritePastEnd"},
+  {WriteKind::Several, "SeveralWrites"},
+  {WriteKind::ZeroInside, "ZeroInside"},
+};
+
+/* The ops that follow a truncate from size s to t in the same op, or nullopt
+ * if the kind means nothing for these sizes. */
+std::optional<std::vector<ObjOp>> writes_after_truncate(
+    WriteKind kind, uint64_t s, uint64_t t, uint64_t k, uint64_t su) {
+  const uint64_t sw = k * su;
+  const uint64_t end = std::max(s, t);
+  switch (kind) {
+  case WriteKind::None:
+    return std::vector<ObjOp>{};
+  case WriteKind::Below:
+    if (t < 8) {
+      return std::nullopt;
+    }
+    return std::vector<ObjOp>{Write(t / 3, std::min<uint64_t>(t / 3, 3000))};
+  case WriteKind::EndingAt:
+    if (t == 0) {
+      return std::nullopt;
+    }
+    return std::vector<ObjOp>{Write(t - std::min<uint64_t>(t, 777),
+                                    std::min<uint64_t>(t, 777))};
+  case WriteKind::Straddling:
+    return std::vector<ObjOp>{Write(t - std::min<uint64_t>(t, 500),
+                                    std::min<uint64_t>(t, 500) + 700)};
+  case WriteKind::AboveInPage:
+    return std::vector<ObjOp>{Write(t + 7, 50)};
+  case WriteKind::InTruncatedRange:
+    if (t + sw + 13 + 1000 >= s) {
+      return std::nullopt;
+    }
+    return std::vector<ObjOp>{Write(t + sw + 13, 1000)};
+  case WriteKind::PastEnd:
+    return std::vector<ObjOp>{Write(end + su + 5, 999)};
+  case WriteKind::Several: {
+    std::vector<ObjOp> ops;
+    if (t >= 3) {
+      ops.push_back(Write(t / 3, std::min<uint64_t>(t / 3, 100)));
+    }
+    ops.push_back(Write(t - std::min<uint64_t>(t, 40),
+                        std::min<uint64_t>(t, 40) + 60));
+    ops.push_back(Write(end + 100, 300));
+    return ops;
+  }
+  case WriteKind::ZeroInside:
+    if (t < 4) {
+      return std::nullopt;
+    }
+    return std::vector<ObjOp>{Zero(t / 4, std::min<uint64_t>(t / 2, su))};
+  }
+  ceph_abort();
+}
+
+std::vector<TruncateCase> make_truncate_cases() {
+  std::vector<TruncateCase> cases;
+
+  /* Every target with every kind of write for the chunk aligned and
+   * unaligned sizes, and with a few kinds for the others. */
+  for (const auto& [size_kind, size_name] : kSizeKinds) {
+    const bool all_writes = size_kind == SizeKind::ChunkAligned ||
+                            size_kind == SizeKind::Unaligned;
+    for (const auto& [target_kind, target_name] : kTargetKinds) {
+      for (const auto& [write_kind, write_name] : kWriteKinds) {
+        if (!all_writes && write_kind != WriteKind::None &&
+            write_kind != WriteKind::Straddling &&
+            write_kind != WriteKind::AboveInPage) {
+          continue;
+        }
+        cases.push_back({
+          size_name + "_Truncate" + target_name + "_" + write_name,
+          [size_kind, target_kind, write_kind](uint64_t k, uint64_t su)
+              -> std::optional<std::vector<ObjectScenario>> {
+            const uint64_t s = object_size(size_kind, k, su);
+            const auto t = truncate_target(target_kind, s, k, su);
+            if (!t) {
+              return std::nullopt;
+            }
+            auto writes = writes_after_truncate(write_kind, s, *t, k, su);
+            if (!writes) {
+              return std::nullopt;
+            }
+            std::vector<ObjOp> ops{Truncate(*t)};
+            ops.insert(ops.end(), writes->begin(), writes->end());
+            return std::vector<ObjectScenario>{{s, {}, {ops}}};
+          }});
+      }
+    }
+  }
+
+  /* Cases on an unaligned object with a low target t1 in the first chunk of
+   * the second stripe and a higher target t2 in the fourth stripe. */
+  auto add = [&cases](const std::string& name,
+                      std::function<std::vector<ObjectScenario>(
+                        uint64_t s, uint64_t t1, uint64_t t2,
+                        uint64_t sw, uint64_t su)> make) {
+    cases.push_back({name, [make](uint64_t k, uint64_t su)
+        -> std::optional<std::vector<ObjectScenario>> {
+      const uint64_t sw = k * su;
+      const uint64_t s = object_size(SizeKind::Unaligned, k, su);
+      return make(s, sw + su / 2 + 1, 3 * sw + su + 555, sw, su);
+    }});
+  };
+
+  // Several truncates in one op.
+  add("TruncateDownThenUp", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{{s, {}, {{Truncate(t1), Truncate(t2)}}}};
+  });
+  add("TruncateDownThenUpThenWrite", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t1), Truncate(t2), Write(t1 - 100, 400)}}}};
+  });
+  add("TruncateDownWriteUp", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t1), Write(t1 + 300, 2000), Truncate(t2)}}}};
+  });
+  add("TruncateUpThenDown", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{{s, {}, {{Truncate(s + sw), Truncate(t1)}}}};
+  });
+  add("TruncateUpWriteDown", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(s + sw), Write(s + 100, 500), Truncate(t1)}}}};
+  });
+  add("WriteThenTruncateCuttingIt", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{{s, {}, {{Write(t1 - 300, 1000), Truncate(t1)}}}};
+  });
+  add("WriteThenTruncateUp", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Write(t1 - 300, 1000), Truncate(s + su + 3)}}}};
+  });
+  add("TruncateWriteTruncateCuttingIt", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t2), Write(t1 - 50, 3000), Truncate(t1 + 1000)}}}};
+  });
+
+  // Several ops in flight on one object.
+  add("ChainTruncateThenWrite", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t1)}, {Write(t1 - 100, 300)}}}};
+  });
+  add("ChainWriteThenTruncate", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Write(t1 - 100, 300)}, {Truncate(t1 - 50)}}}};
+  });
+  add("ChainTruncateThenTruncate", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{{s, {}, {{Truncate(t2)}, {Truncate(t1)}}}};
+  });
+  add("ChainTruncateThenAppend", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{{s, {}, {{Truncate(t1)}, {Write(t1, 5000)}}}};
+  });
+  add("ChainTruncateWriteTruncate", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t2)}, {Write(t1 - 10, 100)}, {Truncate(t1)}}}};
+  });
+  add("ChainTruncateThenGrowingWrite", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t1)}, {Write(s + 100, 5000)}}}};
+  });
+  add("ChainTruncateToZeroThenWrite", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{{s, {}, {{Truncate(0)}, {Write(0, 3000)}}}};
+  });
+  add("ChainWriteThenTruncateThenWrite", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Write(t1 - 5, su)}, {Truncate(t1)}, {Write(t1 + 50, 100)}}}};
+  });
+
+  // A committed op followed by ops in flight.
+  add("CommittedTruncateThenWrite", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {{Truncate(t1)}}, {{Write(t1 - 100, 3000)}}}};
+  });
+  add("CommittedTruncateThenTruncate", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{{s, {{Truncate(t2)}}, {{Truncate(t1)}}}};
+  });
+  add("CommittedWriteThenTruncateAndWrite", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {{Write(t1 - 5, 10)}}, {{Truncate(t1), Write(t1 - 20, 40)}}}};
+  });
+
+  // Two objects with ops in flight together.
+  add("TwoObjects", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t1), Write(t1 - 100, 300)}}},
+      {8 * sw + 3 * su, {}, {{Write(t1 - 50, 200)}, {Truncate(t1 + su)}}}};
+  });
+  add("TwoObjectsSameOps", [](auto s, auto t1, auto t2, auto sw, auto su) {
+    return std::vector<ObjectScenario>{
+      {s, {}, {{Truncate(t1)}, {Write(t1 - 100, 300)}}},
+      {s, {}, {{Truncate(t1)}, {Write(t1 - 100, 300)}}}};
+  });
+
+  return cases;
+}
+
+const std::vector<TruncateCase> kTruncateCases = make_truncate_cases();
+
+}  // namespace
+
+class TestECTruncateMatrix
+  : public ECTruncateTestBase,
+    public ::testing::WithParamInterface<
+      std::tuple<BackendConfig, TruncateCase, TruncateMode>> {
+public:
+  TestECTruncateMatrix() : ECTruncateTestBase(std::get<0>(GetParam())) {}
+};
+
+TEST_P(TestECTruncateMatrix, Run) {
+  const auto& [config, truncate_case, mode] = GetParam();
+  const auto objects = truncate_case.make(k, stripe_unit);
+  if (!objects) {
+    GTEST_SKIP() << truncate_case.name << " does not apply to this geometry";
+  }
+  SCOPED_TRACE(config.label + " " + truncate_case.name);
+
+  switch (mode) {
+  case TruncateMode::Forward:
+    run_forward(truncate_case.name, *objects);
+    break;
+  case TruncateMode::RollbackParity:
+    run_rollback(truncate_case.name, *objects, 1, get_shard(k + m - 1));
+    break;
+  case TruncateMode::RollbackData:
+    if (k <= 2) {
+      GTEST_SKIP() << "needs a data shard other than the first two";
+    }
+    run_rollback(truncate_case.name, *objects, 1, get_shard(2));
+    break;
+  case TruncateMode::RollbackPrimary:
+    run_rollback(truncate_case.name, *objects, 1,
+                 get_primary_shard_from_osdmap());
+    break;
+  case TruncateMode::BlockParityRollbackData:
+    run_rollback(truncate_case.name, *objects, get_shard(k),
+                 get_shard(k > 2 ? 2 : 1));
+    break;
+  case TruncateMode::BlockParityRollbackPrimary:
+    run_rollback(truncate_case.name, *objects, get_shard(k),
+                 get_primary_shard_from_osdmap());
+    break;
+  }
+}
+
+std::string truncate_matrix_name(
+    const ::testing::TestParamInfo<TestECTruncateMatrix::ParamType>& info) {
+  static const std::map<TruncateMode, std::string> mode_names = {
+    {TruncateMode::Forward, "Forward"},
+    {TruncateMode::RollbackParity, "RollbackParity"},
+    {TruncateMode::RollbackData, "RollbackData"},
+    {TruncateMode::RollbackPrimary, "RollbackPrimary"},
+    {TruncateMode::BlockParityRollbackData, "BlockParityRollbackData"},
+    {TruncateMode::BlockParityRollbackPrimary, "BlockParityRollbackPrimary"},
+  };
+  return std::get<0>(info.param).label + "_" + std::get<1>(info.param).name +
+         "_" + mode_names.at(std::get<2>(info.param));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+  ECConfigs,
+  TestECTruncateMatrix,
+  ::testing::Combine(
+    ::testing::ValuesIn(kECPeeringConfigs),
+    ::testing::ValuesIn(kTruncateCases),
+    ::testing::Values(TruncateMode::Forward,
+                      TruncateMode::RollbackParity,
+                      TruncateMode::RollbackData,
+                      TruncateMode::RollbackPrimary,
+                      TruncateMode::BlockParityRollbackData,
+                      TruncateMode::BlockParityRollbackPrimary)),
+  truncate_matrix_name
+);
