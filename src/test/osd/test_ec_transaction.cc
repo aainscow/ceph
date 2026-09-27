@@ -564,3 +564,86 @@ TEST(ectransaction, truncate_then_write_one_shard) {
   
   ASSERT_EQ(ref_write, plan.will_write);
 }
+/* A truncate that leaves a partial stripe must rewrite the parity of that
+ * stripe over the range of the first data shard, raw shard 0, which is the
+ * longest. With a chunk mapping, raw shard 0 need not be shard 0.
+ */
+TEST(ectransaction, truncate_with_parity_on_shard_0) {
+  hobject_t h;
+  PGTransaction::ObjectOperation op;
+
+  op.truncate = std::pair(EC_ALIGN_SIZE/4, EC_ALIGN_SIZE/4);
+
+  pg_pool_t pool;
+  pool.set_flag(pg_pool_t::FLAG_EC_OPTIMIZATIONS);
+  // Data on shards 1 and 2, parity on shard 0.
+  std::vector<shard_id_t> mapping{shard_id_t(1), shard_id_t(2), shard_id_t(0)};
+  ECUtil::stripe_info_t sinfo(2, 1, EC_ALIGN_SIZE*2, &pool, mapping);
+  shard_id_set shards;
+  shards.insert_range(shard_id_t(), 3);
+  ECTransaction::WritePlanObj plan(
+    h,
+    op,
+    sinfo,
+    shards,
+    shards,
+    false,
+    16*EC_ALIGN_SIZE,
+    std::nullopt,
+    std::nullopt,
+    0);
+
+  generic_derr << "plan " << plan << dendl;
+
+  ASSERT_TRUE(plan.to_read);
+  ECUtil::shard_extent_set_t ref_read(sinfo.get_k_plus_m());
+  ref_read[shard_id_t(1)].insert(0, EC_ALIGN_SIZE);
+  ASSERT_EQ(ref_read, plan.to_read);
+
+  ECUtil::shard_extent_set_t ref_write(sinfo.get_k_plus_m());
+  ref_write[shard_id_t(0)].insert(0, EC_ALIGN_SIZE);
+  ASSERT_EQ(ref_write, plan.will_write);
+}
+
+TEST(ectransaction, truncate_with_second_data_shard_on_shard_0) {
+  hobject_t h;
+  PGTransaction::ObjectOperation op;
+
+  // Keep all of raw shard 0's chunk and 100 bytes of raw shard 1's chunk in
+  // the second stripe.
+  const uint64_t chunk_size = 2*EC_ALIGN_SIZE;
+  const uint64_t new_size = 3*chunk_size + 100;
+  op.truncate = std::pair(new_size, new_size);
+
+  pg_pool_t pool;
+  pool.set_flag(pg_pool_t::FLAG_EC_OPTIMIZATIONS);
+  // Raw shard 0 on shard 1, raw shard 1 on shard 0, parity on shard 2.
+  std::vector<shard_id_t> mapping{shard_id_t(1), shard_id_t(0), shard_id_t(2)};
+  ECUtil::stripe_info_t sinfo(2, 1, 2*chunk_size, &pool, mapping);
+  shard_id_set shards;
+  shards.insert_range(shard_id_t(), 3);
+  ECTransaction::WritePlanObj plan(
+    h,
+    op,
+    sinfo,
+    shards,
+    shards,
+    false,
+    16*chunk_size,
+    std::nullopt,
+    std::nullopt,
+    0);
+
+  generic_derr << "plan " << plan << dendl;
+
+  ASSERT_TRUE(plan.to_read);
+  ECUtil::shard_extent_set_t ref_read(sinfo.get_k_plus_m());
+  ref_read[shard_id_t(1)].insert(chunk_size, chunk_size);
+  ref_read[shard_id_t(0)].insert(chunk_size, EC_ALIGN_SIZE);
+  ASSERT_EQ(ref_read, plan.to_read);
+
+  // All of the parity of the second stripe changes.
+  ECUtil::shard_extent_set_t ref_write(sinfo.get_k_plus_m());
+  ref_write[shard_id_t(2)].insert(chunk_size, chunk_size);
+  ASSERT_EQ(ref_write, plan.will_write);
+}
