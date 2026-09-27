@@ -584,7 +584,6 @@ int PGBackendTestFixture::do_remove_and_write_impl(
 
   std::vector<pg_log_entry_t> log_entries;
   pg_log_entry_t entry;
-  entry.mark_unrollbackable();
   entry.op = pg_log_entry_t::MODIFY;
   entry.soid = hoid;
   entry.version = at_version;
