@@ -394,6 +394,30 @@ TEST_P(TestECDynamicChunkSize, DivergentOverwritesRollBack) {
   check_layout(name, original.size(), chunk_size, {failing_shard});
 }
 
+TEST_P(TestECDynamicChunkSize, DivergentTruncateRollsBack) {
+  ASSERT_TRUE(all_shards_active());
+
+  const int failing_shard = k + m - 1;
+  const std::string name = "divergent_truncate";
+  const std::string original = random_data(k * max_chunk_size() + 3 * stripe_unit);
+  ASSERT_EQ(0, create_and_write(name, original));
+  const uint64_t chunk_size = chunk_size_for(original.size());
+
+  suspend_primary_to_osd(1);
+  const uint64_t truncate_to = chunk_size / 2 + 1;
+  const std::string data = random_data(stripe_unit);
+  ASSERT_EQ(-EINPROGRESS,
+            truncate_and_write(name, original.size(), truncate_to,
+                               {{truncate_to + 7, data}}));
+  mark_osd_down(failing_shard);
+  unsuspend_primary_to_osd(1);
+  event_loop->run_until_idle();
+  ASSERT_TRUE(all_shards_active());
+
+  verify_ranges(name, original);
+  check_layout(name, original.size(), chunk_size, {failing_shard});
+}
+
 /* The rolled back write chose the chunk size of an empty object. */
 TEST_P(TestECDynamicChunkSize, DivergentFirstWriteRollsBack) {
   ASSERT_TRUE(all_shards_active());
