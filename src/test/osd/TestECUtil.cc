@@ -1746,6 +1746,36 @@ TEST(ECUtil, shard_extent_map_at_object_chunk_size)
   ASSERT_EQ(expected_mask, read_mask);
 }
 
+/* Recovery reads shards by shard offset before it knows the object's chunk
+ * size, then switches the result to the object's geometry. */
+TEST(ECUtil, shard_extent_map_set_sinfo)
+{
+  const unsigned int k = 4;
+  const unsigned int m = 2;
+  const uint64_t chunk = 64 * 1024;
+  stripe_info_base_t base(k, m, 4096 * k, vector<shard_id_t>(0));
+
+  const uint64_t size = chunk + chunk / 2;
+  bufferlist bl;
+  for (uint64_t i = 0; i < size; i += sizeof(uint64_t)) {
+    ceph::encode(i, bl);
+  }
+  bufferlist shard0;
+  shard0.substr_of(bl, 0, chunk);
+  bufferlist shard1;
+  shard1.substr_of(bl, chunk, chunk / 2);
+
+  shard_extent_map_t semap(base.for_default());
+  semap.insert_in_shard(shard_id_t(0), 0, shard0);
+  semap.insert_in_shard(shard_id_t(1), 0, shard1);
+  ASSERT_NE(size, semap.get_ro_end());
+
+  semap.set_sinfo(base.for_chunk_size(chunk));
+  ASSERT_EQ(0u, semap.get_ro_start());
+  ASSERT_EQ(size, semap.get_ro_end());
+  ASSERT_TRUE(semap.get_ro_buffer(0, size).contents_equal(bl));
+}
+
 TEST(ECUtil, view_for_chunk_size_geometry)
 {
   const unsigned int k = 2;

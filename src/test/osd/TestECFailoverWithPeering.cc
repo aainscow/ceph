@@ -458,6 +458,62 @@ TEST_P(TestECFailoverWithPeering, ECRecoveryTest) {
 }
 
 /**
+ * ECRecoveryInSeveralPasses - recover objects larger than one recovery pass.
+ *
+ * Each pass recovers osd_recovery_max_chunk / k bytes of every missing shard.
+ * With a recovery chunk of one stripe, objects of several stripes take
+ * several passes, whether the missing shard is a data shard, a parity shard
+ * or the primary's, which starts without an object context.
+ */
+TEST_P(TestECFailoverWithPeering, ECRecoveryInSeveralPasses) {
+  ASSERT_TRUE(all_shards_active()) << "Initial peering must complete";
+
+  const uint64_t stripe_width = k * stripe_unit;
+  std::string saved_max_chunk;
+  g_ceph_context->_conf.get_val("osd_recovery_max_chunk", &saved_max_chunk);
+  set_config("osd_recovery_max_chunk", std::to_string(stripe_width));
+
+  const std::vector<uint64_t> sizes = {
+    stripe_unit - 1,
+    3 * stripe_width,
+    5 * stripe_width + stripe_unit + 17,
+  };
+  const ECUtil::stripe_info_base_t sinfo(k, m, stripe_width);
+  for (int osd : {1, k, 0}) {
+    mark_osd_down(osd);
+    std::vector<std::string> names;
+    std::vector<std::string> datas;
+    for (uint64_t size : sizes) {
+      names.push_back("multi_pass_osd" + std::to_string(osd) + "_" +
+                      std::to_string(size));
+      bufferlist bl = create_random_buffer(size);
+      datas.emplace_back(bl.c_str(), bl.length());
+      ASSERT_EQ(0, create_and_write(names.back(), datas.back()));
+    }
+    mark_osd_up(osd);
+    run_parallel_recovery_and_verify_callbacks(names, osd, datas);
+
+    const int primary = get_primary_shard_from_osdmap();
+    ASSERT_GE(primary, 0);
+    for (size_t i = 0; i < names.size(); ++i) {
+      SCOPED_TRACE(names[i]);
+      const object_info_t oi = read_shard_object_info(names[i], primary);
+      const uint64_t shard_size = sinfo.for_object_chunk_size(oi.ec_chunk_size).
+        object_size_to_shard_size(datas[i].size(), shard_id_t(osd));
+      struct stat st;
+      ghobject_t ghoid(make_test_object(names[i]), ghobject_t::NO_GEN,
+                       shard_id_t(osd));
+      ASSERT_EQ(0, store->stat(chs[osd], ghoid, &st));
+      EXPECT_EQ(shard_size, static_cast<uint64_t>(st.st_size));
+      verify_object(names[i], datas[i], 0, datas[i].size());
+      EXPECT_FALSE(scrub_object(names[i]));
+    }
+  }
+
+  set_config("osd_recovery_max_chunk", saved_max_chunk);
+}
+
+/**
  * ECSequentialOSDFailoverTest - Test sequential OSD failure and recovery
  *
  * This test verifies the EC recovery mechanism by sequentially failing and
