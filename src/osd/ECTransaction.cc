@@ -792,6 +792,11 @@ ECTransaction::Generate::Generate(PGTransaction &t,
   debug(oid, "to_write", to_write, dpp);
   ldpp_dout(dpp, 20) << " generate_transactions: plan: " << plan << dendl;
 
+  /* truncate() must run before appends_and_clone_ranges(): it stashes the
+   * data it removes and records where in truncate_stash_start, and
+   * appends_and_clone_ranges() relies on that to avoid stashing the same
+   * range again from the truncated head.
+   */
   if (op.truncate &&
       op.truncate->first < plan.orig_size &&
       !did_zero_truncate_to_delete) {
