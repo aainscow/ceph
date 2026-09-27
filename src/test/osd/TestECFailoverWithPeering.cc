@@ -1778,6 +1778,21 @@ TEST_P(TestECFailoverWithPeering, RollbackTruncateAndWriteInTruncatedRange) {
                               {{4 * sw + 7, stripe_unit}});
 }
 
+/**
+ * RollbackTruncateUp
+ *
+ * Roll back a divergent op that truncates an object to a larger size. The
+ * rollback truncates each shard back to its old size, which differs between
+ * shards.
+ */
+TEST_P(TestECFailoverWithPeering, RollbackTruncateUp) {
+  const uint64_t sw = k * stripe_unit;
+  const uint64_t object_size = 5 * sw + stripe_unit + 123;
+  run_rollback("rollback_truncate_up",
+               {{object_size, {}, {{Truncate(object_size + sw + 77)}}}},
+               1, get_shard(k + m - 1));
+}
+
 // ---------------------------------------------------------------------------
 // Instantiate TestECFailoverWithPeering with EC configurations
 // ---------------------------------------------------------------------------
