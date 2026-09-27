@@ -19,28 +19,48 @@
 
 using namespace std;
 
-/**
- * TestECFailoverWithPeering - parameterized EC peering and failover tests.
- *
- * This fixture is parameterized over BackendConfig to test multiple EC
- * configurations (different k/m values, stripe units, plugins, and optimizations).
- * Only EC configurations are tested since peering and failover are EC-specific.
+namespace {
+
+/* One step of an op on a single object: truncate to off, or write or zero
+ * len bytes at off. Written data is chosen when the op is submitted.
  */
-class TestECFailoverWithPeering : public ECPeeringTestFixture,
-                                   public ::testing::WithParamInterface<BackendConfig> {
+struct ObjOp {
+  enum Type { TRUNCATE, WRITE, ZERO } type;
+  uint64_t off;
+  uint64_t len;
+};
+
+ObjOp Truncate(uint64_t size) { return {ObjOp::TRUNCATE, size, 0}; }
+ObjOp Write(uint64_t off, uint64_t len) { return {ObjOp::WRITE, off, len}; }
+ObjOp Zero(uint64_t off, uint64_t len) { return {ObjOp::ZERO, off, len}; }
+
+/* An object created with size bytes of random data. The ops in committed
+ * are then applied one at a time, each committing before the next. Each
+ * entry of ops is one op under test; they are all in flight together.
+ */
+struct ObjectScenario {
+  uint64_t size;
+  std::vector<std::vector<ObjOp>> committed;
+  std::vector<std::vector<ObjOp>> ops;
+};
+
+}  // namespace
+
+/**
+ * ECTruncateTestBase - EC peering fixture configured from a BackendConfig,
+ * with helpers that submit ops mixing truncates, writes and zeros while
+ * keeping a model of the expected contents of each object, and that check
+ * every shard of an object against its model.
+ */
+class ECTruncateTestBase : public ECPeeringTestFixture {
 public:
-  TestECFailoverWithPeering() : ECPeeringTestFixture() {
-    const auto& config = GetParam();
+  explicit ECTruncateTestBase(const BackendConfig& config) {
     k = config.k;
     m = config.m;
     stripe_unit = config.stripe_unit;
     ec_plugin = config.ec_plugin;
     ec_technique = config.ec_technique;
     pool_flags = config.pool_flags;
-  }
-  
-  void SetUp() override {
-    ECPeeringTestFixture::SetUp();
   }
 
 protected:
@@ -56,51 +76,398 @@ protected:
     return shards;
   }
 
+  ECUtil::stripe_info_t get_sinfo() {
+    return ECUtil::stripe_info_t(ec_impl, &get_pool(), stripe_unit * k);
+  }
+
+  int get_shard(unsigned raw_shard) {
+    return int(get_sinfo().get_shard(raw_shard_id_t(raw_shard)));
+  }
+
+  /* Queue ops, in order, as a single PGTransaction on an existing object on
+   * the primary, and apply them to model, which must hold the contents of the
+   * object once every op queued before is applied. The returned result is
+   * set when the op completes.
+   */
+  std::shared_ptr<int> queue_ops(const std::string& obj_name,
+                                 const std::vector<ObjOp>& ops,
+                                 std::string& model) {
+    const uint64_t pre_op_size = model.size();
+    std::vector<std::pair<ObjOp, bufferlist>> steps;
+    for (const auto& op : ops) {
+      bufferlist bl;
+      switch (op.type) {
+      case ObjOp::TRUNCATE:
+        model.resize(op.off, '\0');
+        break;
+      case ObjOp::WRITE:
+        bl = create_random_buffer(op.len);
+        if (model.size() < op.off + op.len) {
+          model.resize(op.off + op.len, '\0');
+        }
+        model.replace(op.off, op.len, bl.c_str(), op.len);
+        break;
+      case ObjOp::ZERO:
+        ceph_assert(op.off + op.len <= model.size());
+        model.replace(op.off, op.len, op.len, '\0');
+        break;
+      }
+      steps.emplace_back(op, bl);
+    }
+
+    const uint64_t new_size = model.size();
+    auto result = std::make_shared<int>(-EINPROGRESS);
+    event_loop->schedule_transaction(
+      osdmap->get_pg_acting_primary(pgid),
+      [this, result, obj_name, steps, pre_op_size, new_size]() {
+        *result = do_ops_impl(obj_name, steps, pre_op_size, new_size);
+      });
+    return result;
+  }
+
+  int submit_ops(const std::string& obj_name,
+                 const std::vector<ObjOp>& ops,
+                 std::string& model) {
+    auto result = queue_ops(obj_name, ops, model);
+    event_loop->run_until_idle();
+    return *result;
+  }
+
+  int do_ops_impl(const std::string& obj_name,
+                  const std::vector<std::pair<ObjOp, bufferlist>>& steps,
+                  uint64_t pre_op_size,
+                  uint64_t new_size) {
+    hobject_t hoid = make_test_object(obj_name);
+    PGTransactionUPtr pg_t = std::make_unique<PGTransaction>();
+
+    ObjectContextRef obc = get_object_context(hoid, false);
+    ceph_assert(obc);
+    ceph_assert(obc->obs.oi.size == pre_op_size);
+    pg_t->obc_map[hoid] = obc;
+    outstanding_writes[hoid]++;
+
+    for (const auto& [op, bl] : steps) {
+      switch (op.type) {
+      case ObjOp::TRUNCATE:
+        pg_t->truncate(hoid, op.off);
+        break;
+      case ObjOp::WRITE: {
+        bufferlist data = bl;
+        pg_t->write(hoid, op.off, data.length(), data);
+        break;
+      }
+      case ObjOp::ZERO:
+        pg_t->zero(hoid, op.off, op.len);
+        break;
+      }
+    }
+
+    object_stat_sum_t delta_stats;
+    delta_stats.num_bytes = int64_t(new_size) - int64_t(pre_op_size);
+
+    eversion_t prior_version = obc->obs.oi.version;
+    eversion_t at_version = get_next_version();
+
+    object_info_t new_oi = obc->obs.oi;
+    new_oi.version = at_version;
+    new_oi.prior_version = prior_version;
+    new_oi.size = new_size;
+    {
+      bufferlist oi_bl;
+      new_oi.encode(oi_bl, osdmap->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
+      pg_t->setattr(hoid, OI_ATTR, oi_bl);
+    }
+    obc->obs.oi = new_oi;
+
+    std::vector<pg_log_entry_t> log_entries;
+    pg_log_entry_t entry;
+    entry.op = pg_log_entry_t::MODIFY;
+    entry.soid = hoid;
+    entry.version = at_version;
+    entry.prior_version = prior_version;
+    log_entries.push_back(entry);
+
+    auto write_complete = [this, hoid, obc, prior_version, pre_op_size](int r) {
+      if (outstanding_writes[hoid] > 0) {
+        outstanding_writes[hoid]--;
+        if (outstanding_writes[hoid] == 0) {
+          outstanding_writes.erase(hoid);
+        }
+      }
+      if (r != 0 && r != -EINPROGRESS) {
+        obc->obs.oi.version = prior_version;
+        obc->obs.oi.size = pre_op_size;
+        obc->attr_cache.clear();
+        outstanding_writes.erase(hoid);
+      }
+    };
+
+    return do_transaction_and_complete(
+      hoid, std::move(pg_t), delta_stats, at_version, std::move(log_entries),
+      write_complete);
+  }
+
+  /* Check every shard of an object, other than those in skip, against model,
+   * the expected contents of the object. Each shard must be as long as the
+   * shard size for the object size. Each data shard must hold its chunks of
+   * the object, and zeros past the end of the object. Each parity shard must
+   * hold the parity that ec_impl encodes from those data chunks.
+   */
+  void check_shards(const std::string& obj_name,
+                    const std::string& model,
+                    const std::set<int>& skip) {
+    SCOPED_TRACE("check_shards " + obj_name);
+    const ECUtil::stripe_info_t sinfo = get_sinfo();
+    const uint64_t size = model.size();
+    const uint64_t sw = sinfo.get_stripe_width();
+    auto shards = read_shards(obj_name);
+    std::set<int> bad_shards;
+
+    for (int shard = 0; shard < k + m; ++shard) {
+      if (!skip.contains(shard)) {
+        EXPECT_EQ(sinfo.object_size_to_shard_size(size, shard_id_t(shard)),
+                  shards.at(shard).length())
+          << "length of shard " << shard << " for object size " << size;
+      }
+    }
+
+    for (uint64_t stripe = 0; stripe * sw < size; ++stripe) {
+      shard_id_map<bufferptr> in(k + m);
+      shard_id_map<bufferptr> out(k + m);
+      for (raw_shard_id_t raw; raw < k + m; ++raw) {
+        bufferptr bp = buffer::create_aligned(stripe_unit, EC_ALIGN_SIZE);
+        bp.zero();
+        if (raw < k) {
+          const uint64_t ro_offset = stripe * sw + int(raw) * stripe_unit;
+          if (ro_offset < size) {
+            bp.copy_in(0, std::min(stripe_unit, size - ro_offset),
+                       model.data() + ro_offset);
+          }
+          in[sinfo.get_shard(raw)] = bp;
+        } else {
+          out[sinfo.get_shard(raw)] = bp;
+        }
+      }
+      ASSERT_EQ(0, ec_impl->encode_chunks(in, out));
+
+      for (int shard = 0; shard < k + m; ++shard) {
+        const shard_id_t id(shard);
+        if (skip.contains(shard) || bad_shards.contains(shard)) {
+          continue;
+        }
+        const bufferptr& expected = in.contains(id) ? in.at(id) : out.at(id);
+        bufferlist& stored = shards.at(shard);
+        const uint64_t offset = stripe * stripe_unit;
+        if (offset >= stored.length()) {
+          continue;
+        }
+        const uint64_t length = std::min(stripe_unit, stored.length() - offset);
+        const char* actual = stored.c_str() + offset;
+        for (uint64_t i = 0; i < length; ++i) {
+          if (actual[i] != expected.c_str()[i]) {
+            ADD_FAILURE() << (in.contains(id) ? "data" : "parity")
+                          << " shard " << shard << " differs from the model"
+                          << " at shard offset " << offset + i
+                          << " (stripe " << stripe << ", object size "
+                          << size << ")";
+            bad_shards.insert(shard);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  std::string object_name(const std::string& name, size_t index) {
+    return name + "_" + std::to_string(index);
+  }
+
+  /* Create each object and apply its committed ops, returning the models. */
+  std::vector<std::string> create_objects(
+      const std::string& name,
+      const std::vector<ObjectScenario>& objects) {
+    std::vector<std::string> models;
+    for (size_t i = 0; i < objects.size(); ++i) {
+      bufferlist bl = create_random_buffer(objects[i].size);
+      models.emplace_back(bl.c_str(), bl.length());
+      create_and_write_verify(object_name(name, i), models.back());
+      for (const auto& ops : objects[i].committed) {
+        EXPECT_EQ(0, submit_ops(object_name(name, i), ops, models.back()));
+      }
+    }
+    return models;
+  }
+
+  struct QueuedOp {
+    size_t object;
+    std::shared_ptr<int> result;
+    std::string model;  // The object once this op is applied.
+  };
+
+  /* Queue every object's ops, with the i'th op of each object queued after
+   * the (i-1)'th op of every object.
+   */
+  std::vector<QueuedOp> queue_all_ops(
+      const std::string& name,
+      const std::vector<ObjectScenario>& objects,
+      std::vector<std::string>& models) {
+    std::vector<QueuedOp> queued;
+    for (size_t step = 0; ; ++step) {
+      bool any = false;
+      for (size_t i = 0; i < objects.size(); ++i) {
+        if (step < objects[i].ops.size()) {
+          auto result =
+            queue_ops(object_name(name, i), objects[i].ops[step], models[i]);
+          queued.push_back({i, result, models[i]});
+          any = true;
+        }
+      }
+      if (!any) {
+        return queued;
+      }
+    }
+  }
+
+  void verify_objects(const std::string& name,
+                      const std::vector<std::string>& models,
+                      const std::set<int>& down) {
+    for (size_t i = 0; i < models.size(); ++i) {
+      if (!models[i].empty()) {
+        verify_object(object_name(name, i), models[i], 0, models[i].size());
+      }
+      check_shards(object_name(name, i), models[i], down);
+    }
+  }
+
+  /* Apply the ops of each object, all in flight together, and check the
+   * objects and their shards. Then take down the OSD holding the first data
+   * shard, so that reads must decode, and check again.
+   */
+  void run_forward(const std::string& name,
+                   const std::vector<ObjectScenario>& objects) {
+    ASSERT_TRUE(all_shards_active()) << "Initial peering must complete";
+    auto models = create_objects(name, objects);
+    const auto queued = queue_all_ops(name, objects, models);
+    event_loop->run_until_idle();
+    for (const auto& op : queued) {
+      EXPECT_EQ(0, *op.result);
+    }
+    {
+      SCOPED_TRACE("after the ops");
+      verify_objects(name, models, {});
+    }
+
+    const int down = get_shard(0);
+    mark_osd_down(down);
+    event_loop->run_until_idle();
+    ASSERT_TRUE(all_shards_active()) << "All shards should be active after peering";
+    SCOPED_TRACE("with shard " + std::to_string(down) + " down");
+    verify_objects(name, models, {down});
+  }
+
+  /* Submit the ops of each object so that they reach every shard except
+   * blocked_shard, then take down the OSD of failing_shard so that peering
+   * rolls back those still in flight. An op that does not write to
+   * blocked_shard can complete first, and must then survive. Each object
+   * must be left as it was after its last completed op, and each surviving
+   * shard of an object with no completed op must be restored exactly.
+   */
+  void run_rollback(const std::string& name,
+                    const std::vector<ObjectScenario>& objects,
+                    int blocked_shard,
+                    int failing_shard) {
+    ASSERT_TRUE(all_shards_active()) << "Initial peering must complete";
+    ASSERT_NE(blocked_shard, failing_shard);
+    ASSERT_GE(k + m - 1, k) << "Too few shards would remain up";
+
+    const auto originals = create_objects(name, objects);
+    std::vector<std::map<int, bufferlist>> original_shards;
+    for (size_t i = 0; i < objects.size(); ++i) {
+      original_shards.push_back(read_shards(object_name(name, i)));
+    }
+    {
+      SCOPED_TRACE("before the ops");
+      verify_objects(name, originals, {});
+    }
+
+    const int primary = get_primary_shard_from_osdmap();
+    event_loop->suspend_from_to_osd(primary, blocked_shard);
+    auto models = originals;
+    const auto queued = queue_all_ops(name, objects, models);
+    event_loop->run_until_idle();
+
+    auto expected = originals;
+    std::vector<bool> in_flight(objects.size(), false);
+    std::vector<bool> completed(objects.size(), false);
+    for (const auto& op : queued) {
+      if (*op.result == 0) {
+        EXPECT_FALSE(in_flight[op.object]) << "ops must complete in order";
+        expected[op.object] = op.model;
+        completed[op.object] = true;
+      } else {
+        EXPECT_EQ(-EINPROGRESS, *op.result);
+        in_flight[op.object] = true;
+      }
+    }
+    if (!std::ranges::any_of(in_flight, std::identity{})) {
+      std::cout << "No op writes to shard " << blocked_shard
+                << ", so none is left to roll back" << std::endl;
+    }
+
+    mark_osd_down(failing_shard);
+    event_loop->unsuspend_from_to_osd(primary, blocked_shard);
+    event_loop->run_until_idle();
+    ASSERT_TRUE(all_shards_active()) << "All shards should be active after peering";
+
+    SCOPED_TRACE("after rollback with shard " + std::to_string(blocked_shard) +
+                 " blocked and shard " + std::to_string(failing_shard) +
+                 " failed");
+    verify_objects(name, expected, {failing_shard});
+    for (size_t i = 0; i < objects.size(); ++i) {
+      if (completed[i]) {
+        continue;
+      }
+      const auto shards = read_shards(object_name(name, i));
+      for (int shard = 0; shard < k + m; ++shard) {
+        if (shard == failing_shard) {
+          continue;
+        }
+        EXPECT_EQ(original_shards[i].at(shard).length(), shards.at(shard).length())
+          << "size of shard " << shard << " of " << object_name(name, i);
+        EXPECT_TRUE(original_shards[i].at(shard).contents_equal(shards.at(shard)))
+          << "contents of shard " << shard << " of " << object_name(name, i);
+      }
+    }
+  }
+};
+
+/**
+ * TestECFailoverWithPeering - parameterized EC peering and failover tests.
+ *
+ * This fixture is parameterized over BackendConfig to test multiple EC
+ * configurations (different k/m values, stripe units, plugins, and optimizations).
+ * Only EC configurations are tested since peering and failover are EC-specific.
+ */
+class TestECFailoverWithPeering : public ECTruncateTestBase,
+                                   public ::testing::WithParamInterface<BackendConfig> {
+public:
+  TestECFailoverWithPeering() : ECTruncateTestBase(GetParam()) {}
+
+protected:
   /* Truncate an object and apply writes of the given {offset, length} in a
    * single op that reaches every shard except shard 1, then fail the last
-   * parity shard so that the op is rolled back. The object and every
-   * surviving shard, parity included, must be restored exactly.
+   * parity shard so that the op is rolled back.
    */
   void rollback_truncate_and_write(
       const std::string& obj_name,
       uint64_t object_size,
       uint64_t truncate_to,
       const std::vector<std::pair<uint64_t, uint64_t>>& writes) {
-    ASSERT_TRUE(all_shards_active()) << "Initial peering must complete";
-
-    const int blocked_shard = 1;
-    const int failing_shard = k + m - 1;
-    bufferlist obl = create_random_buffer(object_size);
-    const std::string original(obl.c_str(), obl.length());
-    create_and_write_verify(obj_name, original);
-    const auto original_shards = read_shards(obj_name);
-
-    std::vector<std::pair<uint64_t, std::string>> write_data;
+    std::vector<ObjOp> ops{Truncate(truncate_to)};
     for (auto [offset, length] : writes) {
-      bufferlist bl = create_random_buffer(length);
-      write_data.emplace_back(offset, std::string(bl.c_str(), bl.length()));
+      ops.push_back(Write(offset, length));
     }
-
-    suspend_primary_to_osd(blocked_shard);
-    ASSERT_EQ(-EINPROGRESS,
-              truncate_and_write(obj_name, object_size, truncate_to, write_data));
-    mark_osd_down(failing_shard);
-    unsuspend_primary_to_osd(blocked_shard);
-    event_loop->run_until_idle();
-    ASSERT_TRUE(all_shards_active()) << "All shards should be active after peering";
-
-    verify_object(obj_name, original, 0, object_size);
-
-    const auto shards = read_shards(obj_name);
-    for (int shard = 0; shard < k + m; ++shard) {
-      if (shard == failing_shard) {
-        continue;
-      }
-      EXPECT_EQ(original_shards.at(shard).length(), shards.at(shard).length())
-        << "size of shard " << shard;
-      EXPECT_TRUE(original_shards.at(shard).contents_equal(shards.at(shard)))
-        << "contents of shard " << shard;
-    }
+    run_rollback(obj_name, {{object_size, {}, {ops}}}, 1, get_shard(k + m - 1));
   }
 };
 
@@ -1423,4 +1790,3 @@ INSTANTIATE_TEST_SUITE_P(
     return info.param.label;
   }
 );
-
