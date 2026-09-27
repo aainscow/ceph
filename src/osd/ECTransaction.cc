@@ -709,6 +709,7 @@ ECTransaction::Generate::Generate(PGTransaction &t,
     plan(plan),
     read_sem(&sinfo),
     to_write(&sinfo),
+    truncate_stash_start(sinfo.get_k_plus_m()),
     ec_omap_journal(ec_omap_journal),
     pg_log(pg_log) {
   ldpp_dout(dpp, 20) << __func__ << ": " << oid
@@ -961,6 +962,7 @@ void ECTransaction::Generate::truncate() {
         clone_start,
         end - clone_start,
         clone_start);
+      truncate_stash_start.emplace(shard, clone_start);
 
       // First truncate to exactly the right size.
       t.truncate(
@@ -1084,6 +1086,17 @@ void ECTransaction::Generate::appends_and_clone_ranges() {
 
       // Do not clone off the end of the old range
       uint64_t shard_clone_max = cloneable_range.at(shard).range_end();
+
+      /* Nor clone what truncate() has already stashed: the head has since
+       * been truncated, so no longer holds all of that data, and cloning it
+       * again would overwrite the stash. The truncate's rollback extent
+       * restores it.
+       */
+      if (truncate_stash_start.contains(shard) &&
+          shard_clone_max > truncate_stash_start.at(shard)) {
+        shard_clone_max = truncate_stash_start.at(shard);
+      }
+
       uint64_t shard_end = start + len;
       if (shard_end > shard_clone_max) shard_end = shard_clone_max;
 

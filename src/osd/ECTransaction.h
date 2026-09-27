@@ -177,6 +177,10 @@ class Generate {
   ECUtil::shard_extent_map_t to_write;
   std::vector<std::pair<uint64_t, uint64_t>> rollback_extents;
   std::vector<shard_id_set> rollback_shards;
+  /* For each shard, the offset from which truncate() stashed the original
+   * data, up to the old end of the shard, in the rollback generation object.
+   */
+  shard_id_map<uint64_t> truncate_stash_start;
   uint32_t fadvise_flags = 0;
   bool written_shards_final{false};
   ECOmapJournal &ec_omap_journal;
