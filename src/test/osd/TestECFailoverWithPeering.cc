@@ -42,6 +42,66 @@ public:
   void SetUp() override {
     ECPeeringTestFixture::SetUp();
   }
+
+protected:
+  /* Read the head object of every shard directly from the store. */
+  std::map<int, bufferlist> read_shards(const std::string& obj_name) {
+    const hobject_t hoid = make_test_object(obj_name);
+    std::map<int, bufferlist> shards;
+    for (int shard = 0; shard < k + m; ++shard) {
+      ghobject_t ghoid(hoid, ghobject_t::NO_GEN, shard_id_t(shard));
+      EXPECT_LE(0, store->read(chs[shard], ghoid, 0, 0, shards[shard]))
+        << "shard " << shard;
+    }
+    return shards;
+  }
+
+  /* Truncate an object and apply writes of the given {offset, length} in a
+   * single op that reaches every shard except shard 1, then fail the last
+   * parity shard so that the op is rolled back. The object and every
+   * surviving shard, parity included, must be restored exactly.
+   */
+  void rollback_truncate_and_write(
+      const std::string& obj_name,
+      uint64_t object_size,
+      uint64_t truncate_to,
+      const std::vector<std::pair<uint64_t, uint64_t>>& writes) {
+    ASSERT_TRUE(all_shards_active()) << "Initial peering must complete";
+
+    const int blocked_shard = 1;
+    const int failing_shard = k + m - 1;
+    bufferlist obl = create_random_buffer(object_size);
+    const std::string original(obl.c_str(), obl.length());
+    create_and_write_verify(obj_name, original);
+    const auto original_shards = read_shards(obj_name);
+
+    std::vector<std::pair<uint64_t, std::string>> write_data;
+    for (auto [offset, length] : writes) {
+      bufferlist bl = create_random_buffer(length);
+      write_data.emplace_back(offset, std::string(bl.c_str(), bl.length()));
+    }
+
+    suspend_primary_to_osd(blocked_shard);
+    ASSERT_EQ(-EINPROGRESS,
+              truncate_and_write(obj_name, object_size, truncate_to, write_data));
+    mark_osd_down(failing_shard);
+    unsuspend_primary_to_osd(blocked_shard);
+    event_loop->run_until_idle();
+    ASSERT_TRUE(all_shards_active()) << "All shards should be active after peering";
+
+    verify_object(obj_name, original, 0, object_size);
+
+    const auto shards = read_shards(obj_name);
+    for (int shard = 0; shard < k + m; ++shard) {
+      if (shard == failing_shard) {
+        continue;
+      }
+      EXPECT_EQ(original_shards.at(shard).length(), shards.at(shard).length())
+        << "size of shard " << shard;
+      EXPECT_TRUE(original_shards.at(shard).contents_equal(shards.at(shard)))
+        << "contents of shard " << shard;
+    }
+  }
 };
 
 TEST_P(TestECFailoverWithPeering, BasicPeeringCycle) {
@@ -1296,6 +1356,59 @@ TEST_P(TestECFailoverWithPeering, DivergentLogRewindThenNewInterval) {
 
   // cfg_async_recovery, cfg_trim_min, and cfg_trim_max restore automatically
   // via ScopedConfig destructors at function exit.
+}
+
+/**
+ * RollbackTruncate*
+ *
+ * Roll back a divergent op that truncates an object to a size that ends part
+ * way through a page of the first shard, optionally writing to the object in
+ * the same op. Rollback must restore the data that the truncate removed,
+ * including the rest of the page holding the new end, which the truncate
+ * zeroes. The truncate leaves a partial stripe at the new end, so the op also
+ * rewrites the parity, which must be restored too.
+ */
+TEST_P(TestECFailoverWithPeering, RollbackTruncate) {
+  const uint64_t sw = k * stripe_unit;
+  const uint64_t truncate_to = sw + stripe_unit / 2 + 1;
+  rollback_truncate_and_write("rollback_truncate",
+                              8 * sw + 3 * stripe_unit, truncate_to, {});
+}
+
+// Write below the new end, ending at it.
+TEST_P(TestECFailoverWithPeering, RollbackTruncateAndWriteBelowNewEnd) {
+  const uint64_t sw = k * stripe_unit;
+  const uint64_t truncate_to = sw + stripe_unit / 2 + 1;
+  rollback_truncate_and_write("rollback_truncate_below",
+                              8 * sw + 3 * stripe_unit, truncate_to,
+                              {{truncate_to - stripe_unit / 4, stripe_unit / 4}});
+}
+
+// Write straddling the new end.
+TEST_P(TestECFailoverWithPeering, RollbackTruncateAndWriteAcrossNewEnd) {
+  const uint64_t sw = k * stripe_unit;
+  const uint64_t truncate_to = sw + stripe_unit / 2 + 1;
+  rollback_truncate_and_write("rollback_truncate_across",
+                              8 * sw + 3 * stripe_unit, truncate_to,
+                              {{truncate_to - stripe_unit / 4, stripe_unit / 2}});
+}
+
+// Write starting just above the new end, in the page that holds it.
+TEST_P(TestECFailoverWithPeering, RollbackTruncateAndWriteAboveNewEnd) {
+  const uint64_t sw = k * stripe_unit;
+  const uint64_t truncate_to = sw + stripe_unit / 2 + 1;
+  rollback_truncate_and_write("rollback_truncate_above",
+                              8 * sw + 3 * stripe_unit, truncate_to,
+                              {{truncate_to + 7, stripe_unit}});
+}
+
+// Write inside the truncated range, stripes above the new end.
+TEST_P(TestECFailoverWithPeering, RollbackTruncateAndWriteInTruncatedRange) {
+  const uint64_t sw = k * stripe_unit;
+  const uint64_t truncate_to = sw + stripe_unit / 2 + 1;
+  rollback_truncate_and_write("rollback_truncate_in_range",
+                              8 * sw + 3 * stripe_unit, truncate_to,
+                              {{4 * sw + 7, stripe_unit}});
 }
 
 // ---------------------------------------------------------------------------
