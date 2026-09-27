@@ -1793,6 +1793,28 @@ TEST_P(TestECFailoverWithPeering, RollbackTruncateUp) {
                1, get_shard(k + m - 1));
 }
 
+/**
+ * TruncateAndWriteInPage, WritesInPageAboveEnd
+ *
+ * An op that leaves a gap between two extents of a shard within a page, here
+ * between the part of a page that a truncate keeps and a write further into
+ * that page, or between two writes to a page above the end of the object,
+ * must keep the data on either side of the gap and zero the gap.
+ */
+TEST_P(TestECFailoverWithPeering, TruncateAndWriteInPage) {
+  const uint64_t sw = k * stripe_unit;
+  run_forward("truncate_and_write_in_page",
+              {{5 * sw + stripe_unit + 123, {}, {{Truncate(1), Write(8, 50)}}}});
+}
+
+TEST_P(TestECFailoverWithPeering, WritesInPageAboveEnd) {
+  const uint64_t sw = k * stripe_unit;
+  const uint64_t object_size = 5 * sw + stripe_unit + 123;
+  const uint64_t page = ECUtil::align_next(object_size);
+  run_forward("writes_in_page_above_end",
+              {{object_size, {}, {{Write(page + 10, 10), Write(page + 100, 10)}}}});
+}
+
 // ---------------------------------------------------------------------------
 // Instantiate TestECFailoverWithPeering with EC configurations
 // ---------------------------------------------------------------------------
