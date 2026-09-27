@@ -291,7 +291,9 @@ ECTransaction::WritePlanObj::WritePlanObj(
       extent_set truncate_write;
 
       if (next_align != 0) {
-        truncate_write = truncate_read.at(shard_id_t(0));
+        /* The first data shard, raw shard 0, has the longest range of the
+         * partial stripe. */
+        truncate_write = truncate_read.at(sinfo.get_shard(raw_shard_id_t(0)));
         truncate_write.align(EC_ALIGN_SIZE);
       }
 
