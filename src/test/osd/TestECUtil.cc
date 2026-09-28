@@ -1630,3 +1630,44 @@ TEST(ECUtil, erase_after_ro_offset_single_byte)
   // Shard 1 should be empty
   ASSERT_FALSE(semap.contains_shard(shard_id_t(1)));
 }
+
+/* Two extents of a shard in the same page, with a gap between them, must
+ * both survive padding to whole pages, with zeros in the gap. Extents in
+ * different pages are padded separately.
+ */
+TEST(ECUtil, pad_and_rebuild_to_ec_align_extents_in_same_page)
+{
+  stripe_info_t sinfo(2, 1, 2*4096);
+  shard_extent_map_t sem(&sinfo);
+
+  buffer::list a, b, c;
+  a.append(std::string(1, 'a'));
+  b.append(std::string(50, 'b'));
+  c.append(std::string(10, 'c'));
+
+  sem.insert_in_shard(shard_id_t(0), 0, a);
+  sem.insert_in_shard(shard_id_t(0), 8, b);
+  sem.insert_in_shard(shard_id_t(1), 100, c);
+  sem.insert_in_shard(shard_id_t(1), 2*4096 + 100, c);
+
+  sem.pad_and_rebuild_to_ec_align();
+
+  extent_set ref0;
+  ref0.insert(0, 4096);
+  ASSERT_EQ(ref0, sem.get_extent_set(shard_id_t(0)));
+
+  buffer::list expected, got;
+  expected.append(a);
+  expected.append_zero(7);
+  expected.append(b);
+  expected.append_zero(4096 - 58);
+  sem.get_buffer(shard_id_t(0), 0, 4096, got);
+  ASSERT_TRUE(expected.contents_equal(got));
+
+  extent_set ref1;
+  ref1.insert(0, 4096);
+  ref1.insert(2*4096, 4096);
+  ASSERT_EQ(ref1, sem.get_extent_set(shard_id_t(1)));
+
+  verify_offset_cache(sem);
+}
