@@ -2363,7 +2363,8 @@ TEST_P(TestECFailoverWithPeering, AddNewZoneWhileSingleZone) {
 }
 
 // Primary stays in zone 0 while zone 0 holds only k-1 shards: reads, writes
-// and recovery must source the missing relative shards from zone 1.
+// and recovery must source the missing relative shards from zone 1. A stretch
+// pool only gets there in recovery stretch mode, with zone 0 partly back.
 TEST_P(TestECFailoverWithPeering, LocalZoneBelowKUsesRemoteZone) {
   if (num_zones < 2) {
     GTEST_SKIP() << "requires num_zones > 1";
@@ -2377,12 +2378,16 @@ TEST_P(TestECFailoverWithPeering, LocalZoneBelowKUsesRemoteZone) {
   create_and_write_verify(full_obj, pattern_a);
   create_and_write_verify(partial_obj, pattern_a);
 
-  set_pool_min_size(num_zones * (k + m) - (m + 1));
   std::vector<int> failed;
   for (int i = 1; i <= m + 1; i++) {
     failed.push_back(i);
   }
-  mark_osds_down(failed);
+  fail_zone(0);
+  mark_osd_up(0);
+  for (int osd = m + 2; osd < k + m; osd++) {
+    mark_osd_up(osd);
+  }
+  enter_recovery_stretch_mode();
   ASSERT_EQ(0, get_primary_shard_from_osdmap());
   ASSERT_TRUE(all_shards_active());
 
@@ -2415,8 +2420,8 @@ TEST_P(TestECFailoverWithPeering, LocalZoneBelowKUsesRemoteZone) {
   EXPECT_FALSE(scrub_object(full_obj));
   EXPECT_FALSE(scrub_object(partial_obj));
 
-  mark_osds_down(zone_osds(1));
-  set_pool_min_size(k);
+  finish_stretch_recovery();
+  fail_zone(1);
   ASSERT_LT(get_primary_shard_from_osdmap(), k + m);
   verify_object(full_obj);
   verify_object(partial_obj);
@@ -2462,8 +2467,7 @@ TEST_P(TestECFailoverWithPeering, SameRelativeShardMissingInBothZones) {
     EXPECT_FALSE(scrub_object(obj));
   }
 
-  mark_osds_down(zone_osds(0));
-  set_pool_min_size(k);
+  fail_zone(0);
   verify_object(obj1);
   verify_object(obj2);
 }
@@ -2514,8 +2518,7 @@ TEST_P(TestECFailoverWithPeering, Zone1NonPrimaryPartialWriteMissingNeed) {
   EXPECT_FALSE(scrub_object(obj));
   EXPECT_FALSE(scrub_object(untouched_obj));
 
-  mark_osds_down(zone_osds(0));
-  set_pool_min_size(k);
+  fail_zone(0);
   verify_object(obj);
   verify_object(untouched_obj);
 }
@@ -2538,8 +2541,11 @@ TEST_P(TestECFailoverWithPeering, Zone1PrimaryPartialWritesThenZone0Recovers) {
   for (int i = k; i < k + m; i++) {
     zone0_primaries.push_back(i);
   }
-  set_pool_min_size(num_zones * (k + m) - (m + 1));
-  mark_osds_down(zone0_primaries);
+  fail_zone(0);
+  for (int osd = 1; osd < k; osd++) {
+    mark_osd_up(osd);
+  }
+  enter_recovery_stretch_mode();
   ASSERT_EQ(k + m, get_primary_shard_from_osdmap());
   ASSERT_TRUE(all_shards_active());
   create_and_write_verify("dummy", std::string(object_size, 'Z'));
@@ -2566,6 +2572,7 @@ TEST_P(TestECFailoverWithPeering, Zone1PrimaryPartialWritesThenZone0Recovers) {
   }
   ASSERT_EQ(0, get_primary_shard_from_osdmap());
   run_recovery(obj, true, expected);
+  run_recovery("dummy", true, std::string(object_size, 'Z'));
   verify_object(obj);
   primary_oi = read_shard_object_info(obj, 0);
   for (int rel = 1; rel < k; rel++) {
@@ -2574,8 +2581,8 @@ TEST_P(TestECFailoverWithPeering, Zone1PrimaryPartialWritesThenZone0Recovers) {
   }
   EXPECT_FALSE(scrub_object(obj));
 
-  mark_osds_down(zone_osds(1));
-  set_pool_min_size(k);
+  finish_stretch_recovery();
+  fail_zone(1);
   verify_object(obj);
 }
 
@@ -2589,14 +2596,11 @@ TEST_P(TestECFailoverWithPeering, ZeroSizeAttrsAcrossZoneFailover) {
   const std::string obj = "test_zero_size_attrs";
   ASSERT_EQ(0, create_and_write(obj, ""));
 
-  mark_osds_down(zone_osds(0));
-  set_pool_min_size(k);
+  fail_zone(0);
   ASSERT_GE(get_primary_shard_from_osdmap(), k + m);
   ASSERT_EQ(0, write_attribute(obj, "key", "v1", false));
 
-  for (int osd : zone_osds(0)) {
-    mark_osd_up(osd);
-  }
+  restore_zone(0);
   ASSERT_EQ(0, get_primary_shard_from_osdmap());
   run_recovery(obj, true, "");
 
@@ -2617,7 +2621,8 @@ TEST_P(TestECFailoverWithPeering, ZeroSizeAttrsAcrossZoneFailover) {
   }
   EXPECT_FALSE(scrub_object(obj));
 
-  mark_osds_down(zone_osds(1));
+  finish_stretch_recovery();
+  fail_zone(1);
   verify_object(obj);
 }
 
@@ -2634,15 +2639,12 @@ TEST_P(TestECFailoverWithPeering, DeleteRecreateAcrossZoneFailover) {
 
   create_and_write_verify(obj, std::string(object_size, 'A'));
 
-  mark_osds_down(zone_osds(1));
-  set_pool_min_size(k);
+  fail_zone(1);
   ASSERT_EQ(0, get_primary_shard_from_osdmap());
   ASSERT_EQ(0, delete_object(obj));
   create_and_write_verify(obj, recreated);
 
-  for (int osd : zone_osds(1)) {
-    mark_osd_up(osd);
-  }
+  restore_zone(1);
   auto* primary_ps = get_primary_test_pg()->get_peering_state();
   ASSERT_TRUE(primary_ps->is_active());
   hobject_t hoid = make_test_object(obj);
@@ -2661,7 +2663,8 @@ TEST_P(TestECFailoverWithPeering, DeleteRecreateAcrossZoneFailover) {
   }
   EXPECT_FALSE(scrub_object(obj));
 
-  mark_osds_down(zone_osds(0));
+  finish_stretch_recovery();
+  fail_zone(0);
   verify_object(obj);
 }
 
@@ -2674,7 +2677,9 @@ TEST_P(TestECFailoverWithPeering, AsyncRecoveryOfZone1Shards) {
   ScopedConfig cfg_async_recovery("osd_async_recovery_min_cost", "0");
 
   const size_t object_size = stripe_unit * k;
-  const std::vector<int> targets = {k + m, 2 * k + m};
+  // Healthy stretch mode keeps every zone at min_size or above.
+  std::vector<int> targets = {k + m, 2 * k + m};
+  targets.resize(std::min<size_t>(targets.size(), k + m - get_pool().min_size));
   const std::string obj1 = "test_async_zone1_full";
   const std::string obj2 = "test_async_zone1_partial";
   const std::string obj3 = "test_async_zone1_new";
