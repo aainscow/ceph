@@ -1689,3 +1689,16 @@ TEST(ECUtil, get_num_zones_matches_pg_pool_t_get_num_zone_default)
   // for the very same pool.
   ASSERT_EQ(pool.get_num_zone(), (int)sinfo.get_num_zones());
 }
+// Every constructor populates get_all_shards() with 0..k+m-1.
+TEST(ECUtil, get_all_shards_every_constructor)
+{
+  pg_pool_t pool;
+  shard_id_set all;
+  all.insert_range(shard_id_t(0), 3);
+  EXPECT_EQ(all, stripe_info_t(2, 1, 4096 * 2).get_all_shards());
+  EXPECT_EQ(all, stripe_info_t(2, 1, 4096 * 2, std::vector<shard_id_t>())
+                     .get_all_shards());
+  EXPECT_EQ(all, stripe_info_t(2, 1, 4096 * 2, &pool).get_all_shards());
+  EXPECT_EQ(all, stripe_info_t(2, 1, 4096 * 2, &pool,
+                               std::vector<shard_id_t>()).get_all_shards());
+}
