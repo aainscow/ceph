@@ -2346,20 +2346,18 @@ void pg_pool_t::decode(ceph::buffer::list::const_iterator& bl)
 }
 
 bool pg_pool_t::stretch_set_can_peer(const set<int>& want, const OSDMap& osdmap,
-				     std::ostream * out) const
+			                               std::ostream * out) const
 {
   if (!is_stretch_pool()) return true;
   const uint32_t barrier_id = peering_crush_bucket_barrier;
   const uint32_t barrier_count = peering_crush_bucket_count;
   set<int> ancestors;
-  const shared_ptr<CrushWrapper>& crush = osdmap.crush;
   for (int osdid : want) {
     if (osdid == CRUSH_ITEM_NONE) {
       continue;
     }
-    int ancestor = crush->get_parent_of_type(osdid, barrier_id,
-					     crush_rule);
-    ancestors.insert(ancestor);
+    ancestors.insert(osdmap.get_osd_zone(osdid, crush_rule,
+                                         barrier_id));
   }
   if (ancestors.size() < barrier_count) {
     if (out) {

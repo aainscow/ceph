@@ -668,6 +668,22 @@ private:
 
   void _calc_up_osd_features();
 
+  /**
+   * Per-zone OSD membership cache for stretch pool peering helpers.
+   * Keyed by (crush_rule, barrier_bucket_type)
+   * Valid for the lifetime of this OSDMap since CRUSH topology and pool
+   * parameters are immutable once an epoch is committed.
+   */
+  struct StretchZoneCache {
+    std::vector<int> zones;
+    std::map<int, std::set<int>> zone_osds;
+    std::map<int, int> osd_to_zone;
+  };
+  mutable std::map<std::pair<int,int>, StretchZoneCache> stretch_zone_cache;
+
+  const StretchZoneCache& _get_stretch_zone_cache(int crush_rule,
+                                                   int barrier_type) const;
+
  public:
   bool have_crc() const { return crc_defined; }
   uint32_t get_crc() const { return crc; }
@@ -737,6 +753,8 @@ public:
 
     // NOTE: we do not copy crush.  note that apply_incremental will
     // allocate a new CrushWrapper, though.
+
+    stretch_zone_cache.clear();
   }
 
   // map info
@@ -1016,8 +1034,14 @@ public:
   bool subtree_is_down(int id, std::set<int> *down_cache) const;
   bool containing_subtree_is_down(CephContext *cct, int osd, int subtree_type, std::set<int> *down_cache) const;
 
-  bool at_least_one_zone_has_min_size(const pg_pool_t& pool, const std::vector<int>& acting) const ;
+  bool at_least_one_zone_has_min_size(const pg_pool_t& pool, const std::vector<int>& acting) const;
   unsigned stretch_ec_num_acting_below_min_size(const pg_pool_t& pool, const std::vector<int>& acting) const;
+
+  int get_osd_zone(int osd, int crush_rule, int barrier_type) const {
+    const auto& cache = _get_stretch_zone_cache(crush_rule, barrier_type);
+    auto it = cache.osd_to_zone.find(osd);
+    return it != cache.osd_to_zone.end() ? it->second : 0;
+  }
 
   bool subtree_type_is_down(CephContext *cct, int id, int subtree_type, std::set<int> *down_in_osds, std::set<int> *up_in_osds,
                             std::set<int> *subtree_up, std::unordered_map<int, std::set<int> > *subtree_type_down) const;
