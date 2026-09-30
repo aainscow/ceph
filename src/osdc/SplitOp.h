@@ -625,7 +625,8 @@ class ReplicaSplitOp : public SplitOp {
   void init_reference_sub_read() override;
 
   /**
-   * Acting indices that map to an existing OSD, in ascending order.
+   * Acting indices that map to an existing OSD, in ascending order; for
+   * a localized read of a stretch pool, only those in the local zone.
    * Populated by init_reference_sub_read(), consumed by init_read().
    */
   std::vector<int> valid_indices;
