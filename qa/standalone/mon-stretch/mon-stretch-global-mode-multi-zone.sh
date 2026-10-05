@@ -29,4 +29,17 @@ function TEST_multi_zone_pool_create_in_global_stretch_mode() {
     ! ceph osd erasure-code-profile ls | grep -qx ec2-k2-m1 || return 1
 }
 
+# A multi-zone pool keeps its own stretch values, which global stretch mode
+# would overwrite.
+function TEST_enable_stretch_mode_with_multi_zone_pool() {
+    local dir=$1
+    two_zone_cluster $dir 2 || return 1
+    ceph osd pool create rep2 replicated --num-zones 2 || return 1
+    local rule=$(ceph osd pool get rep2 crush_rule -f json | jq -r .crush_rule)
+
+    expect_failure $dir "'rep2' has num_zones 2" \
+        ceph mon enable_stretch_mode c $rule datacenter || return 1
+    test "$(ceph mon dump -f json | jq .global_stretch_mode)" = false || return 1
+}
+
 main mon-stretch-global-mode-multi-zone "$@"

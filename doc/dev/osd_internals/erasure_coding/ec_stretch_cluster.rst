@@ -1816,13 +1816,20 @@ the stretch values and sets ``crush_rule``, ``size`` and ``min_size``.
 
 **11.4.2 Enable/Disable Stretch Mode** (``try_enable_stretch_mode_pools``)
 
-*Currently rejects EC pools.* Change to accept EC pools with ``num_zones > 1``:
+A multi-zone pool (``num_zones = 2`` in R1), EC or replicated, is given its
+stretch values when it is created, not by ``ceph mon enable_stretch_mode``:
 
-- Set ``peering_crush_bucket_count``, ``peering_crush_bucket_target``,
+- ``peering_crush_bucket_count``, ``peering_crush_bucket_target``,
   ``peering_crush_bucket_barrier`` (same values as replica)
-- Set ``crush_rule`` to the stretch CRUSH rule
-- Set ``size = r × (k + m)`` (should already be correct from pool creation)
-- Set ``min_size = r × (k + m) − m``
+- ``crush_rule``: the stretch CRUSH rule built for the pool
+- ``size = r × (k + m)`` for an EC pool
+- ``min_size`` as set at creation, interpreted as in Section 11.2.1
+
+``ceph mon enable_stretch_mode`` enables global stretch mode, the legacy
+stretch mode, which manages every pool as a legacy stretch pool. It refuses
+with EINVAL while any pool, committed or being created, has
+``num_zones > 1``: "pool '<pool>' has num_zones <n>; global stretch mode
+cannot be enabled while multi-zone pools exist".
 
 **Pool Creation Gate**: Pool creation with ``num_zones > 1`` must be rejected if
 stretch mode is not already enabled on the cluster. This is validated in
@@ -2120,9 +2127,11 @@ recovery traverse the inter-zone link via the Primary.
       stretch mode, global or per-pool, is enabled or any pool has
       ``num_zones > 1``; multi-zone pools take their stretch values from
       ``num_zones`` (Section 11.4.1).
-   b. **Enable/Disable Stretch Mode for EC** (OSDMonitor): Allow
-      ``mon enable_stretch_mode`` when the cluster has EC pools with
-      ``num_zones > 1``. Set ``min_size = r × (k+m) − m`` (Section 11.4.2).
+   b. **Enable/Disable Stretch Mode** (OSDMonitor): Pools with
+      ``num_zones > 1`` get their stretch values at creation.
+      ``mon enable_stretch_mode`` refuses while such pools exist, and pool
+      creation refuses ``num_zones > 1`` in global stretch mode
+      (Section 11.4.2).
    c. **Stretch Mode Transitions for EC** (OSDMonitor): Implement
       degraded/recovery/healthy transitions. On zone failure, reduce
       ``min_size`` by ``k+m``; on recovery, restore it (Sections 11.4.3–5).

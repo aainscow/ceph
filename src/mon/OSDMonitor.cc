@@ -16705,7 +16705,17 @@ void OSDMonitor::try_enable_stretch_mode_pools(stringstream& ss, bool *okay,
    * are replicated pools with default size/min_size.
    */
   dout(20) << __func__ << dendl;
-  
+
+  string multi_zone_pool;
+  int num_zones = 0;
+  if (find_multi_zone_pool(&multi_zone_pool, &num_zones)) {
+    ss << "pool '" << multi_zone_pool << "' has num_zones " << num_zones
+       << "; global stretch mode cannot be enabled while multi-zone pools exist";
+    *okay = false;
+    *errcode = -EINVAL;
+    return;
+  }
+
   // Validate stretch mode pools
   validate_stretch_mode_pools(*osdmap.crush, osdmap.pool_name, osdmap.pools,
                               ss, okay, errcode, new_crush_rule);
