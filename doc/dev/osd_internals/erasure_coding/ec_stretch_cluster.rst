@@ -427,8 +427,10 @@ At creation the monitor loads the plugin named by the profile and sets:
 
 * ``size`` to ``num_zones`` × the plugin's chunk count (``k+m`` for jerasure and ISA).
   ``--size`` is ignored for EC pools.
-* ``min_size`` to ``k + min(1, m-1)``, not scaled by ``num_zones``: it applies to each zone's
-  block of ``k+m`` shards (Section 11.2).
+* ``min_size`` to ``k + min(1, m-1)``, not scaled by ``num_zones``. ``min_size`` is given for
+  one zone and interpreted as in Section 11.2.1: in healthy stretch mode a PG needs
+  ``min_size + k + m`` shards in total, and in degraded stretch mode ``min_size`` shards in the
+  surviving zone.
 * ``ec_data_shard_count`` and ``ec_coding_shard_count`` to ``k`` and ``m``.
 * ``nonprimary_shards``, when FastEC is enabled: raw shards ``1`` to ``k-1`` (through the
   plugin's chunk mapping) in every zone, that is shard ``s + (k+m) × zone``. For ``k=4``,
@@ -1638,12 +1640,13 @@ A replicated EC pool implicitly operates in stretch mode. Creation and configura
 simplified based on the final CLI iteration as noted above.
 
 - **CRUSH rule**: Set to the stretch CRUSH rule when stretch mode is active.
-- **min_size**: Managed by the monitor. Automatically adjusted during stretch
-  mode state transitions (Section 11.3).
+- **min_size**: Given for one zone at creation and not changed by stretch
+  mode state transitions; it is interpreted according to the stretch mode
+  state (Sections 11.2.1 and 11.3).
 - **Peering**: Uses stretch-aware acting set calculation with parameters
   adjusted by the monitor during state transitions.
-- **Failure**: Automatic ``min_size`` reduction, degraded/recovery/healthy
-  stretch mode transitions — all managed by OSDMonitor.
+- **Failure**: Degraded/recovery/healthy stretch mode transitions — all
+  managed by OSDMonitor.
 
 **Prerequisites for ``num_zones > 1`` Pool Creation**
 
@@ -1660,8 +1663,8 @@ simplified based on the final CLI iteration as noted above.
        pool create enables it (Section 11.4.2). A pool with
        ``num_zones > 2`` is created without stretch mode
      - ``num_zones = 2`` pools require the stretch mode state machine for
-       ``min_size`` management and zone failover; three-zone stretch mode
-       is a later release
+       the interpretation of ``min_size`` (Section 11.2.1) and zone
+       failover; three-zone stretch mode is a later release
    * - When stretch mode is already enabled, ``zone_failure_domain`` is the
        type of the stretch mode's dividing bucket
      - The pool's CRUSH rule and stretch values must align with the stretch
@@ -1723,9 +1726,12 @@ a per-zone basis:
 
 When stretch mode is enabled, the state machine behaves identically to the
 replica stretch mode state machine — leveraging the existing OSDMonitor
-infrastructure. As noted above, the explicit ``min_size`` setting is simply
-*interpreted* against this state machine, rather than actively mutated by the
-OSDMonitor upon transitions.
+infrastructure. As noted above, an EC pool's explicit ``min_size`` setting is
+simply *interpreted* against this state machine, rather than actively mutated
+by the OSDMonitor upon transitions. The OSDMonitor currently still changes the
+``min_size`` of replicated stretch pools, ``num_zones = 2`` pools included, on
+the degraded and healthy transitions (Sections 11.4.3 and 11.4.4); for
+multi-zone replicated pools this differs from the intent of Section 11.2.
 
 .. mermaid::
 
@@ -1746,66 +1752,69 @@ stretch mode, and is refused in recovery stretch mode (Section 11.4.2).
 
 **Two-Zone Transitions (--num-zones 2) — R1**
 
+An EC pool's ``min_size`` is given for one zone and keeps its value in every
+state. The table gives the number of shards a PG needs in each state, with
+``min_size`` interpreted as in Section 11.2.1; the pool tolerates
+``F = K + M − min_size`` failures.
+
 .. list-table::
    :header-rows: 1
 
    * - Stretch State
-     - min_size
+     - Shards a PG needs
      - Reasoning
    * - **Healthy**
-     - ``num_zones × (K+M) − M``
-     - Full redundancy; tolerate up to M failures
+     - ``min_size + K + M`` in total
+     - Up to F failures across both zones
    * - **Degraded** (one zone down)
-     - ``K``
-     - One zone lost (K+M shards gone). Surviving zone has K+M shards;
-       can tolerate M more losses. ``K+M − M = K``.
+     - ``min_size`` in the surviving zone
+     - The failed zone is ignored; up to F failures in the surviving zone
    * - **Recovery** (zone returning)
-     - ``K`` (same as degraded)
-     - Keep reduced min_size until resync is complete
+     - ``min_size`` in the surviving zone (same as degraded)
+     - The recovering zone is ignored until resync is complete
    * - **Healthy** (resync complete)
-     - ``num_zones × (K+M) − M``
-     - Full min_size restored
+     - ``min_size + K + M`` in total
+     - Up to F failures across both zones again
 
-**Concrete example — K=2, M=1, --num-zones 2 (size=6):**
+**Concrete example — K=2, M=1, --num-zones 2 (size=6, min_size=2):**
 
 .. list-table::
    :header-rows: 1
 
    * - Stretch State
-     - min_size
+     - Shards a PG needs
    * - Healthy
-     - 5
+     - 5 in total
    * - Degraded
-     - 2
+     - 2 in the surviving zone
    * - Recovery
-     - 2
+     - 2 in the surviving zone
    * - Healthy (restored)
-     - 5
+     - 5 in total
 
-**The degraded-mode formula:**
-
-- Healthy min_size: ``num_zones × (K+M) − M``
-- Degraded min_size: ``(num_zones−1) × (K+M) − M`` = healthy min_size minus
-  ``(K+M)``
-- **Rule: if a zone fails, reduce min_size by K+M. If a zone becomes
-  healthy again, increase min_size by K+M.**
+A zone failure does not change ``min_size``; it changes where the shards are
+counted (Section 11.2.1). The number of shards a PG needs falls by ``K+M``
+and they must all be in the surviving zone; it rises by ``K+M`` again,
+counted across both zones, when the cluster returns to healthy stretch mode.
 
 **Three-Zone Transitions (num_zones=3) — Later Release**
 
+With ``min_size`` interpreted as in Section 11.2.1:
+
 .. list-table::
    :header-rows: 1
 
    * - Stretch State
-     - min_size
-     - Example (K=2, M=1)
+     - Shards a PG needs
+     - Example (K=2, M=1, min_size=2)
    * - Healthy (3 zones)
-     - ``3(K+M) − M``
+     - ``min_size + 2(K+M)`` in total
      - 8
    * - One zone down
-     - ``2(K+M) − M``
+     - ``min_size + K + M`` in the two surviving zones
      - 5
    * - Two zones down
-     - ``K``
+     - ``min_size`` in the surviving zone
      - 2
 
 11.4 OSDMonitor Changes
@@ -1925,11 +1934,13 @@ In global stretch mode a new pool is not yet given
 **11.4.3 Degraded Stretch Mode** (``trigger_degraded_stretch_mode``)
 
 *Currently sets* ``newp.min_size = pgi.second.min_size / 2`` *for replica
-pools.* For EC pools, compute::
-
-    newp.min_size = p.min_size - (k + m)
-
-For a K=2, M=1, --num-zones 2 pool: ``min_size = 5 − 3 = 2``.
+pools.* This applies to every replicated pool with stretch values,
+``num_zones = 2`` pools included. For those it differs from the intent of
+Section 11.2, which interprets the ``min_size`` of a multi-zone replicated
+pool rather than changing it. An EC pool's ``min_size`` is not changed: in
+degraded stretch mode a PG needs ``min_size`` shards in the surviving zone
+(Section 11.2.1). For a K=2, M=1, --num-zones 2 pool with ``min_size = 2``
+that is 2 shards.
 
 Also set ``peering_crush_bucket_count`` and
 ``peering_crush_mandatory_member`` as for replicated pools.
@@ -1943,9 +1954,12 @@ healthy transition (11.4.4) restores it with the other stretch pools.
 **11.4.4 Healthy Stretch Mode** (``trigger_healthy_stretch_mode``)
 
 *Currently reads* ``mon_stretch_pool_min_size`` *config for replica pools.*
-For EC pools, compute from the EC profile::
-
-    newp.min_size = r × (k + m) − m
+The ``min_size`` of every replicated pool with stretch values,
+``num_zones = 2`` pools included, is set to ``mon_stretch_pool_min_size``,
+whatever it was before the degraded transition. For ``num_zones = 2`` pools
+this differs from the intent of Section 11.2, as in 11.4.3.
+An EC pool's ``min_size`` is not changed: in healthy stretch mode a PG needs
+``min_size + k + m`` shards in total (Section 11.2.1).
 
 **11.4.5 Recovery Stretch Mode** (``trigger_recovery_stretch_mode``)
 
@@ -2015,7 +2029,9 @@ identity: removing an OSD must not cause any zone to drop below K shards.
 For EC pools, additionally verify:
 
 - The acting set includes at least K shards in at least one surviving zone
-- In healthy mode, all zones have ``K+M`` shards
+- In healthy mode, the acting set has at least
+  ``min_size + (num_zones − 1) × (K + M)`` shards across all zones
+  (``min_size + K + M`` for ``num_zones = 2``; Section 11.2.1)
 
 11.6 Relationship to ``peering_crush_bucket_*`` Fields
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2204,8 +2220,9 @@ recovery traverse the inter-zone link via the Primary.
       erasure coded pools exist, and pool creation refuses ``num_zones > 1``
       in global stretch mode (Section 11.4.2).
    c. **Stretch Mode Transitions for EC** (OSDMonitor): Implement
-      degraded/recovery/healthy transitions. On zone failure, reduce
-      ``min_size`` by ``k+m``; on recovery, restore it (Sections 11.4.3–5).
+      degraded/recovery/healthy transitions. An EC pool's ``min_size`` is
+      not changed; it is interpreted for the stretch mode state as in
+      Section 11.2.1 (Sections 11.3, 11.4.3–5).
    d. **EC Peering with Stretch Constraints** (PeeringState): Create
       ``calc_ec_acting_stretch`` to respect both shard identity and CRUSH
       ``bucket_max`` constraints. Extend async recovery checks
