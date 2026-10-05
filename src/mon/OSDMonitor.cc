@@ -14619,6 +14619,17 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       goto reply_no_propose;
     }
 
+    if (string stretch_pool; num_zones > 1 &&
+        find_pool([](const pg_pool_t& pool) {
+          return pool.is_stretch_pool() && pool.get_num_zone() <= 1;
+        }, &stretch_pool)) {
+      ss << "pool '" << stretch_pool << "' is an individual stretch pool; "
+         << "pools with num_zones > 1 cannot be created while individual "
+         << "stretch pools exist";
+      err = -EINVAL;
+      goto reply_no_propose;
+    }
+
     if (pool_type == pg_pool_t::TYPE_ERASURE) {
       if (has_ec_params) {
         if (k < 2) {

@@ -205,6 +205,8 @@ These are the primary parameters required for standard deployments.
     (``ceph mon enable_stretch_mode``) a replicated pool's size is ``mon_stretch_pool_size``.
   - *Global Stretch Mode*: ``num_zones`` greater than 1 is refused while global stretch mode is
     enabled (Section 11.4.2).
+  - *Individual Stretch Pools*: ``num_zones`` greater than 1 is refused while any pool is an
+    individual stretch pool (Section 11.4.1).
 
 
 2.1.4 Advanced Parameters
@@ -1842,6 +1844,13 @@ EINVAL:
   '<pool>' has num_zones <n>; <command> is for individual stretch pools and
   cannot be used while multi-zone pools exist".
 
+In the other direction, ``ceph osd pool create`` refuses ``num_zones > 1``
+with EINVAL while any pool, committed or being created, is an individual
+stretch pool (stretch values and ``num_zones = 1``), before the pool's
+profile or CRUSH rule is created: "pool '<pool>' is an individual stretch
+pool; pools with num_zones > 1 cannot be created while individual stretch
+pools exist".
+
 ``stretch_set`` also refuses erasure coded pools: "stretched
 pools must be replicated; '<pool>' is erasure-coded". ``stretch_unset``
 accepts an erasure coded pool only with ``size`` ``k+m`` and ``min_size``
@@ -1893,7 +1902,8 @@ stretch mode, keeps its earlier behaviour and does not take multi-zone pools.
 While it is enabled, or being enabled, ``ceph osd pool create`` refuses
 ``num_zones > 1`` with EINVAL, before the pool's profile or CRUSH rule is
 created: "pools with num_zones > 1 cannot be created while stretch mode is
-enabled with 'ceph mon enable_stretch_mode'".
+enabled with 'ceph mon enable_stretch_mode'". It also refuses
+``num_zones > 1`` while an individual stretch pool exists (Section 11.4.1).
 
 Otherwise, creating a pool with ``num_zones = 2`` checks the pool's stretch
 values over its ``zone_failure_domain`` (``datacenter`` by default), whether
@@ -2213,7 +2223,8 @@ recovery traverse the inter-zone link via the Primary.
       refuses EC pools, and ``osd pool stretch set/unset`` are refused while
       stretch mode, global or per-pool, is enabled or any pool has
       ``num_zones > 1``; multi-zone pools take their stretch values from
-      ``num_zones`` (Section 11.4.1).
+      ``num_zones``, and pool creation refuses ``num_zones > 1`` while an
+      individual stretch pool exists (Section 11.4.1).
    b. **Enable/Disable Stretch Mode** (OSDMonitor): Pools with
       ``num_zones > 1`` get their stretch values at creation.
       ``mon enable_stretch_mode`` refuses while such pools or, as on main,

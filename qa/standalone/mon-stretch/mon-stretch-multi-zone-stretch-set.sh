@@ -81,4 +81,35 @@ function TEST_stretch_pool_commands_with_three_zone_pool() {
     test "$(pool_field rep peering_crush_bucket_count)" = 2 || return 1
 }
 
+# The reverse: no pool with num_zones > 1 is created while an individual
+# stretch pool exists.
+function TEST_multi_zone_pool_create_with_stretch_pool() {
+    local dir=$1
+    two_zone_cluster $dir || return 1
+
+    ceph osd pool create rep 8 8 replicated replicated_rule || return 1
+    ceph osd pool stretch set rep 2 2 datacenter replicated_rule 4 2 || return 1
+
+    expect_failure $dir "'rep' is an individual stretch pool" \
+        ceph osd pool create rep2 replicated --num-zones 2 || return 1
+    expect_failure $dir "'rep' is an individual stretch pool" \
+        ceph osd pool create ec2 erasure --num-zones 2 --k 2 --m 1 || return 1
+    for name in rep2 ec2; do
+        ! ceph osd pool ls | grep -qx $name || return 1
+        ! ceph osd crush rule ls | grep -qx $name || return 1
+    done
+    ! ceph osd erasure-code-profile ls | grep -qx ec2-k2-m1 || return 1
+    test "$(ceph osd dump -f json | jq .stretch_mode.stretch_mode_enabled)" = false || return 1
+
+    test "$(pool_field rep peering_crush_bucket_count)" = 2 || return 1
+    test "$(pool_field rep peering_crush_bucket_target)" = 2 || return 1
+    test "$(pool_field rep size)" = 4 || return 1
+    test "$(pool_field rep min_size)" = 2 || return 1
+
+    # the stretch pool was the only obstacle
+    ceph osd pool stretch unset rep replicated_rule 3 2 || return 1
+    ceph osd pool create rep2 replicated --num-zones 2 || return 1
+    test "$(pool_field rep2 peering_crush_bucket_count)" = 2 || return 1
+}
+
 main mon-stretch-multi-zone-stretch-set "$@"

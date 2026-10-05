@@ -106,7 +106,9 @@ Individual stretch pools and stretch mode cannot be combined. While stretch
 mode is enabled, it manages the stretch values of every pool itself, and
 ``ceph osd pool stretch set`` and ``ceph osd pool stretch unset`` fail. They
 also fail while any pool was created with ``--num-zones`` greater than 1,
-which takes its stretch values from its number of zones.
+which takes its stretch values from its number of zones. Conversely,
+``ceph osd pool create`` refuses ``--num-zones`` greater than 1 while any
+individual stretch pool exists.
 
 
 Limitations
