@@ -8583,16 +8583,6 @@ int OSDMonitor::prepare_new_pool(string& name,
   if (num_zones > 1 && zone_failure_domain.empty())
     effective_zone_failure_domain = ZONE_FAILURE_DOMAIN_DEFAULT;  
 
-  if (mon.monmap->global_stretch_mode_enabled && num_zones > 1) {
-    CrushWrapper newcrush = _get_pending_crush();
-    r = validate_stretch_mode_new_pool(newcrush, crush_rule, osdmap.stretch_bucket_count, osdmap.stretch_mode_bucket, 
-      osdmap.pools, effective_zone_failure_domain, ss);
-    if (r) {
-      dout(10) << "validate_stretch_mode_pool returns " << r << dendl;
-      return r;
-    }
-  }
-
   unsigned size, min_size;
   r = prepare_pool_size(pool_type, erasure_code_profile, repl_size,
                         num_zones, num_replica_per_zone, &size, &min_size, ss);
@@ -14669,6 +14659,14 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       goto reply_no_propose;
     }
 
+    if (num_zones > 1 && (mon.monmap->global_stretch_mode_enabled ||
+                          mon.monmon()->pending_map.global_stretch_mode_enabled)) {
+      ss << "pools with num_zones > 1 cannot be created while stretch mode is "
+            "enabled with 'ceph mon enable_stretch_mode'";
+      err = -EINVAL;
+      goto reply_no_propose;
+    }
+
     if (pool_type == pg_pool_t::TYPE_ERASURE) {
       if (has_ec_params) {
         if (k < 2) {
@@ -16728,77 +16726,6 @@ void OSDMonitor::try_enable_stretch_mode_pools(stringstream& ss, bool *okay,
   }
   *okay = true;
   return;
-}
-
-void OSDMonitor::extract_sites_from_crush_rule(CrushWrapper& crush, set<int>& rule_sites, const set<int>& rule_roots, int dividing_id) {
-  for (int root : rule_roots) {
-    // Take root is above sites, walk down to find them (e.g., "take default")
-    vector<int> children;
-    crush.get_children_of_type(root, dividing_id, &children, false);
-    for (int child : children) {
-      int base_id;
-      int base_class;
-      crush.split_id_class(child, &base_id, &base_class);
-      rule_sites.insert(base_id);
-    }
-  }
-}
-
-int OSDMonitor::validate_stretch_mode_new_pool(CrushWrapper& crush, int new_crush_rule, int stretch_bucket_count, int stretch_mode_bucket, 
-  const mempool::osdmap::map<int64_t, pg_pool_t>& pools, const string& zone_failure_domain, ostream *ss)
-{
-  int dividing_id = crush.get_type_id(zone_failure_domain);
-  if (dividing_id < 0) {
-    *ss << "type '" << zone_failure_domain << "' does not exist";
-    return -EINVAL;
-  }
-  // Get the take roots from the rule
-  set<int> rule_roots;
-  crush.find_takes_by_rule(new_crush_rule, &rule_roots);
-
-  if (rule_roots.empty()) {
-    if (ss) {
-      *ss << "CRUSH rule " << new_crush_rule << " has no take operations";
-    }
-    return -EINVAL;
-  }
-  if (dividing_id != stretch_mode_bucket) {
-    if (ss) {
-      *ss << "CRUSH rule " << new_crush_rule << " is stretched across " << crush.get_type_name(dividing_id)
-          << " instead of " << crush.get_type_name(stretch_mode_bucket);
-    }
-    return -EINVAL;
-  }
-  // For each take root, find all children at the dividing type level
-  set<int> rule_sites;
-  extract_sites_from_crush_rule(crush, rule_sites, rule_roots, dividing_id);
-  if (int(rule_sites.size()) != stretch_bucket_count) {
-    if (ss) {
-      *ss << "CRUSH rule " << new_crush_rule << " covers " << rule_sites.size()
-          << " " << crush.get_type_name(dividing_id) << " buckets, but stretch mode requires exactly " << stretch_bucket_count;
-    }
-    return -EINVAL;
-  }
-
-  // Verify the sites match the expected stretch mode sites
-  for (const auto& [poolid, pool] : pools) {
-    if (pool.is_stretch_pool()) {
-      int crush_rule = pool.crush_rule;
-      int existing_dividing_id = pool.peering_crush_bucket_barrier;
-      set<int> existing_rule_roots;
-      crush.find_takes_by_rule(crush_rule, &existing_rule_roots);
-      set<int> existing_rule_sites;
-      extract_sites_from_crush_rule(crush, existing_rule_sites, existing_rule_roots, existing_dividing_id);
-      if (existing_rule_sites != rule_sites) {
-        if (ss) {
-          *ss << "CRUSH rule " << new_crush_rule << " uses different "
-              << crush.get_type_name(dividing_id) << " buckets than configured for stretch mode";
-        }
-        return -EINVAL;
-      }
-    }
-  }
-  return 0;
 }
 
 // the surviving bucket that degraded stretch mode made mandatory for the

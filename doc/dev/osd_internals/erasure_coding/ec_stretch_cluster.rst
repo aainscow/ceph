@@ -203,6 +203,8 @@ These are the primary parameters required for standard deployments.
     replicated pool created with ``num_zones`` greater than 1 and without ``--size``, it is
     ``num_zones × num_replica_per_zone`` (4 for 2 zones of 2 replicas). In global stretch mode
     (``ceph mon enable_stretch_mode``) a replicated pool's size is ``mon_stretch_pool_size``.
+  - *Global Stretch Mode*: ``num_zones`` greater than 1 is refused while global stretch mode is
+    enabled (Section 11.4.2).
 
 
 2.1.4 Advanced Parameters
@@ -244,7 +246,7 @@ These parameters are intended for advanced users and offer finer control over th
   - *Purpose*: Create a bespoke CRUSH rule for advanced use cases not covered by the auto rule generation above.
   - *Note*: Mutually exclusive with ``--root``, ``--osd_failure_domain`` and ``--zone_failure_domain``
   - *Global Stretch Mode*: After ``ceph mon enable_stretch_mode``, every new replicated pool
-    is a stretch pool. Without ``--rule`` and without ``--num_zones`` greater than 1, the pool
+    is a stretch pool, and ``--num_zones`` greater than 1 is refused. Without ``--rule``, the pool
     uses the stretch CRUSH rule of the existing replicated stretch pools, as in earlier
     releases, and ``--root``, ``--zone_failure_domain``, ``--osd_failure_domain`` and
     ``--class`` are rejected. Global stretch mode keeps its earlier behaviour and does not take
@@ -1826,14 +1828,21 @@ the stretch values and sets ``crush_rule``, ``size`` and ``min_size``.
 stretch mode is not already enabled on the cluster. This is validated in
 ``OSDMonitor::prepare_new_pool``.
 
+Global stretch mode, enabled with ``ceph mon enable_stretch_mode``, is the
+legacy stretch mode and keeps its earlier behaviour; it does not take
+multi-zone pools. While it is enabled, or being enabled, ``ceph osd pool
+create`` refuses ``num_zones > 1`` with EINVAL, before the pool's profile or
+CRUSH rule is created: "pools with num_zones > 1 cannot be created while
+stretch mode is enabled with 'ceph mon enable_stretch_mode'".
+
 Creating a pool with ``num_zones = 2`` while stretch mode is already enabled
 configures only the new pool; it does not change the cluster's stretch mode
 state. In degraded or recovery stretch mode the new pool is given the degraded
 ``peering_crush_bucket_count`` and the ``peering_crush_mandatory_member`` that
 the existing stretch pools have (Section 11.6), so it can go active in the
 surviving zone, and the healthy transition (11.4.4) restores it with them.
-After ``ceph mon enable_stretch_mode`` the new pool's
-``peering_crush_mandatory_member`` is not yet set this way.
+In global stretch mode a new pool is not yet given
+``peering_crush_mandatory_member`` this way.
 
 **11.4.3 Degraded Stretch Mode** (``trigger_degraded_stretch_mode``)
 

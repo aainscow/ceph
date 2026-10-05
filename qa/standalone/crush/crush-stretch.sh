@@ -446,85 +446,6 @@ function TEST_stretch_ec_with_class() {
     ceph osd crush rule create-erasure stretch_hdd stretch_ec_hdd --num-zones 2 || return 1
 }
 
-# Test adding a pool with different sites than other stretch mode pools
-function TEST_stretch_diff_sites() {
-    local dir=$1
-    run_mon $dir a --public-addr=$CEPH_MON_A || return 1
-    run_mon $dir b --public-addr=$CEPH_MON_B || return 1
-    run_mon $dir c --public-addr=$CEPH_MON_C || return 1
-    run_osd $dir 0 || return 1
-    run_osd $dir 1 || return 1
-    run_osd $dir 2 || return 1
-    run_osd $dir 3 || return 1
-    run_osd $dir 4 || return 1
-    run_osd $dir 5 || return 1
-    run_osd $dir 6 || return 1
-    run_osd $dir 7 || return 1
-
-    ceph osd crush add-bucket dc1 datacenter
-    ceph osd crush add-bucket dc2 datacenter
-    ceph osd crush add-bucket host1 host
-    ceph osd crush add-bucket host2 host
-    ceph osd crush add-bucket host3 host
-    ceph osd crush add-bucket host4 host
-    ceph osd crush add-bucket host5 host
-    ceph osd crush add-bucket host6 host
-
-    ceph osd crush move dc1 root=default
-    ceph osd crush move dc2 root=default
-    ceph osd crush move host1 datacenter=dc1
-    ceph osd crush move host2 datacenter=dc1
-    ceph osd crush move host3 datacenter=dc2
-    ceph osd crush move host4 datacenter=dc2
-    ceph osd crush move host5 datacenter=dc1
-    ceph osd crush move host6 datacenter=dc2
-
-    ceph osd crush set osd.0 1.0 host=host1
-    ceph osd crush set osd.1 1.0 host=host2
-    ceph osd crush set osd.2 1.0 host=host3
-    ceph osd crush set osd.3 1.0 host=host4
-    ceph osd crush set osd.4 1.0 host=host5
-    ceph osd crush set osd.5 1.0 host=host6
-
-    ceph osd crush rm-device-class osd.0 osd.1 osd.2 osd.3 osd.4 osd.5
-    ceph osd crush set-device-class ssd osd.0 osd.1 osd.2 osd.3
-    ceph osd crush set-device-class hdd osd.4 osd.5
-
-    ceph osd pool create data0
-    ceph osd pool create data1
-
-    ceph osd crush rule create-stretch-replicated --rule-name=stretch_ssd --class=ssd
-    ceph mon set election_strategy connectivity
-
-    ceph mon set_location a datacenter=dc1
-    ceph mon set_location b datacenter=dc2
-    ceph mon set_location c datacenter=arbiter
-
-    ceph mon enable_stretch_mode c stretch_ssd datacenter
-
-    # create pool with crush rule with different sites
-    ceph osd crush add-bucket dc3 datacenter
-
-    ceph osd getcrushmap -o $dir/crushmap.bin || return 1
-    crushtool -d $dir/crushmap.bin -o $dir/crushmap.txt || return 1
-    cat >> $dir/crushmap.txt <<EOF
-    rule bad_rule {
-        id 4
-        type replicated
-        step take dc1
-        step chooseleaf firstn 2 type host
-        step emit
-        step take dc3
-        step chooseleaf firstn 2 type host
-        step emit
-    }
-EOF
-    crushtool -c $dir/crushmap.txt -o $dir/crushmap.new.bin || return 1
-    ceph osd setcrushmap -i $dir/crushmap.new.bin || return 1
-
-    ceph osd pool create data2 --rule bad_rule --num-zones 2 2>&1 | grep "CRUSH rule 4 uses different datacenter buckets than configured for stretch mode" || return 1
-}
-
 function TEST_stretch_replica_device_class_pools() {
     local dir=$1
     run_mon $dir a --public-addr=$CEPH_MON_A || return 1
@@ -592,9 +513,9 @@ function TEST_stretch_replica_device_class_pools() {
 
     ceph mon enable_stretch_mode c stretch_ssd datacenter
 
-    ceph osd pool create data0 replicated --rule stretch_ssd --num-zones 2 || return 1
+    ceph osd pool create data0 replicated --rule stretch_ssd || return 1
 
-    ceph osd pool create pool_hdd replicated --rule stretch_hdd --num-zones 2 || return 1
+    ceph osd pool create pool_hdd replicated --rule stretch_hdd || return 1
 
     ceph osd pool get pool_ssd crush_rule | grep "stretch_ssd" || return 1
     ceph osd pool get pool_hdd crush_rule | grep "stretch_hdd" || return 1
@@ -743,12 +664,7 @@ function TEST_stretch_diff_bucket_barrier() {
     ceph mon set election_strategy connectivity
 
     ceph mon enable_stretch_mode c stretch_zone zone
-    
-    # Wait for stretch mode to be fully committed before testing validation
     ceph mon dump | grep "stretch_mode_enabled 1" || return 1
-
-    ceph osd pool create pool_dc replicated --zone-failure-domain=datacenter --num-zones 2 --class=ssd 2>&1 | grep "Error EINVAL: number of zones 0 for type datacenter is not equal to num_failure_domains 2" || return 1
-
 }
 
 main crush-stretch "$@"
