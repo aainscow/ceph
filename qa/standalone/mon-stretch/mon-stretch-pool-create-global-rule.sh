@@ -24,7 +24,7 @@ function TEST_stretch_mode_pool_create_without_rule() {
     # such a pool gets the stretch rule, so options that would build a rule
     # for it are refused rather than ignored
     for opt in "--root default" "--zone_failure_domain datacenter" "--osd_failure_domain host" "--class hdd"; do
-        ceph osd pool create plain2 8 $opt 2>&1 | grep "without num_zones in stretch mode" || return 1
+        ceph osd pool create plain2 8 $opt 2>&1 | grep "cannot be used in global stretch mode" || return 1
     done
     ! ceph osd pool ls | grep -qx plain2 || return 1
 }

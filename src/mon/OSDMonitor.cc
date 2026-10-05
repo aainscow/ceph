@@ -8315,15 +8315,19 @@ int OSDMonitor::prepare_pool_crush_rule(const unsigned pool_type,
           if (num_zones > 1) {
 	    int err = crush_rule_create_replica(pool_name, root, num_zones, num_replica_per_zone, zone_failure_domain, osd_failure_domain, device_class, false, crush_rule, ss);
             return handle_crush_rule_creation_result(err, pool_name);
-          } else if (mon.monmap->global_stretch_mode_enabled) {
-            if (!root.empty() || !zone_failure_domain.empty() ||
-                !osd_failure_domain.empty() || !device_class.empty()) {
-              *ss << "crush parameters (crush_root, zone_failure_domain, "
-                  << "osd_failure_domain, crush_device_class) cannot be used "
-                  << "without num_zones in stretch mode, where the pool uses "
-                  << "the stretch rule";
-              return -EINVAL;
+          } else if (!root.empty() || !zone_failure_domain.empty() ||
+                     !osd_failure_domain.empty() || !device_class.empty()) {
+            *ss << "crush parameters (crush_root, zone_failure_domain, "
+                << "osd_failure_domain, crush_device_class) ";
+            if (mon.monmap->global_stretch_mode_enabled) {
+              *ss << "cannot be used in global stretch mode, where the pool "
+                  << "uses the stretch rule unless --rule is given";
+            } else {
+              *ss << "require num_zones > 1 for a replicated pool without a "
+                  << "rule, which uses the default rule";
             }
+            return -EINVAL;
+          } else if (mon.monmap->global_stretch_mode_enabled) {
             *crush_rule = get_replicated_stretch_crush_rule();
 	  } else {
 	    // Use default rule
