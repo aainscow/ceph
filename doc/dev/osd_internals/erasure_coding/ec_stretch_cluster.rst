@@ -1652,13 +1652,22 @@ simplified based on the final CLI iteration as noted above.
 
    * - Requirement
      - Reason
-   * - All OSDs have the ``num_zones > 1`` feature bit
-     - Ensures all OSDs understand extended acting-set semantics (Section 15)
-   * - Stretch mode must be enabled on the cluster
-     - ``num_zones > 1`` pools require the stretch mode state machine for
-       ``min_size`` management and zone failover
-   * - ``zone_failure_domain`` must match the stretch mode failure domain
-     - The CRUSH rule must align with the stretch cluster topology
+   * - An erasure coded pool supports FastEC (Section 2.1.5)
+     - Creation enables ``allow_ec_optimizations`` and fails if it cannot,
+       for the reasons in Section 2.1.5; this is the only release check,
+       there is no OSD feature bit
+   * - For ``num_zones = 2``: stretch mode is enabled on the cluster, or the
+       pool create enables it (Section 11.4.2). A pool with
+       ``num_zones > 2`` is created without stretch mode
+     - ``num_zones = 2`` pools require the stretch mode state machine for
+       ``min_size`` management and zone failover; three-zone stretch mode
+       is a later release
+   * - When stretch mode is already enabled, ``zone_failure_domain`` is the
+       type of the stretch mode's dividing bucket
+     - The pool's CRUSH rule and stretch values must align with the stretch
+       cluster topology. This is an operator requirement: the monitor does
+       not compare a new ``num_zones = 2`` pool's ``zone_failure_domain``
+       with the dividing bucket type (Section 11.4.2)
 
 11.2 Minimum PG Size Semantics
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1721,13 +1730,19 @@ OSDMonitor upon transitions.
 .. mermaid::
 
    stateDiagram-v2
-       [*] --> Healthy: enable_stretch_mode
+       [*] --> Healthy: first num_zones=2 pool created, or legacy enable_stretch_mode
        Healthy --> Degraded: zone failure detected
        Degraded --> Recovery: failed zone returns
        Recovery --> Healthy: all PGs clean
-       Healthy --> [*]: disable_stretch_mode
+       Healthy --> [*]: last stretch pool deleted, or legacy disable_stretch_mode
+       Degraded --> [*]: last stretch pool deleted, or legacy disable_stretch_mode
+       Recovery --> [*]: last stretch pool deleted
        Degraded --> Recovery: force_recovery_stretch_mode CLI
        Recovery --> Healthy: force_healthy_stretch_mode CLI
+
+Outside global stretch mode, deleting the last stretch pool ends stretch mode
+in any state. ``ceph mon disable_stretch_mode`` applies only to global
+stretch mode, and is refused in recovery stretch mode (Section 11.4.2).
 
 **Two-Zone Transitions (--num-zones 2) — R1**
 
@@ -1854,23 +1869,56 @@ cannot create EC pools!"), and ``ceph osd pool stretch set`` refuses it
 (11.4.1). The pools ``ceph mon disable_stretch_mode`` resets to the default
 ``size``, ``min_size`` and CRUSH rule are therefore all replicated.
 
-**Pool Creation Gate**: Pool creation with ``num_zones > 1`` must be rejected if
-stretch mode is not already enabled on the cluster. This is validated in
-``OSDMonitor::prepare_new_pool``.
+``ceph mon disable_stretch_mode`` applies only to global stretch mode; outside
+it the command is refused with EINVAL, "global stretch mode is already
+disabled", and in recovery stretch mode with EBUSY, "stretch mode is
+currently recovering and cannot be disabled". Stretch mode enabled by a pool
+create (below) ends when the last stretch pool is deleted, whatever the
+stretch mode state.
 
-Global stretch mode, enabled with ``ceph mon enable_stretch_mode``, is the
-legacy stretch mode and keeps its earlier behaviour; it does not take
-multi-zone pools. While it is enabled, or being enabled, ``ceph osd pool
-create`` refuses ``num_zones > 1`` with EINVAL, before the pool's profile or
-CRUSH rule is created: "pools with num_zones > 1 cannot be created while
-stretch mode is enabled with 'ceph mon enable_stretch_mode'".
+**Pool Creation Gate**: Stretch mode does not have to be enabled before a
+multi-zone pool is created: creating a pool with ``num_zones = 2`` enables it
+(``OSDMonitor::prepare_new_pool``). The stretch mode gate is global stretch
+mode, enabled with ``ceph mon enable_stretch_mode``, which is the legacy
+stretch mode, keeps its earlier behaviour and does not take multi-zone pools.
+While it is enabled, or being enabled, ``ceph osd pool create`` refuses
+``num_zones > 1`` with EINVAL, before the pool's profile or CRUSH rule is
+created: "pools with num_zones > 1 cannot be created while stretch mode is
+enabled with 'ceph mon enable_stretch_mode'".
+
+Otherwise, creating a pool with ``num_zones = 2`` checks the pool's stretch
+values over its ``zone_failure_domain`` (``datacenter`` by default), whether
+or not stretch mode is already enabled: the CRUSH map has exactly two buckets
+of that type, and their CRUSH weights differ by no more than
+``mon_stretch_max_bucket_weight_delta`` times the smaller one. Unless monitor
+stretch mode is already enabled or being enabled, the create also checks that
+it can be enabled over that type, with the monitor checks
+``ceph mon enable_stretch_mode`` makes when no tiebreaker is given: the CRUSH
+map has exactly two buckets of that type, every monitor has a location of that
+type, each of the two buckets has a monitor, and exactly one monitor, which
+becomes the tiebreaker, is in a third location. If the election strategy is
+not yet ``connectivity``, the monitors in quorum must support it. A failed check
+refuses the create with "Failed to validate monitor stretch mode: ..." or
+"Failed to validate pool stretch mode: ...". Only once every check of the
+create has passed does the monitor switch to the ``connectivity`` election
+strategy, set the tiebreaker, enable stretch mode in the monitor map and in
+the OSDMap with the zone failure domain as the dividing bucket type, and give
+the pool its stretch values, so a failed create leaves stretch mode as it was.
+A pool with ``num_zones`` greater than 2 (three zones are a later release) is
+not refused, but it is given no stretch values and does not enable stretch
+mode.
 
 Creating a pool with ``num_zones = 2`` while stretch mode is already enabled
-configures only the new pool; it does not change the cluster's stretch mode
-state. In degraded or recovery stretch mode the new pool is given the degraded
-``peering_crush_bucket_count`` and the ``peering_crush_mandatory_member`` that
-the existing stretch pools have (Section 11.6), so it can go active in the
-surviving zone, and the healthy transition (11.4.4) restores it with them.
+makes the pool checks above and configures only the new pool; it does not
+change the cluster's stretch mode state. The monitor does not compare the
+pool's ``zone_failure_domain`` with the type of the stretch mode's dividing
+bucket: the pool's ``peering_crush_bucket_barrier`` is its own
+``zone_failure_domain``, and giving the type stretch mode was enabled over is
+up to the operator (Section 11.1). In degraded or recovery stretch mode
+the new pool is given the degraded ``peering_crush_bucket_count`` and the
+``peering_crush_mandatory_member`` that the existing stretch pools have
+(Section 11.6), so it can go active in the surviving zone, and the healthy
+transition (11.4.4) restores it with them.
 In global stretch mode a new pool is not yet given
 ``peering_crush_mandatory_member`` this way.
 
@@ -2295,18 +2343,13 @@ identical to a conventional EC pool.
 
 Pools with ``num_zones > 1`` introduce a larger acting set (``num_zones × (k + m)`` shards),
 new CRUSH rules, and — in later releases — new inter-OSD messages
-(Replicate Transaction, Read Permissions, etc.). To prevent mixed-version
-clusters from misinterpreting these pools:
+(Replicate Transaction, Read Permissions, etc.).
 
-- A new **OSD feature bit** will gate the creation of ``num_zones > 1`` profiles. The
-  monitor will reject pool creation or EC profile changes that set ``num_zones > 1``
-  unless all OSDs in the cluster advertise this feature bit.
-- This ensures that every OSD in the cluster understands the extended acting
-  set semantics, shard numbering, and any new message types before an ``num_zones > 1``
-  pool can be instantiated.
-- No data migration is required when upgrading: the feature bit is purely an
-  admission control mechanism. Once all OSDs are upgraded and the bit is
-  present, ``num_zones > 1`` pools can be created normally.
+- There is no OSD feature bit for ``num_zones > 1`` pools. The only release
+  check is the FastEC requirement of Section 2.1.5: creating an erasure coded
+  pool with ``num_zones > 1`` enables ``allow_ec_optimizations``, which fails
+  while ``require_osd_release`` is older than tentacle.
+- No data migration is required when upgrading.
 
 .. note::
    **Upgrade Scenarios**: We are still thinking through upgrade scenarios from older 
