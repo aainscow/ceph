@@ -164,18 +164,22 @@ TEST_F(OSDMonitorStretchTest, ReplicatedPoolWrongMinSizeFails) {
   EXPECT_NE(ss.str().find("default size/min_size"), string::npos);
 }
 
-// Test success when EC pool is used (EC pools are allowed in stretch mode)
-TEST_F(OSDMonitorStretchTest, ECPoolSuccess) {
+// Test failure when an EC pool exists, as on main, whatever the rule type
+TEST_F(OSDMonitorStretchTest, ECPoolFails) {
   create_ec_pool(1, "test_ec_pool", 2, 1, 1);
-  
-  bool okay = false;
-  int errcode = 0;
-  stringstream ss;
-  
-  validate_pools("ec_rule", &okay, &errcode, ss);
-  
-  EXPECT_TRUE(okay) << "EC pool validation failed: " << ss.str();
-  EXPECT_EQ(errcode, 0);
+
+  for (const char *rule : {"ec_rule", "replicated_rule"}) {
+    SCOPED_TRACE(rule);
+    bool okay = false;
+    int errcode = 0;
+    stringstream ss;
+
+    validate_pools(rule, &okay, &errcode, ss);
+
+    EXPECT_FALSE(okay) << "Should fail with an EC pool";
+    EXPECT_EQ(errcode, -EINVAL);
+    EXPECT_EQ(ss.str(), "stretched pools must be replicated; 'test_ec_pool' is erasure-coded");
+  }
 }
 
 // Test failure when specified CRUSH rule does not exist
@@ -210,23 +214,6 @@ TEST_F(OSDMonitorStretchTest, WrongRuleTypeReplicatedPoolFails) {
   EXPECT_NE(ss.str().find("not a replicated rule"), string::npos);
 }
 
-// Test failure when EC pool is paired with replicated CRUSH rule
-TEST_F(OSDMonitorStretchTest, WrongRuleTypeECPoolFails) {
-  create_ec_pool(1, "ec_pool", 2, 1, 1);
-  
-  bool okay = false;
-  int errcode = 0;
-  stringstream ss;
-  
-  // Try to use replicated rule for EC pool
-  validate_pools("replicated_rule", &okay, &errcode, ss);
-  
-  EXPECT_FALSE(okay) << "Should fail with rule type mismatch";
-  EXPECT_EQ(errcode, -EINVAL);
-  EXPECT_NE(ss.str().find("erasure-coded but crush rule"), string::npos);
-  EXPECT_NE(ss.str().find("not an erasure-coded rule"), string::npos);
-}
-
 // Test success when multiple replicated pools all have correct configuration
 TEST_F(OSDMonitorStretchTest, MultipleReplicatedPoolsSuccess) {
   create_replicated_pool(1, "pool1", 3, 2, 0);
@@ -243,20 +230,21 @@ TEST_F(OSDMonitorStretchTest, MultipleReplicatedPoolsSuccess) {
   EXPECT_EQ(errcode, 0);
 }
 
-// Test success when multiple EC pools all have correct configuration
-TEST_F(OSDMonitorStretchTest, MultipleECPoolsSuccess) {
-  create_ec_pool(1, "ec_pool1", 2, 1, 1);
-  create_ec_pool(2, "ec_pool2", 4, 2, 1);
-  create_ec_pool(3, "ec_pool3", 3, 2, 1);
+// Test failure when one EC pool is among correctly configured replicated pools
+TEST_F(OSDMonitorStretchTest, ECPoolAmongReplicatedPoolsFails) {
+  create_replicated_pool(1, "pool1", 3, 2, 0);
+  create_ec_pool(2, "ec_pool", 2, 1, 1);
+  create_replicated_pool(3, "pool3", 3, 2, 0);
   
   bool okay = false;
   int errcode = 0;
   stringstream ss;
   
-  validate_pools("ec_rule", &okay, &errcode, ss);
+  validate_pools("replicated_rule", &okay, &errcode, ss);
   
-  EXPECT_TRUE(okay) << "Multiple EC pools validation failed: " << ss.str();
-  EXPECT_EQ(errcode, 0);
+  EXPECT_FALSE(okay) << "Should fail due to the EC pool";
+  EXPECT_EQ(errcode, -EINVAL);
+  EXPECT_EQ(ss.str(), "stretched pools must be replicated; 'ec_pool' is erasure-coded");
 }
 
 // Test failure when one pool has invalid configuration in a set of pools

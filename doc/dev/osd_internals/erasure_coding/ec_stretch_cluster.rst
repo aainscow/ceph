@@ -487,8 +487,10 @@ nothing reads it.
 **Changes after creation**
 
 * ``ceph osd pool set <pool> size`` is refused for EC pools ("can not change the size of an
-  erasure-coded pool"). ``ceph mon disable_stretch_mode`` is the exception: it resets every
-  pool, EC pools included, to ``osd_pool_default_size``.
+  erasure-coded pool"). ``ceph mon enable_stretch_mode`` refuses while an EC pool exists, and
+  no EC pool can be created or stretched in global stretch mode, so
+  ``ceph mon disable_stretch_mode``, which resets every pool to ``osd_pool_default_size``,
+  does not meet one (Section 11.4.2).
 * ``ceph osd pool stretch set`` refuses EC pools, and ``ceph osd pool stretch set`` and
   ``unset`` are refused while stretch mode is enabled or any pool has ``num_zones`` greater
   than 1 (Section 11.4.1).
@@ -1841,7 +1843,16 @@ stretch values when it is created, not by ``ceph mon enable_stretch_mode``:
 stretch mode, which manages every pool as a legacy stretch pool. It refuses
 with EINVAL while any pool, committed or being created, has
 ``num_zones > 1``: "pool '<pool>' has num_zones <n>; global stretch mode
-cannot be enabled while multi-zone pools exist".
+cannot be enabled while multi-zone pools exist". As on main, it also refuses
+with EINVAL while any committed pool is erasure coded: "stretched pools must
+be replicated; '<pool>' is erasure-coded".
+
+No command takes an erasure coded pool into global stretch mode:
+``ceph mon enable_stretch_mode`` refuses it, ``ceph osd pool create`` refuses
+it while global stretch mode is enabled ("we are in global stretch mode;
+cannot create EC pools!"), and ``ceph osd pool stretch set`` refuses it
+(11.4.1). The pools ``ceph mon disable_stretch_mode`` resets to the default
+``size``, ``min_size`` and CRUSH rule are therefore all replicated.
 
 **Pool Creation Gate**: Pool creation with ``num_zones > 1`` must be rejected if
 stretch mode is not already enabled on the cluster. This is validated in
@@ -2141,9 +2152,9 @@ recovery traverse the inter-zone link via the Primary.
       ``num_zones`` (Section 11.4.1).
    b. **Enable/Disable Stretch Mode** (OSDMonitor): Pools with
       ``num_zones > 1`` get their stretch values at creation.
-      ``mon enable_stretch_mode`` refuses while such pools exist, and pool
-      creation refuses ``num_zones > 1`` in global stretch mode
-      (Section 11.4.2).
+      ``mon enable_stretch_mode`` refuses while such pools or, as on main,
+      erasure coded pools exist, and pool creation refuses ``num_zones > 1``
+      in global stretch mode (Section 11.4.2).
    c. **Stretch Mode Transitions for EC** (OSDMonitor): Implement
       degraded/recovery/healthy transitions. On zone failure, reduce
       ``min_size`` by ``k+m``; on recovery, restore it (Sections 11.4.3–5).

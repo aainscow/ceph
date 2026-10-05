@@ -16613,34 +16613,33 @@ void OSDMonitor::validate_stretch_mode_pools(
   for (const auto& pooli : pools) {
     int64_t poolid = pooli.first;
     const pg_pool_t& p = pooli.second;
-    
-    // Validate that pool type matches crush rule type
-    if (p.is_replicated() && crush_rule_type != pg_pool_t::TYPE_REPLICATED) {
-      ss << "pool '" << pool_names.at(poolid) << "' is replicated but crush rule '"
-         << new_crush_rule << "' is not a replicated rule";
-      *errcode = -EINVAL;
-      return;
-    }
-    if (p.is_erasure() && crush_rule_type != pg_pool_t::TYPE_ERASURE) {
-      ss << "pool '" << pool_names.at(poolid) << "' is erasure-coded but crush rule '"
-         << new_crush_rule << "' is not an erasure-coded rule";
+
+    if (!p.is_replicated()) {
+      ss << "stretched pools must be replicated; '" << pool_names.at(poolid)
+         << "' is erasure-coded";
       *errcode = -EINVAL;
       return;
     }
 
-    // For replicated pools, validate size/min_size to start out with the default values
-    if (p.is_replicated()) {
-      uint8_t default_size = g_conf().get_val<uint64_t>("osd_pool_default_size");
-      if ((p.get_size() != default_size ||
-           (p.get_min_size() != g_conf().get_osd_pool_default_min_size(default_size))) &&
-          (p.get_crush_rule() != new_rule)) {
-        ss << "we currently require stretch mode pools start out with the"
-           " default size/min_size, which '" << pool_names.at(poolid) << "' does not";
-        *errcode = -EINVAL;
-        return;
-      }
+    // Validate size/min_size to start out with the default values
+    uint8_t default_size = g_conf().get_val<uint64_t>("osd_pool_default_size");
+    if ((p.get_size() != default_size ||
+         (p.get_min_size() != g_conf().get_osd_pool_default_min_size(default_size))) &&
+        (p.get_crush_rule() != new_rule)) {
+      ss << "we currently require stretch mode pools start out with the"
+         " default size/min_size, which '" << pool_names.at(poolid) << "' does not";
+      *errcode = -EINVAL;
+      return;
     }
-    // else for erasure-coded pools size validation happens through the EC profile
+  }
+
+  // Validate that the pools, all replicated, are given a replicated rule
+  if (!pools.empty() && crush_rule_type != pg_pool_t::TYPE_REPLICATED) {
+    ss << "pool '" << pool_names.at(pools.begin()->first)
+       << "' is replicated but crush rule '" << new_crush_rule
+       << "' is not a replicated rule";
+    *errcode = -EINVAL;
+    return;
   }
 
   *okay = true;
