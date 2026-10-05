@@ -476,7 +476,8 @@ nothing reads it.
   erasure-coded pool"). ``ceph mon disable_stretch_mode`` is the exception: it resets every
   pool, EC pools included, to ``osd_pool_default_size``.
 * ``ceph osd pool stretch set`` refuses EC pools, and ``ceph osd pool stretch set`` and
-  ``unset`` are refused while stretch mode is enabled (Section 11.4.1).
+  ``unset`` are refused while stretch mode is enabled or any pool has ``num_zones`` greater
+  than 1 (Section 11.4.1).
 * A pool's profile cannot be replaced. ``erasure_code_profile`` can be read with
   ``ceph osd pool get`` but is not a ``ceph osd pool set`` variable.
 * ``ceph osd erasure-code-profile set <name> ... --force --yes-i-really-mean-it`` overwrites a
@@ -1786,19 +1787,30 @@ several places. These gaps must be filled for EC pools with ``num_zones > 1``.
 **11.4.1 Pool Stretch Set / Unset** (``prepare_command_pool_stretch_set``,
 ``prepare_command_pool_stretch_unset``)
 
-``stretch_set`` refuses EC pools, and both ``stretch_set`` and
-``stretch_unset`` are refused while stretch mode is enabled. Otherwise
-``stretch_set`` sets ``peering_crush_bucket_*``, ``crush_rule``, ``size``,
-``min_size``.
+``stretch_set`` and ``stretch_unset`` configure individual stretch pools,
+and are not how a stretch EC pool is configured: a pool with
+``num_zones > 1`` takes its ``size`` and its ``peering_crush_bucket_*``
+values from ``num_zones`` when it is created. Both commands are refused with
+EINVAL:
 
-For EC pools with ``num_zones > 1``, add validation:
+- while stretch mode is enabled, whether global stretch mode or the stretch
+  mode a ``num_zones = 2`` pool create enables (Section 11.4.2): "<command>
+  is for individual stretch pools and cannot be used while stretch mode is
+  enabled";
+- while any pool, committed or being created, has ``num_zones > 1``, which
+  covers a ``num_zones > 2`` pool that does not enable stretch mode: "pool
+  '<pool>' has num_zones <n>; <command> is for individual stretch pools and
+  cannot be used while multi-zone pools exist".
 
-- Validate ``min_size ∈ [num_zones×(K+M)−M, num_zones×(K+M)]``
-- If ``size`` is provided, validate it matches ``num_zones × (K+M)``
+``stretch_set`` also refuses erasure coded pools: "stretched
+pools must be replicated; '<pool>' is erasure-coded". ``stretch_unset``
+accepts an erasure coded pool only with ``size`` ``k+m`` and ``min_size``
+between ``k`` and ``k+m``, to clear the stretch values an older release
+gave it.
 
-``stretch_unset`` clears all ``peering_crush_*`` fields. It accepts an EC
-pool only with ``size`` ``k+m`` and ``min_size`` between ``k`` and ``k+m``,
-to clear a pool an older release stretched.
+Otherwise ``stretch_set`` sets ``peering_crush_bucket_*``, ``crush_rule``,
+``size`` and ``min_size`` of a replicated pool, and ``stretch_unset`` clears
+the stretch values and sets ``crush_rule``, ``size`` and ``min_size``.
 
 **11.4.2 Enable/Disable Stretch Mode** (``try_enable_stretch_mode_pools``)
 
@@ -2094,12 +2106,11 @@ recovery traverse the inter-zone link via the Primary.
 4. **Stretch Mode and Peering for Replicated EC**
    Broken into the following sub-stories (see Sections 11.1–11.6):
 
-   a. **Pool Stretch Set/Unset for EC** (OSDMonitor): Allow ``osd pool
-      stretch set/unset`` on EC pools with ``num_zones > 1``. Both refusals
-      in Section 11.4.1, of EC pools and while stretch mode is enabled, must
-      be relaxed for such pools, and the ``stretch_unset`` size check must
-      allow ``num_zones × (K+M)``. Add EC-specific ``min_size`` range
-      validation (Section 11.4.1).
+   a. **Pool Stretch Set/Unset** (OSDMonitor): ``osd pool stretch set``
+      refuses EC pools, and ``osd pool stretch set/unset`` are refused while
+      stretch mode, global or per-pool, is enabled or any pool has
+      ``num_zones > 1``; multi-zone pools take their stretch values from
+      ``num_zones`` (Section 11.4.1).
    b. **Enable/Disable Stretch Mode for EC** (OSDMonitor): Allow
       ``mon enable_stretch_mode`` when the cluster has EC pools with
       ``num_zones > 1``. Set ``min_size = r × (k+m) − m`` (Section 11.4.2).

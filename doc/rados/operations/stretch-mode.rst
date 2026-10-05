@@ -103,7 +103,9 @@ providing a more granular level of control.
 
 Individual stretch pools and stretch mode cannot be combined. While stretch
 mode is enabled, it manages the stretch values of every pool itself, and
-``ceph osd pool stretch set`` and ``ceph osd pool stretch unset`` fail.
+``ceph osd pool stretch set`` and ``ceph osd pool stretch unset`` fail. They
+also fail while any pool was created with ``--num-zones`` greater than 1,
+which takes its stretch values from its number of zones.
 
 
 Limitations
@@ -419,9 +421,8 @@ values, and the MonMap field ``global_stretch_mode_enabled`` will be set to ``fa
 At this point the user is responsible for scaling down the cluster
 to the desired number of OSDs if they choose to operate with fewer OSDs.
 
-Note that this command disables global stretch mode. If you want to disable
-stretch mode for individual pools only, use ``ceph osd pool stretch unset``
-instead of this command.
+Note that this command disables global stretch mode only.
+``ceph osd pool stretch unset`` fails while stretch mode is enabled.
 
 Note that the command will not execute when the cluster is in
 recovery stretch mode. The command executes only when the cluster

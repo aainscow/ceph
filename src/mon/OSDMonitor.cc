@@ -10003,13 +10003,63 @@ int OSDMonitor::prepare_command_pool_application(const string &prefix,
   return _command_pool_application(prefix, cmdmap, ss, nullptr, true);
 }
 
-static bool refuse_in_stretch_mode(const OSDMap& osdmap,
-                                   const string& command,
-                                   stringstream& ss)
+// the first committed or pending pool that match accepts
+const pg_pool_t *OSDMonitor::find_pool(
+  const std::function<bool(const pg_pool_t&)>& match, string *name) const
 {
-  if (osdmap.stretch_mode_enabled) {
+  auto found = [&](int64_t poolid, const pg_pool_t& p) {
+    if (!match(p)) {
+      return false;
+    }
+    if (auto i = pending_inc.new_pool_names.find(poolid);
+        i != pending_inc.new_pool_names.end()) {
+      *name = i->second;
+    } else if (auto j = osdmap.pool_name.find(poolid);
+               j != osdmap.pool_name.end()) {
+      *name = j->second;
+    }
+    return true;
+  };
+  for (const auto& [poolid, p] : osdmap.pools) {
+    if (found(poolid, p)) {
+      return &p;
+    }
+  }
+  for (const auto& [poolid, p] : pending_inc.new_pools) {
+    if (found(poolid, p)) {
+      return &p;
+    }
+  }
+  return nullptr;
+}
+
+// the first committed or pending pool with num_zones > 1
+bool OSDMonitor::find_multi_zone_pool(string *name, int *num_zones) const
+{
+  const pg_pool_t *p = find_pool([](const pg_pool_t& pool) {
+    return pool.get_num_zone() > 1;
+  }, name);
+  if (!p) {
+    return false;
+  }
+  *num_zones = p->get_num_zone();
+  return true;
+}
+
+bool OSDMonitor::refuse_in_stretch_mode(const string& command,
+                                        stringstream& ss) const
+{
+  if (osdmap.stretch_mode_enabled || mon.monmap->global_stretch_mode_enabled) {
     ss << command << " is for individual stretch pools and cannot be used "
        << "while stretch mode is enabled";
+    return true;
+  }
+  string name;
+  int num_zones = 0;
+  if (find_multi_zone_pool(&name, &num_zones)) {
+    ss << "pool '" << name << "' has num_zones " << num_zones << "; "
+       << command << " is for individual stretch pools and cannot be used "
+       << "while multi-zone pools exist";
     return true;
   }
   return false;
@@ -10018,7 +10068,7 @@ static bool refuse_in_stretch_mode(const OSDMap& osdmap,
 int OSDMonitor::prepare_command_pool_stretch_set(const cmdmap_t& cmdmap,
                                                     stringstream& ss)
 {
-  if (refuse_in_stretch_mode(osdmap, "osd pool stretch set", ss)) {
+  if (refuse_in_stretch_mode("osd pool stretch set", ss)) {
     return -EINVAL;
   }
 
@@ -10117,15 +10167,6 @@ int OSDMonitor::prepare_command_pool_stretch_set(const cmdmap_t& cmdmap,
     return -EINVAL;
   }
 
-  // Validate the new crush rule is compatible with stretch mode
-  if (mon.monmap->global_stretch_mode_enabled) {
-    int r = validate_stretch_mode_new_pool(crush, crush_rule, osdmap.stretch_bucket_count, osdmap.stretch_mode_bucket, 
-      osdmap.pools, bucket_barrier_str, &ss);
-    if (r < 0) {
-      return r;
-    }
-  }
-
   if (p.is_erasure()) {
     ss << "osd pool stretch set is not supported for EC pools; "
        << "use 'ceph osd pool set " << pool_name << " num_zones <N>' instead";
@@ -10151,7 +10192,7 @@ int OSDMonitor::prepare_command_pool_stretch_unset(const cmdmap_t& cmdmap,
   * Command syntax:
   *   ceph osd pool stretch unset <pool>
   */
-  if (refuse_in_stretch_mode(osdmap, "osd pool stretch unset", ss)) {
+  if (refuse_in_stretch_mode("osd pool stretch unset", ss)) {
     return -EINVAL;
   }
 

@@ -808,6 +808,12 @@ public:
                                           const cmdmap_t& cmdmap,
                                           std::stringstream& ss,
                                           bool *modified);
+  const pg_pool_t *find_pool(
+    const std::function<bool(const pg_pool_t&)>& match,
+    std::string *name) const;
+  bool find_multi_zone_pool(std::string *name, int *num_zones) const;
+  bool refuse_in_stretch_mode(const std::string& command,
+                              std::stringstream& ss) const;
   int prepare_command_pool_stretch_set(const cmdmap_t& cmdmap,
                                std::stringstream& ss);
   int prepare_command_pool_stretch_unset(const cmdmap_t& cmdmap,
