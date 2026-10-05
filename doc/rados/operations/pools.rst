@@ -798,9 +798,16 @@ created with ``--num-zones`` greater than 1. See :ref:`stretch_mode`.
 
 .. note::
 
-   This command is only supported for replicated pools. For EC (erasure-coded)
-   pools, use ``ceph osd pool set {pool-name} num_zones {N}`` instead.
-   ``num_zones`` works for both replicated and EC pools.
+   This command is only supported for replicated pools. A multi-zone pool,
+   replicated or erasure-coded, is created with ``ceph osd pool create`` and
+   ``--num-zones``:
+
+   .. prompt:: bash $
+
+      ceph osd pool create {pool-name} replicated --num-zones {N}
+      ceph osd pool create {pool-name} erasure --num-zones {N} --k {k} --m {m}
+
+   ``num_zones`` cannot be changed after the pool is created.
 
 Here are the breakdowns of the arguments:
 

@@ -478,6 +478,9 @@ rule from the profile's keys alone.
 ``num_zones`` is stored as a pool option, set on every pool at creation (default 1), and not in
 the profile. ``ceph osd pool get <pool> num_zones`` shows it. It cannot be changed after
 creation; changing the number of zones of an existing pool is a later release (Section 13.2).
+``ceph osd pool set`` does not offer ``num_zones``, and the monitor refuses it with EINVAL also
+when it comes as a mon command through librados: "num_zones cannot be changed after the pool is
+created".
 ``ceph osd erasure-code-profile set`` accepts and stores a ``num_zones`` key in a profile, but
 nothing reads it.
 

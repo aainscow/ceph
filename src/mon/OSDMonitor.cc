@@ -9891,21 +9891,8 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
         return -ERANGE;
       }
     } else if (var == "num_zones") {
-      if (interr.length()) {
-        ss << "error parsing int value '" << val << "': " << interr;
-        return -EINVAL;
-      }
-      if (n < 0) {
-        ss << "num_zones must be non-negative";
-        return -EINVAL;
-      }
-      // For EC pools, validate that num_zones is compatible with pool
-      if (p.type == pg_pool_t::TYPE_ERASURE) {
-        if (n < 1) {
-          ss << "num_zones must be at least 1 for erasure coded pools";
-          return -EINVAL;
-        }
-      }
+      ss << "num_zones cannot be changed after the pool is created";
+      return -EINVAL;
     }
 
     pool_opts_t::opt_desc_t desc = pool_opts_t::get_opt_desc(var);
@@ -9945,39 +9932,6 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
   } else {
     ss << "unrecognized variable '" << var << "'";
     return -EINVAL;
-  }
-  
-  // For EC pools, adjust pool size when num_zones is set
-  if (var == "num_zones" && p.type == pg_pool_t::TYPE_ERASURE) {
-    int64_t num_zones = 0;
-    p.opts.get(pool_opts_t::NUM_ZONES, &num_zones);
-    
-    if (num_zones > 0) {
-      // Get the base EC pool size (k + m)
-      ErasureCodeInterfaceRef erasure_code;
-      stringstream tmp;
-      int err = get_erasure_code(p.erasure_code_profile, &erasure_code, &tmp);
-      if (err == 0) {
-        unsigned base_size = erasure_code->get_chunk_count();
-        unsigned new_size = num_zones * base_size;
-        
-        // Check if pool size is changing (increasing)
-        if (new_size > p.size) {
-          // Validate the new size with pg_num
-          int r = check_pg_num(pool, p.get_pg_num(), new_size, p.get_crush_rule(), &ss);
-          if (r < 0) {
-            return r;
-          }
-        }
-        
-        // Set pool size = num_zones * (k + m)
-        p.size = new_size;
-        ss << "; pool size adjusted to " << (int)p.size
-           << " (" << num_zones << " zones * " << base_size << " chunks)";
-      } else {
-        ss << "; warning: could not adjust pool size: " << tmp.str();
-      }
-    }
   }
   
   if (val != "unset") {
@@ -10159,12 +10113,6 @@ int OSDMonitor::prepare_command_pool_stretch_set(const cmdmap_t& cmdmap,
   if (pool_min_size < 0) {
     ss << "pool min_size must be non-negative";
     return -EINVAL;
-  }
-
-  if (p.is_erasure()) {
-    ss << "osd pool stretch set is not supported for EC pools; "
-       << "use 'ceph osd pool set " << pool_name << " num_zones <N>' instead";
-    return -EOPNOTSUPP;
   }
 
   p.peering_crush_bucket_count = static_cast<uint32_t>(bucket_count);
