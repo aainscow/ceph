@@ -1730,10 +1730,16 @@ When stretch mode is enabled, the state machine behaves identically to the
 replica stretch mode state machine — leveraging the existing OSDMonitor
 infrastructure. As noted above, an EC pool's explicit ``min_size`` setting is
 simply *interpreted* against this state machine, rather than actively mutated
-by the OSDMonitor upon transitions. The OSDMonitor currently still changes the
-``min_size`` of replicated stretch pools, ``num_zones = 2`` pools included, on
-the degraded and healthy transitions (Sections 11.4.3 and 11.4.4); for
-multi-zone replicated pools this differs from the intent of Section 11.2.
+by the OSDMonitor upon transitions. The OSDMonitor does not change the
+``min_size`` of a replicated multi-zone pool on transitions either, but only
+for an EC pool does the OSD count ``min_size`` per zone. A replicated
+multi-zone PG currently needs ``min_size`` replicas in its acting set, with at
+least one in each zone in healthy stretch mode and all of them in the
+surviving zone in degraded stretch mode. With the default ``min_size`` of 2
+for two replicas per zone, a PG in degraded stretch mode therefore needs both
+replicas in the surviving zone. The OSDMonitor still changes the ``min_size``
+of legacy replicated stretch pools, which have ``num_zones = 1``, on the
+degraded and healthy transitions (Sections 11.4.3 and 11.4.4).
 
 .. mermaid::
 
@@ -1937,20 +1943,20 @@ up to the operator (Section 11.1). In degraded or recovery stretch mode
 the new pool is given the degraded ``peering_crush_bucket_count`` and the
 ``peering_crush_mandatory_member`` that the existing stretch pools have
 (Section 11.6), so it can go active in the surviving zone, and the healthy
-transition (11.4.4) restores it with them.
+transition (11.4.4) restores it with them. Its ``min_size`` is not changed,
+either when it is created or by the healthy transition.
 In global stretch mode a new pool is not yet given
 ``peering_crush_mandatory_member`` this way.
 
 **11.4.3 Degraded Stretch Mode** (``trigger_degraded_stretch_mode``)
 
-*Currently sets* ``newp.min_size = pgi.second.min_size / 2`` *for replica
-pools.* This applies to every replicated pool with stretch values,
-``num_zones = 2`` pools included. For those it differs from the intent of
-Section 11.2, which interprets the ``min_size`` of a multi-zone replicated
-pool rather than changing it. An EC pool's ``min_size`` is not changed: in
-degraded stretch mode a PG needs ``min_size`` shards in the surviving zone
-(Section 11.2.1). For a K=2, M=1, --num-zones 2 pool with ``min_size = 2``
-that is 2 shards.
+*Currently sets* ``newp.min_size = pgi.second.min_size / 2`` *for legacy
+replica pools*, the replicated pools with stretch values and
+``num_zones = 1`` (global stretch mode and individual stretch pools), as on
+main. The ``min_size`` of a multi-zone pool, EC or replicated, is not changed
+(Section 11.2). In degraded stretch mode an EC PG needs ``min_size`` shards in
+the surviving zone (Section 11.2.1). For a K=2, M=1, --num-zones 2 pool with
+``min_size = 2`` that is 2 shards.
 
 Also set ``peering_crush_bucket_count`` and
 ``peering_crush_mandatory_member`` as for replicated pools.
@@ -1963,13 +1969,13 @@ healthy transition (11.4.4) restores it with the other stretch pools.
 
 **11.4.4 Healthy Stretch Mode** (``trigger_healthy_stretch_mode``)
 
-*Currently reads* ``mon_stretch_pool_min_size`` *config for replica pools.*
-The ``min_size`` of every replicated pool with stretch values,
-``num_zones = 2`` pools included, is set to ``mon_stretch_pool_min_size``,
-whatever it was before the degraded transition. For ``num_zones = 2`` pools
-this differs from the intent of Section 11.2, as in 11.4.3.
-An EC pool's ``min_size`` is not changed: in healthy stretch mode a PG needs
-``min_size + k + m`` shards in total (Section 11.2.1).
+*Currently reads* ``mon_stretch_pool_min_size`` *config for legacy replica
+pools.* The ``min_size`` of a legacy replicated stretch pool (11.4.3) is set to
+``mon_stretch_pool_min_size``, whatever it was before the degraded transition,
+as on main. The ``min_size`` of a multi-zone pool, EC or replicated, is not
+changed, so it keeps the value it was created with or last set to. In healthy
+stretch mode an EC PG needs ``min_size + k + m`` shards in total
+(Section 11.2.1).
 
 **11.4.5 Recovery Stretch Mode** (``trigger_recovery_stretch_mode``)
 

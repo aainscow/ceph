@@ -171,9 +171,10 @@ Stretch Mode
 Stretch mode is designed to handle netsplit scenarios between two data centers as well
 as the loss of one data center. It handles the netsplit scenario by choosing the surviving zone
 that has the best connection to the tiebreaker Monitor. It handles the loss of one data center by
-reducing the ``min_size`` of all pools to ``1``, allowing the cluster to continue operating
-within the surviving data center. When the unavailable data center comes back, Ceph will
-converge according to the configured replication policy and return to normal operation.
+reducing the ``min_size`` of the pools in global stretch mode to ``1``, allowing the cluster to
+continue operating within the surviving data center. When the unavailable data center comes
+back, Ceph will converge according to the configured replication policy and return to normal
+operation.
 
 
 Global Stretch Mode vs Per-Pool Stretch Mode
@@ -209,6 +210,10 @@ The number of zones of a pool cannot be changed after it is created. With per-po
 mode, only the specified pools operate in stretch mode while other pools remain
 unaffected. This provides more granular control and is useful when only specific
 pools require cross-datacenter redundancy.
+
+The loss and return of a zone do not change the ``min_size`` of a pool created with
+``--num-zones``. While a zone is down, a PG of such a pool needs ``min_size`` copies or
+shards in the surviving zone.
 
 When using per-pool stretch mode without global stretch mode enabled,
 ``global_stretch_mode_enabled`` remains ``false`` in the MonMap.
