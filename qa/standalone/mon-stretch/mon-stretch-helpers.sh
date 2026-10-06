@@ -78,6 +78,13 @@ function ec_stretch_cluster_without_dc2() {
     two_zone_cluster $dir || return 1
     ceph osd pool create data0 erasure --num-zones 2 --k 2 --m 1 || return 1
     wait_for_clean || return 1
+    lose_dc2 $dir || return 1
+}
+
+# kill dc2's monitor and OSDs (two_zone_cluster's default layout) and wait
+# for degraded stretch mode
+function lose_dc2() {
+    local dir=$1
 
     kill_daemons $dir KILL mon.b || return 1
     for osd in 3 4 5; do
@@ -85,6 +92,18 @@ function ec_stretch_cluster_without_dc2() {
     done
     ceph osd down osd.3 osd.4 osd.5
     wait_for_stretch_state 1 0 || return 1
+}
+
+# start dc2's monitor and OSDs again and wait for healthy stretch mode
+function restore_dc2() {
+    local dir=$1
+
+    activate_mon $dir b --public-addr $CEPH_MON_B || return 1
+    wait_for_quorum 300 3 || return 1
+    for osd in 3 4 5; do
+        activate_osd $dir $osd || return 1
+    done
+    wait_for_stretch_state 0 0 || return 1
 }
 
 # global stretch mode over the datacenters, with pool stretched on a stretch rule

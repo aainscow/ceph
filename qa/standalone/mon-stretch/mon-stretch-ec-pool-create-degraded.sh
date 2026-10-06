@@ -25,12 +25,7 @@ function TEST_ec_pool_create_in_degraded_stretch_mode() {
     ceph osd getmap -o $dir/osdmap || return 1
     timeout 120 rados -p data1 put obj $dir/osdmap || return 1
 
-    activate_mon $dir b --public-addr $CEPH_MON_B || return 1
-    wait_for_quorum 300 3 || return 1
-    for osd in 3 4 5; do
-        activate_osd $dir $osd || return 1
-    done
-    wait_for_stretch_state 0 0 || return 1
+    restore_dc2 $dir || return 1
     ceph osd pool ls detail
     for pool in data0 data1; do
         test "$(pool_field $pool peering_crush_bucket_count)" == 2 || return 1
