@@ -146,11 +146,11 @@ Creating Stretch Pools
 ----------------------
 
 You can create a pool with stretch mode configuration at creation time by
-specifying the ``zone`` parameter:
+specifying ``--num-zones``:
 
 .. prompt:: bash $
 
-   ceph osd pool create mypool 32 32 replicated my_stretch_rule zone=2
+   ceph osd pool create mypool 32 32 replicated my_stretch_rule --num-zones 2
 
 This creates a replicated pool named ``mypool`` with 32 placement groups,
 using the CRUSH rule ``my_stretch_rule``, configured to span 2 zones. The pool
