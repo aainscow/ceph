@@ -17,6 +17,7 @@
 #include "common/common_init.h"
 #include "global/global_context.h"
 
+#include <array>
 #include <memory>
 #include <sstream>
 #include <map>
@@ -507,6 +508,148 @@ TEST_F(OSDMonitorValidateStretchModeNewPoolTest, RejectsDifferentZonesAndUnknown
   EXPECT_EQ(-EINVAL, validate_stretch_mode_new_pool(stretch_ec_rule, 2, zone_type,
                                                     "nosuchtype", &ss2));
   EXPECT_NE(ss2.str().find("does not exist"), string::npos) << ss2.str();
+}
+
+static int add_steps_rule(CrushWrapper &crush, const string &name,
+                          const vector<std::array<int, 3>> &steps)
+{
+  int rule = crush.add_rule(-1, steps.size(), pg_pool_t::TYPE_REPLICATED);
+  for (unsigned i = 0; i < steps.size(); ++i) {
+    crush.set_rule_step(rule, i, steps[i][0], steps[i][1], steps[i][2]);
+  }
+  crush.set_rule_name(rule, name);
+  return rule;
+}
+
+// whether every mapping is num_zones blocks of per_zone OSDs, each block in
+// a zone of its own
+static bool maps_zone_blocks(const CrushWrapper &crush, int rule,
+                             int zone_type, int num_zones, int per_zone)
+{
+  vector<uint32_t> weight(crush.get_max_devices(), 0x10000);
+  for (int x = 0; x < 200; ++x) {
+    vector<int> out;
+    crush.do_rule(rule, x, out, num_zones * per_zone, weight, 0);
+    if (out.size() != size_t(num_zones * per_zone)) {
+      return false;
+    }
+    set<int> zones;
+    for (int i = 0; i < num_zones * per_zone; ++i) {
+      if (out[i] == CRUSH_ITEM_NONE) {
+        return false;
+      }
+      int zone = crush.get_parent_of_type(out[i], zone_type);
+      if (i % per_zone == 0 && !zones.insert(zone).second) {
+        return false;
+      }
+      if (zone != crush.get_parent_of_type(out[i - i % per_zone], zone_type)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// A multi-zone pool's rule must place a block of OSDs in each zone, and the
+// verdict agrees with where the rule maps PGs.
+TEST_F(OSDMonitorValidateStretchModeNewPoolTest, ValidateMultiZoneRule) {
+  const int zone = crush.get_type_id(zone_failure_domain_name);
+  const int host = crush.get_type_id(osd_failure_domain_name);
+  const int root = crush.get_item_id(root_name);
+  const int zone1 = crush.get_item_id("zone1");
+  const int zone2 = crush.get_item_id("zone2");
+  for (int i = 0; i < 12; i++) {
+    ASSERT_GE(crush.update_device_class(i, "ssd", "osd." + std::to_string(i), &ss), 0);
+  }
+  const int zone1_ssd = crush.get_item_id("zone1~ssd");
+  const int zone2_ssd = crush.get_item_id("zone2~ssd");
+  ASSERT_LT(zone1_ssd, 0);
+  ASSERT_LT(zone2_ssd, 0);
+  const int take = CRUSH_RULE_TAKE;
+  const int emit = CRUSH_RULE_EMIT;
+  const int choose = CRUSH_RULE_CHOOSE_FIRSTN;
+  const int leaf = CRUSH_RULE_CHOOSELEAF_FIRSTN;
+  const int leaf_indep = CRUSH_RULE_CHOOSELEAF_INDEP;
+  const int msr = CRUSH_RULE_CHOOSE_MSR;
+
+  const int ec4 = crush.add_simple_stretch_rule("ec4", root_name,
+    zone_failure_domain_name, osd_failure_domain_name, 2, 4, "", "indep",
+    pg_pool_t::TYPE_ERASURE, force, &ss);
+  const int ec4_ssd = crush.add_simple_stretch_rule("ec4_ssd", root_name,
+    zone_failure_domain_name, osd_failure_domain_name, 2, 4, "ssd", "indep",
+    pg_pool_t::TYPE_ERASURE, force, &ss);
+  // 'osd crush rule create-erasure' without num_zones
+  const int one_zone = crush.add_simple_rule("one_zone", root_name,
+    osd_failure_domain_name, "", "indep", pg_pool_t::TYPE_ERASURE, &ss);
+  ASSERT_GE(ec4, 0) << ss.str();
+  ASSERT_GE(ec4_ssd, 0) << ss.str();
+  ASSERT_GE(one_zone, 0) << ss.str();
+  const int takes = add_steps_rule(crush, "takes",
+    {{take, zone1, 0}, {leaf, 2, host}, {emit, 0, 0},
+     {take, zone2, 0}, {leaf, 2, host}, {emit, 0, 0}});
+  const int ssd_takes = add_steps_rule(crush, "ssd_takes",
+    {{take, zone1_ssd, 0}, {leaf_indep, 4, host}, {emit, 0, 0},
+     {take, zone2_ssd, 0}, {leaf_indep, 4, host}, {emit, 0, 0}});
+  const int all_zones = add_steps_rule(crush, "all_zones",
+    {{take, root, 0}, {choose, 0, zone}, {leaf, 2, host}, {emit, 0, 0}});
+  const int same_zone = add_steps_rule(crush, "same_zone",
+    {{take, zone1, 0}, {leaf, 2, host}, {emit, 0, 0},
+     {take, zone1, 0}, {leaf, 2, host}, {emit, 0, 0}});
+  const int one_take = add_steps_rule(crush, "one_take",
+    {{take, zone1, 0}, {leaf, 2, host}, {emit, 0, 0}});
+  const int split_choice = add_steps_rule(crush, "split_choice",
+    {{take, root, 0}, {choose, 1, zone}, {leaf, 2, host}, {emit, 0, 0},
+     {take, root, 0}, {choose, 1, zone}, {leaf, 2, host}, {emit, 0, 0}});
+  const int choose_hosts = add_steps_rule(crush, "choose_hosts",
+    {{take, root, 0}, {choose, 2, host}, {leaf, 1, 0}, {emit, 0, 0}});
+  const int zone_msr = add_steps_rule(crush, "zone_msr",
+    {{take, root, 0}, {msr, 2, zone}, {msr, 4, host}, {msr, 1, 0},
+     {emit, 0, 0}});
+  crush.finalize();
+
+  struct {
+    int rule;
+    int per_zone;
+    const char *why;
+  } cases[] = {
+    {stretch_replica_rule, 2, nullptr},
+    {stretch_ec_rule, 6, nullptr},
+    {ec4, 4, nullptr},
+    {ec4_ssd, 4, nullptr},
+    {takes, 2, nullptr},
+    {ssd_takes, 4, nullptr},
+    {all_zones, 2, nullptr},
+    {ec4, 3, "it places 4 OSDs in each zone"},
+    {one_zone, 4, "it chooses host items before choosing zone buckets"},
+    {same_zone, 2, "it takes zone zone1 twice"},
+    {one_take, 2, "it places OSDs in 1 zone buckets"},
+    {split_choice, 2,
+     "it chooses zone buckets in one of several take/emit blocks"},
+    {choose_hosts, 2, "it chooses host items before choosing zone buckets"},
+  };
+  for (const auto &t : cases) {
+    const string name = crush.get_rule_name(t.rule);
+    stringstream err;
+    int r = OSDMonitor::validate_multi_zone_rule(crush, t.rule, zone, 2,
+                                                 t.per_zone, &err);
+    if (t.why) {
+      EXPECT_EQ(-EINVAL, r) << name;
+      EXPECT_EQ("crush rule " + name + " does not place " +
+                std::to_string(t.per_zone) + " OSDs in each of 2 zone buckets: " +
+                t.why, err.str());
+    } else {
+      EXPECT_EQ(0, r) << name << ": " << err.str();
+    }
+    EXPECT_EQ(t.why == nullptr,
+              maps_zone_blocks(crush, t.rule, zone, 2, t.per_zone)) << name;
+  }
+
+  stringstream err;
+  EXPECT_EQ(-EINVAL, OSDMonitor::validate_multi_zone_rule(crush, zone_msr,
+                                                          zone, 2, 4, &err));
+  EXPECT_NE(err.str().find("choosemsr can move OSDs"), string::npos) << err.str();
+  EXPECT_EQ(-ENOENT, OSDMonitor::validate_multi_zone_rule(crush, 100, zone, 2,
+                                                          4, &err));
 }
 
 int main(int argc, char **argv) {

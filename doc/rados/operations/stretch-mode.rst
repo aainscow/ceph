@@ -185,6 +185,12 @@ rule mypool {
 	step emit
 }
 
+A CRUSH rule named when the pool is created, or set later with ``ceph osd
+pool set {pool-name} crush_rule`` or ``ceph osd pool set {pool-name} num_zones
+2 --crush_rule {rule}``, must likewise place the per-zone replica count (``k+m``
+shards for an erasure-coded pool) in each zone. It can choose the zone buckets
+under a root, as above, or take each zone bucket in turn in a ``take``/``emit``
+block of its own. Otherwise the command fails with ``EINVAL``.
 
 Per-pool stretch mode provides the same stretch mode benefits (zone-aware
 peering, degraded/recovery modes) but applies only to the specified pool,

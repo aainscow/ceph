@@ -957,6 +957,15 @@ public:
     const mempool::osdmap::map<int64_t, pg_pool_t>& pools, const std::string& zone_failure_domain, std::ostream *ss);
 
   /**
+   * Check that a CRUSH rule emits num_zones consecutive blocks of per_zone
+   * OSDs, each block in a bucket of type zone_type of its own, as a
+   * multi-zone pool needs.
+   * @return 0, or -EINVAL with the reason in ss
+   */
+  static int validate_multi_zone_rule(const CrushWrapper& crush, int crush_rule,
+    int zone_type, int num_zones, int per_zone, std::ostream *ss);
+
+  /**
   *
   * Set all stretch mode values of all pools back to pre-stretch mode values.
   * Set all stretch mode values of OSDMap back to pre-stretch mode values.

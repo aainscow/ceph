@@ -16,10 +16,11 @@ function TEST_failed_stretch_pool_create_leaves_no_pool() {
         ceph osd crush move $dc root=default || return 1
     done
     # mon.a has no datacenter location, so stretch mode cannot be enabled.
-    # An existing rule gets the create past building a stretch rule, which
-    # needs OSDs, to that check after the pool is allocated.
+    # An existing two-zone rule gets the create past building a stretch rule,
+    # which needs OSDs, to that check after the pool is allocated.
+    add_zone_take_rule $dir zone_takes replicated 2 || return 1
     expect_failure $dir "Failed to validate monitor stretch mode" \
-        ceph osd pool create badpool --rule replicated_rule --num-zones 2 || return 1
+        ceph osd pool create badpool --rule zone_takes --num-zones 2 || return 1
     timeout 60 ceph osd pool create goodpool 12 || return 1
     ceph osd pool ls | grep -qx goodpool || return 1
     ! ceph osd pool ls | grep -q badpool || return 1
