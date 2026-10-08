@@ -429,7 +429,8 @@ At creation the monitor loads the plugin named by the profile and sets:
 
 Without ``--rule`` the rule is named after the pool. Single-zone pools with the ``default``
 profile are the exception: they share the ``erasure-code`` rule. If a committed rule of that name already exists it is reused, without checking that it
-fits ``k+m``, ``num_zones`` or the CRUSH options. Otherwise the plugin builds it:
+fits the CRUSH options; with ``num_zones`` greater than 1 it is checked as a named rule is
+(below). Otherwise the plugin builds it:
 
 * ``num_zones`` greater than 1: a stretch rule that takes ``num_zones`` buckets of the zone type
   under the root (``choose firstn <num_zones>``), then ``k+m`` OSD failure domains
@@ -449,6 +450,31 @@ With ``--rule`` the named rule must already exist ("specified rule <rule> doesn'
 used unchanged: ``num_zones`` and the profile's CRUSH keys are not applied to it.
 ``ceph osd crush rule create-erasure <name> [<profile>] [<num_zones>]`` builds the same kind of
 rule from the profile's keys alone.
+
+With ``num_zones`` greater than 1, outside global stretch mode, the pool's rule must place
+``num_zones`` blocks of ``k+m`` OSDs, block ``z`` holding shards ``(k+m) × z`` to
+``(k+m) × (z+1) - 1`` and lying in a zone bucket of its own. The zone type is
+``--zone_failure_domain``, else ``default_crush_zone_failure_domain``. The monitor checks the
+rule's steps, accepting two forms:
+
+* one ``take`` above the zones, a ``choose`` of the zone type that yields ``num_zones``
+  buckets (``choose firstn 0`` yields all of them under the ``take``), then ``choose`` or
+  ``chooseleaf`` steps below the zone type that pick ``k+m`` OSDs in each, as the generated
+  rule does;
+* one ``take``/``emit`` block per zone, each taking a different zone bucket, or a bucket or
+  OSD inside it, and picking ``k+m`` OSDs.
+
+Any other rule fails with EINVAL, "crush rule <rule> does not place <k+m> OSDs in each of
+<num_zones> <type> buckets: <reason>". A rule from ``ceph osd crush rule create-erasure``
+without ``num_zones`` gets "it chooses host items before choosing datacenter buckets"
+(``osd`` for ``crush-failure-domain=osd``). ``choosemsr`` is not accepted for the zone step,
+because it can place a block's OSDs in more than one bucket of that step's type.
+
+The same check, with the per-zone replica count for a replicated pool, applies to
+``ceph osd pool set <pool> crush_rule`` on a multi-zone stretch pool, to
+``ceph osd pool set <pool> num_zones 2`` and to ``ceph osd pool set <pool> replica <n>``, which
+reuses an existing rule named ``<pool>-replica-<n>``. Global stretch mode keeps its own check
+of the rule's zones.
 
 **Multi-zone pools**
 

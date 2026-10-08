@@ -100,3 +100,35 @@ function enable_global_stretch_mode() {
     done
     return 1
 }
+
+# add a rule of the given type that takes dc1 and then dc2 and chooses the
+# given number of hosts in each
+function add_zone_take_rule() {
+    local dir=$1
+    local name=$2
+    local type=$3
+    local per_zone=$4
+    local mode=firstn
+    test $type = erasure && mode=indep
+    local id=$(ceph osd crush rule dump -f json | jq 'map(.rule_id) | max + 1')
+
+    ceph osd getcrushmap > $dir/crushmap || return 1
+    crushtool --decompile $dir/crushmap > $dir/crushmap.txt || return 1
+    sed 's/^# end crush map$//' $dir/crushmap.txt > $dir/crushmap_modified.txt || return 1
+    cat >> $dir/crushmap_modified.txt << EOR
+rule $name {
+        id $id
+        type $type
+        step take dc1
+        step chooseleaf $mode $per_zone type host
+        step emit
+        step take dc2
+        step chooseleaf $mode $per_zone type host
+        step emit
+}
+
+# end crush map
+EOR
+    crushtool --compile $dir/crushmap_modified.txt -o $dir/crushmap.bin || return 1
+    ceph osd setcrushmap -i $dir/crushmap.bin || return 1
+}

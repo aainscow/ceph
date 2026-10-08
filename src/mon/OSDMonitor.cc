@@ -8617,6 +8617,22 @@ int OSDMonitor::prepare_new_pool(string& name,
     dout(10) << "prepare_pool_size returns " << r << dendl;
     return r;
   }
+  if (num_zones > 1 && !mon.monmap->global_stretch_mode_enabled) {
+    CrushWrapper newcrush = _get_pending_crush();
+    auto zone_type =
+      newcrush.get_validated_type_id(effective_zone_failure_domain);
+    if (!zone_type) {
+      *ss << effective_zone_failure_domain
+          << " is not a valid crush bucket type";
+      return -ENOENT;
+    }
+    r = validate_multi_zone_rule(newcrush, crush_rule, *zone_type, num_zones,
+                                 size / num_zones, ss);
+    if (r) {
+      dout(10) << "validate_multi_zone_rule returns " << r << dendl;
+      return r;
+    }
+  }
   if (requested_min_size > 0) {
     if (pool_type == pg_pool_t::TYPE_REPLICATED) {
       if (requested_min_size < 1 || requested_min_size > replica) {
@@ -9368,6 +9384,11 @@ int OSDMonitor::prepare_command_pool_set_num_zones(
       ss << "resulting pool size or min_size exceeds the supported range";
       return -ERANGE;
     }
+    err = validate_multi_zone_rule(crush, crush_rule, barrier_id, n, size / n,
+                                   &ss);
+    if (err) {
+      return err;
+    }
     if (size != p.size || crush_rule != old_crush_rule) {
       int r = check_pg_num(pool, p.get_pg_num(), size, crush_rule, &ss);
       if (r < 0) return r;
@@ -9531,6 +9552,14 @@ int OSDMonitor::prepare_command_pool_set_replica(
     err = handle_crush_rule_creation_result(err, new_rule_name);
     if (err) {
       return err;
+    }
+    if (p.is_stretch_pool()) {
+      err = validate_multi_zone_rule(crush, new_crush_rule,
+                                     p.peering_crush_bucket_barrier,
+                                     num_zones, n, &ss);
+      if (err) {
+        return err;
+      }
     }
   }
 
@@ -9979,6 +10008,15 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
     if (!osdmap.crush->rule_valid_for_pool_type(id, p.get_type())) {
       ss << "crush rule " << id << " type does not match pool";
       return -EINVAL;
+    }
+    if (p.get_num_zones() > 1 && p.is_stretch_pool() &&
+        !mon.monmap->global_stretch_mode_enabled) {
+      int r = validate_multi_zone_rule(
+        *osdmap.crush, id, p.peering_crush_bucket_barrier, p.get_num_zones(),
+        p.size / p.get_num_zones(), &ss);
+      if (r) {
+        return r;
+      }
     }
     p.crush_rule = id;
   } else if (var == "nodelete" || var == "nopgchange" ||
@@ -17739,6 +17777,141 @@ int OSDMonitor::validate_stretch_mode_new_pool(CrushWrapper& crush, int new_crus
         return -EINVAL;
       }
     }
+  }
+  return 0;
+}
+
+int OSDMonitor::validate_multi_zone_rule(const CrushWrapper& crush,
+                                         int crush_rule, int zone_type,
+                                         int num_zones, int per_zone,
+                                         std::ostream *ss)
+{
+  if (!crush.rule_exists(crush_rule)) {
+    if (ss) {
+      *ss << "CRUSH rule " << crush_rule << " does not exist";
+    }
+    return -ENOENT;
+  }
+  auto type_name = [&crush](int type) {
+    const char *name = crush.get_type_name(type);
+    return name ? string(name) : stringify(type);
+  };
+  auto item_name = [&crush](int item) {
+    const char *name = crush.get_item_name(item);
+    return name ? string(name) : stringify(item);
+  };
+  const string zone_name = type_name(zone_type);
+  auto fail = [&](const auto&... why) {
+    if (ss) {
+      const char *rule_name = crush.get_rule_name(crush_rule);
+      *ss << "crush rule "
+          << (rule_name ? string(rule_name) : stringify(crush_rule))
+          << " does not place " << per_zone << " OSDs in each of "
+          << num_zones << " " << zone_name << " buckets: ";
+      (*ss << ... << why);
+    }
+    return -EINVAL;
+  };
+
+  // types are numbered from the leaves up, as get_children_of_type() assumes
+  const int result_max = num_zones * per_zone;
+  set<int> taken_zones;
+  bool chose_zones = false;
+  int emits = 0;
+  int blocks = 0;
+  int take = 0;
+  int zones = -1;
+  int64_t per = 0;
+  bool leaf = false;
+  for (int i = 0; i < crush.get_rule_len(crush_rule); ++i) {
+    const int op = crush.get_rule_op(crush_rule, i);
+    const int arg1 = crush.get_rule_arg1(crush_rule, i);
+    const int arg2 = crush.get_rule_arg2(crush_rule, i);
+    switch (op) {
+    case CRUSH_RULE_TAKE:
+      {
+        take = arg1;
+        int item = take;
+        if (item < 0) {
+          int device_class;
+          crush.split_id_class(take, &item, &device_class);
+        }
+        const bool bucket = item < 0;
+        const int zone = bucket && crush.get_bucket_type(item) == zone_type ?
+          item : crush.get_parent_of_type(item, zone_type);
+        if (zone < 0) {
+          if (!taken_zones.insert(zone).second) {
+            return fail("it takes ", zone_name, " ", item_name(zone), " twice");
+          }
+          zones = 1;
+        } else if (bucket && crush.get_bucket_type(item) > zone_type) {
+          zones = -1;
+        } else {
+          return fail(item_name(item), " is not in a ", zone_name);
+        }
+        per = 1;
+        leaf = !bucket;
+      }
+      break;
+    case CRUSH_RULE_CHOOSE_FIRSTN:
+    case CRUSH_RULE_CHOOSE_INDEP:
+    case CRUSH_RULE_CHOOSELEAF_FIRSTN:
+    case CRUSH_RULE_CHOOSELEAF_INDEP:
+    case CRUSH_RULE_CHOOSE_MSR:
+      {
+        const int n = arg1 > 0 ? arg1 : arg1 + result_max;
+        if (leaf || n <= 0) {
+          return fail("step ", i, " chooses no ", type_name(arg2), " items");
+        }
+        if (zones < 0) {
+          if (arg2 != zone_type) {
+            return fail("it chooses ", type_name(arg2),
+                        " items before choosing ", zone_name, " buckets");
+          }
+          if (op == CRUSH_RULE_CHOOSE_MSR) {
+            return fail("choosemsr can move OSDs between ", zone_name,
+                        " buckets");
+          }
+          vector<int> children;
+          crush.get_children_of_type(take, zone_type, &children, false);
+          zones = std::min<int>(n, children.size());
+          chose_zones = true;
+        } else if (arg2 >= zone_type) {
+          return fail("it chooses ", type_name(arg2), " buckets inside a ",
+                      zone_name);
+        } else {
+          per = std::min<int64_t>(per * n, std::numeric_limits<int>::max());
+        }
+        leaf = arg2 == 0 ||
+          op == CRUSH_RULE_CHOOSELEAF_FIRSTN ||
+          op == CRUSH_RULE_CHOOSELEAF_INDEP;
+      }
+      break;
+    case CRUSH_RULE_EMIT:
+      if (zones < 0) {
+        return fail("it emits without choosing ", zone_name, " buckets");
+      }
+      if (!leaf) {
+        return fail("it emits buckets rather than OSDs");
+      }
+      if (per != per_zone) {
+        return fail("it places ", per, " OSDs in each ", zone_name);
+      }
+      ++emits;
+      blocks += zones;
+      zones = -1;
+      leaf = false;
+      break;
+    default:
+      break;
+    }
+  }
+  if (chose_zones && emits > 1) {
+    return fail("it chooses ", zone_name,
+                " buckets in one of several take/emit blocks");
+  }
+  if (blocks != num_zones) {
+    return fail("it places OSDs in ", blocks, " ", zone_name, " buckets");
   }
   return 0;
 }
