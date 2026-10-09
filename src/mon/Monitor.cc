@@ -3338,9 +3338,6 @@ void Monitor::get_cluster_status(stringstream &ss, Formatter *f,
   } else {
     ss << "  cluster:\n";
     ss << "    id:     " << monmap->get_fsid() << "\n";
-    if (monmap->global_stretch_mode_enabled) {
-      ss << "    stretch_mode_global: ENABLED\n";
-    }
     string health;
     healthmon()->get_health_status(false, nullptr, &health,
 				   "\n            ", "\n            ");
@@ -3821,6 +3818,11 @@ void Monitor::handle_command(MonOpRequestRef op)
   if ((module == "mds" || module == "fs")  &&
       prefix != "fs authorize") {
     mdsmon()->dispatch(op);
+    return;
+  }
+  if (prefix == "osd pool default set" || prefix == "osd pool default get") {
+    // the pool creation defaults are configuration options
+    configmon()->dispatch(op);
     return;
   }
   if ((module == "osd" ||

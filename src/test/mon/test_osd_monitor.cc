@@ -264,18 +264,21 @@ TEST_F(OSDMonitorStretchTest, ReplicatedPoolWrongMinSizeFails) {
   EXPECT_NE(ss.str().find("default size/min_size"), string::npos);
 }
 
-// Test success when EC pool is used (EC pools are allowed in stretch mode)
-TEST_F(OSDMonitorStretchTest, ECPoolSuccess) {
+// Test failure when an EC pool exists, as on releases before per-pool
+// num_zones
+TEST_F(OSDMonitorStretchTest, ECPoolFails) {
   create_ec_pool(1, "test_ec_pool", 2, 1, 1);
-  
+
   bool okay = false;
   int errcode = 0;
   stringstream ss;
-  
-  validate_pools("ec_rule", &okay, &errcode, ss);
-  
-  EXPECT_TRUE(okay) << "EC pool validation failed: " << ss.str();
-  EXPECT_EQ(errcode, 0);
+
+  validate_pools("replicated_rule", &okay, &errcode, ss);
+
+  EXPECT_FALSE(okay);
+  EXPECT_EQ(errcode, -EINVAL);
+  EXPECT_EQ("stretched pools must be replicated; 'test_ec_pool' is erasure-coded",
+            ss.str());
 }
 
 // Test failure when specified CRUSH rule does not exist
@@ -310,21 +313,19 @@ TEST_F(OSDMonitorStretchTest, WrongRuleTypeReplicatedPoolFails) {
   EXPECT_NE(ss.str().find("not a replicated rule"), string::npos);
 }
 
-// Test failure when EC pool is paired with replicated CRUSH rule
-TEST_F(OSDMonitorStretchTest, WrongRuleTypeECPoolFails) {
+// Test failure when an EC pool exists, even with an EC rule
+TEST_F(OSDMonitorStretchTest, ECPoolWithECRuleFails) {
   create_ec_pool(1, "ec_pool", 2, 1, 1);
-  
+
   bool okay = false;
   int errcode = 0;
   stringstream ss;
-  
-  // Try to use replicated rule for EC pool
-  validate_pools("replicated_rule", &okay, &errcode, ss);
-  
-  EXPECT_FALSE(okay) << "Should fail with rule type mismatch";
+
+  validate_pools("ec_rule", &okay, &errcode, ss);
+
+  EXPECT_FALSE(okay);
   EXPECT_EQ(errcode, -EINVAL);
-  EXPECT_NE(ss.str().find("erasure-coded but crush rule"), string::npos);
-  EXPECT_NE(ss.str().find("not an erasure-coded rule"), string::npos);
+  EXPECT_NE(ss.str().find("must be replicated"), string::npos) << ss.str();
 }
 
 // Test success when multiple replicated pools all have correct configuration
@@ -343,20 +344,22 @@ TEST_F(OSDMonitorStretchTest, MultipleReplicatedPoolsSuccess) {
   EXPECT_EQ(errcode, 0);
 }
 
-// Test success when multiple EC pools all have correct configuration
-TEST_F(OSDMonitorStretchTest, MultipleECPoolsSuccess) {
-  create_ec_pool(1, "ec_pool1", 2, 1, 1);
+// Test failure when an EC pool is among replicated pools
+TEST_F(OSDMonitorStretchTest, ECPoolAmongReplicatedPoolsFails) {
+  create_replicated_pool(1, "pool1", 3, 2, 0);
   create_ec_pool(2, "ec_pool2", 4, 2, 1);
-  create_ec_pool(3, "ec_pool3", 3, 2, 1);
-  
+  create_replicated_pool(3, "pool3", 3, 2, 0);
+
   bool okay = false;
   int errcode = 0;
   stringstream ss;
-  
-  validate_pools("ec_rule", &okay, &errcode, ss);
-  
-  EXPECT_TRUE(okay) << "Multiple EC pools validation failed: " << ss.str();
-  EXPECT_EQ(errcode, 0);
+
+  validate_pools("replicated_rule", &okay, &errcode, ss);
+
+  EXPECT_FALSE(okay);
+  EXPECT_EQ(errcode, -EINVAL);
+  EXPECT_NE(ss.str().find("'ec_pool2' is erasure-coded"), string::npos)
+    << ss.str();
 }
 
 // Test failure when one pool has invalid configuration in a set of pools
@@ -507,6 +510,474 @@ TEST_F(OSDMonitorValidateStretchModeNewPoolTest, RejectsDifferentZonesAndUnknown
   EXPECT_EQ(-EINVAL, validate_stretch_mode_new_pool(stretch_ec_rule, 2, zone_type,
                                                     "nosuchtype", &ss2));
   EXPECT_NE(ss2.str().find("does not exist"), string::npos) << ss2.str();
+}
+
+class OSDMonitorStretchPlanTest : public ::testing::Test {
+protected:
+  mempool::osdmap::map<int64_t, pg_pool_t> pools;
+
+  void add_pool(int64_t id, int type, int num_zones, int replica) {
+    pg_pool_t p;
+    p.type = type;
+    p.num_zones = num_zones;
+    p.replica = replica;
+    p.size = type == pg_pool_t::TYPE_REPLICATED ? num_zones * replica
+                                                : num_zones * 3;
+    pools[id] = p;
+  }
+
+  map<int64_t, OSDMonitor::StretchModeChange> plan(bool enable) {
+    return OSDMonitor::plan_stretch_mode_changes(pools, enable);
+  }
+};
+
+using Change = OSDMonitor::StretchModeChange;
+
+// Test nothing changes when there are no pools
+TEST_F(OSDMonitorStretchPlanTest, NoPools) {
+  EXPECT_TRUE(plan(true).empty());
+  EXPECT_TRUE(plan(false).empty());
+}
+
+// Test enabling stretches a local replicated pool of any size
+TEST_F(OSDMonitorStretchPlanTest, EnableStretchesLocalReplicated) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 1, 3);
+  add_pool(2, pg_pool_t::TYPE_REPLICATED, 1, 1);
+  add_pool(3, pg_pool_t::TYPE_REPLICATED, 1, 4);
+  const map<int64_t, Change> expected = {
+    {1, Change::STRETCH}, {2, Change::STRETCH}, {3, Change::STRETCH}};
+  EXPECT_EQ(expected, plan(true));
+}
+
+// Test enabling stretches a local EC pool
+TEST_F(OSDMonitorStretchPlanTest, EnableStretchesLocalErasure) {
+  add_pool(1, pg_pool_t::TYPE_ERASURE, 1, 0);
+  const map<int64_t, Change> expected = {{1, Change::STRETCH}};
+  EXPECT_EQ(expected, plan(true));
+}
+
+// Test enabling leaves a stretched replicated pool with 2 replicas alone
+TEST_F(OSDMonitorStretchPlanTest, EnableKeepsStretchedReplicaTwo) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 2, 2);
+  EXPECT_TRUE(plan(true).empty());
+}
+
+// Test enabling gives a stretched replicated pool 2 replicas per zone
+TEST_F(OSDMonitorStretchPlanTest, EnableResetsStretchedReplica) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 2, 3);
+  add_pool(2, pg_pool_t::TYPE_REPLICATED, 2, 1);
+  const map<int64_t, Change> expected = {
+    {1, Change::REPLICA}, {2, Change::REPLICA}};
+  EXPECT_EQ(expected, plan(true));
+}
+
+// Test enabling leaves a stretched EC pool alone
+TEST_F(OSDMonitorStretchPlanTest, EnableKeepsStretchedErasure) {
+  add_pool(1, pg_pool_t::TYPE_ERASURE, 2, 0);
+  EXPECT_TRUE(plan(true).empty());
+}
+
+// Test disabling unstretches every stretched pool
+TEST_F(OSDMonitorStretchPlanTest, DisableUnstretchesStretchedPools) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 2, 2);
+  add_pool(2, pg_pool_t::TYPE_ERASURE, 2, 0);
+  add_pool(3, pg_pool_t::TYPE_REPLICATED, 2, 3);
+  const map<int64_t, Change> expected = {
+    {1, Change::UNSTRETCH}, {2, Change::UNSTRETCH}, {3, Change::UNSTRETCH}};
+  EXPECT_EQ(expected, plan(false));
+}
+
+// Test disabling leaves local pools alone, whatever their size
+TEST_F(OSDMonitorStretchPlanTest, DisableKeepsLocalPools) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 1, 2);
+  add_pool(2, pg_pool_t::TYPE_ERASURE, 1, 0);
+  EXPECT_TRUE(plan(false).empty());
+}
+
+// Test a mixture of pools
+TEST_F(OSDMonitorStretchPlanTest, MixedPools) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 1, 3);
+  add_pool(2, pg_pool_t::TYPE_REPLICATED, 2, 2);
+  add_pool(3, pg_pool_t::TYPE_ERASURE, 1, 0);
+  add_pool(4, pg_pool_t::TYPE_ERASURE, 2, 0);
+  const map<int64_t, Change> enable = {
+    {1, Change::STRETCH}, {3, Change::STRETCH}};
+  EXPECT_EQ(enable, plan(true));
+  const map<int64_t, Change> disable = {
+    {2, Change::UNSTRETCH}, {4, Change::UNSTRETCH}};
+  EXPECT_EQ(disable, plan(false));
+}
+
+class OSDMonitorEnableStretchModeTest
+  : public OSDMonitorValidateStretchModeNewPoolTest {
+protected:
+  mempool::osdmap::map<int64_t, string> pool_names;
+
+  void add_pool(int64_t id, const string& name, int type, bool fast_ec = false) {
+    pg_pool_t p;
+    p.type = type;
+    p.num_zones = 1;
+    p.replica = type == pg_pool_t::TYPE_REPLICATED ? 3 : 0;
+    p.size = 3;
+    if (fast_ec) {
+      p.set_flag(pg_pool_t::FLAG_EC_OPTIMIZATIONS);
+    }
+    pools[id] = p;
+    pool_names[id] = name;
+  }
+
+  int validate(const string& rule, const string& dividing_bucket) {
+    ss.str("");
+    return OSDMonitor::validate_enable_stretch_mode(
+      crush, pool_names, pools, rule, dividing_bucket, &ss);
+  }
+};
+
+// Test success with a replicated stretch rule across the dividing bucket
+TEST_F(OSDMonitorEnableStretchModeTest, ReplicatedStretchRuleSucceeds) {
+  add_pool(1, "rbd", pg_pool_t::TYPE_REPLICATED);
+  EXPECT_EQ(0, validate("stretch_replica_rule", "zone")) << ss.str();
+}
+
+// Test success with no pools at all
+TEST_F(OSDMonitorEnableStretchModeTest, NoPoolsSucceeds) {
+  EXPECT_EQ(0, validate("stretch_replica_rule", "zone")) << ss.str();
+}
+
+// Test success with a FastEC pool
+TEST_F(OSDMonitorEnableStretchModeTest, FastECPoolSucceeds) {
+  add_pool(1, "rbd", pg_pool_t::TYPE_REPLICATED);
+  add_pool(2, "ecpool", pg_pool_t::TYPE_ERASURE, true);
+  EXPECT_EQ(0, validate("stretch_replica_rule", "zone")) << ss.str();
+}
+
+// Test failure with a legacy EC pool, which can never be stretched
+TEST_F(OSDMonitorEnableStretchModeTest, LegacyECPoolFails) {
+  add_pool(1, "rbd", pg_pool_t::TYPE_REPLICATED);
+  add_pool(2, "oldec", pg_pool_t::TYPE_ERASURE);
+  EXPECT_EQ(-EINVAL, validate("stretch_replica_rule", "zone"));
+  EXPECT_EQ("pool 'oldec' is a legacy EC pool, which cannot be stretched; "
+            "convert it to FastEC first with 'ceph osd pool set oldec "
+            "allow_ec_optimizations true'", ss.str());
+}
+
+// Test failure when the dividing bucket is not a CRUSH type
+TEST_F(OSDMonitorEnableStretchModeTest, UnknownDividingBucketFails) {
+  EXPECT_EQ(-ENOENT, validate("stretch_replica_rule", "rack"));
+  EXPECT_EQ("rack is not a valid crush bucket type", ss.str());
+}
+
+// Test failure when the rule does not exist
+TEST_F(OSDMonitorEnableStretchModeTest, UnknownRuleFails) {
+  EXPECT_GT(0, validate("no_such_rule", "zone"));
+  EXPECT_EQ("unrecognized crush rule no_such_rule", ss.str());
+}
+
+// Test failure when the rule is an EC rule
+TEST_F(OSDMonitorEnableStretchModeTest, ErasureRuleFails) {
+  EXPECT_EQ(-EINVAL, validate("stretch_ec_rule", "zone"));
+  EXPECT_EQ("crush rule stretch_ec_rule is not a replicated rule", ss.str());
+}
+
+// Test failure when the rule is stretched across another bucket type
+TEST_F(OSDMonitorEnableStretchModeTest, RuleAcrossOtherTypeFails) {
+  EXPECT_EQ(-EINVAL, validate("stretch_replica_rule", "datacenter"));
+  EXPECT_NE(ss.str().find("covers 0 datacenter buckets, but stretch mode "
+                          "requires exactly 2"), string::npos) << ss.str();
+}
+
+class OSDMonitorDisableStretchModeTest
+  : public OSDMonitorValidateStretchModeNewPoolTest {
+protected:
+  int local_rule = -1;
+
+  void SetUp() override {
+    OSDMonitorValidateStretchModeNewPoolTest::SetUp();
+    local_rule = crush.add_simple_rule("local_rule", root_name,
+                                       osd_failure_domain_name, 0, "",
+                                       "firstn", pg_pool_t::TYPE_REPLICATED,
+                                       &ss);
+    ASSERT_GE(local_rule, 0) << ss.str();
+  }
+
+  void add_pool(int64_t id, int type, int num_zones, int crush_rule) {
+    pg_pool_t p;
+    p.type = type;
+    p.num_zones = num_zones;
+    p.crush_rule = crush_rule;
+    pools[id] = p;
+  }
+
+  int validate(const string& rule, bool recovering = false) {
+    ss.str("");
+    return OSDMonitor::validate_disable_stretch_mode(crush, pools, rule,
+                                                     recovering, &ss);
+  }
+};
+
+// Test success without a rule
+TEST_F(OSDMonitorDisableStretchModeTest, NoRuleSucceeds) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 2, stretch_replica_rule);
+  EXPECT_EQ(0, validate("")) << ss.str();
+}
+
+// Test success with a replicated rule that no stretched pool uses
+TEST_F(OSDMonitorDisableStretchModeTest, NewReplicatedRuleSucceeds) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 2, stretch_replica_rule);
+  EXPECT_EQ(0, validate("local_rule")) << ss.str();
+}
+
+// Test success when only a local pool already uses the rule
+TEST_F(OSDMonitorDisableStretchModeTest, RuleOfLocalPoolSucceeds) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 2, stretch_replica_rule);
+  add_pool(2, pg_pool_t::TYPE_REPLICATED, 1, local_rule);
+  EXPECT_EQ(0, validate("local_rule")) << ss.str();
+}
+
+// Test failure while stretch mode recovers
+TEST_F(OSDMonitorDisableStretchModeTest, RecoveringFails) {
+  EXPECT_EQ(-EBUSY, validate("", true));
+  EXPECT_EQ("stretch mode is currently recovering and cannot be disabled",
+            ss.str());
+}
+
+// Test failure when the rule does not exist
+TEST_F(OSDMonitorDisableStretchModeTest, UnknownRuleFails) {
+  EXPECT_EQ(-EINVAL, validate("no_such_rule"));
+  EXPECT_EQ("unrecognized crush rule no_such_rule", ss.str());
+}
+
+// Test failure when the rule is an EC rule
+TEST_F(OSDMonitorDisableStretchModeTest, ErasureRuleFails) {
+  EXPECT_EQ(-EINVAL, validate("stretch_ec_rule"));
+  EXPECT_EQ("crush rule stretch_ec_rule type does not match pool type",
+            ss.str());
+}
+
+// Test failure when a stretched replicated pool already uses the rule
+TEST_F(OSDMonitorDisableStretchModeTest, SameRuleFails) {
+  add_pool(1, pg_pool_t::TYPE_REPLICATED, 2, stretch_replica_rule);
+  EXPECT_EQ(-EINVAL, validate("stretch_replica_rule"));
+  EXPECT_EQ("You can't disable stretch mode with the same crush rule you are "
+            "using", ss.str());
+}
+
+// A k=2 m=1 EC pool
+class OSDMonitorStretchUnsetECTest : public ::testing::Test {
+protected:
+  stringstream ss;
+
+  int check(int num_zones, int64_t size, int64_t min_size) {
+    ss.str("");
+    return OSDMonitor::check_stretch_unset_ec("ec", num_zones, 2, 3, size,
+                                              min_size, &ss);
+  }
+};
+
+// Test an older release's stretch is cleared with size k+m and min_size k
+TEST_F(OSDMonitorStretchUnsetECTest, OneZoneMinSizeKSucceeds) {
+  EXPECT_EQ(0, check(1, 3, 2)) << ss.str();
+}
+
+// Test min_size k+m is accepted
+TEST_F(OSDMonitorStretchUnsetECTest, OneZoneMinSizeKPlusMSucceeds) {
+  EXPECT_EQ(0, check(1, 3, 3)) << ss.str();
+}
+
+// Test failure for a multi-zone pool, which num_zones 1 unstretches
+TEST_F(OSDMonitorStretchUnsetECTest, TwoZonesFails) {
+  EXPECT_EQ(-EOPNOTSUPP, check(2, 3, 2));
+  EXPECT_EQ("osd pool stretch unset is not supported for EC pools with "
+            "num_zones > 1; use 'ceph osd pool set ec num_zones 1' instead",
+            ss.str());
+}
+
+// Test failure for a multi-zone pool even with its own size
+TEST_F(OSDMonitorStretchUnsetECTest, TwoZonesWithZoneSizeFails) {
+  EXPECT_EQ(-EOPNOTSUPP, check(2, 6, 2));
+}
+
+// Test failure when the size is not k+m
+TEST_F(OSDMonitorStretchUnsetECTest, SizeNotKPlusMFails) {
+  EXPECT_EQ(-EINVAL, check(1, 6, 2));
+  EXPECT_EQ("'ec' is erasure-coded: size must be 3 (k+m) and min_size "
+            "between 2 (k) and 3", ss.str());
+}
+
+// Test failure when min_size is below k
+TEST_F(OSDMonitorStretchUnsetECTest, MinSizeBelowKFails) {
+  EXPECT_EQ(-EINVAL, check(1, 3, 1));
+}
+
+// Test failure when min_size is left out (0)
+TEST_F(OSDMonitorStretchUnsetECTest, MinSizeZeroFails) {
+  EXPECT_EQ(-EINVAL, check(1, 3, 0));
+}
+
+// Test failure when min_size is above k+m
+TEST_F(OSDMonitorStretchUnsetECTest, MinSizeAboveKPlusMFails) {
+  EXPECT_EQ(-EINVAL, check(1, 3, 4));
+}
+
+class OSDMonitorCommitDefaultsTest
+  : public OSDMonitorValidateStretchModeNewPoolTest {
+protected:
+  map<string, string> defaults(bool stretch_mode_enabled, int bucket_type,
+                               uint64_t stretch_pool_size = 4) {
+    return OSDMonitor::stretch_mode_defaults_at_commit(
+      stretch_mode_enabled, crush, bucket_type, stretch_pool_size);
+  }
+};
+
+// Test nothing is converted without stretch mode
+TEST_F(OSDMonitorCommitDefaultsTest, NoStretchModeNoDefaults) {
+  EXPECT_TRUE(defaults(false, crush.get_type_id("zone")).empty());
+}
+
+// Test global stretch mode becomes two-zone defaults with half the pool size
+TEST_F(OSDMonitorCommitDefaultsTest, StretchModeDefaults) {
+  const map<string, string> expected = {
+    {"osd_pool_default_num_zones", "2"},
+    {"osd_pool_default_replica", "2"},
+    {"osd_pool_default_zone_failure_domain", "zone"}};
+  EXPECT_EQ(expected, defaults(true, crush.get_type_id("zone")));
+}
+
+// Test the zone failure domain is the type of the stretch bucket
+TEST_F(OSDMonitorCommitDefaultsTest, DatacenterStretchBucket) {
+  EXPECT_EQ("datacenter",
+            defaults(true, crush.get_type_id("datacenter"))
+              .at("osd_pool_default_zone_failure_domain"));
+}
+
+// Test a stretch pool size of 6 gives 3 replicas per zone
+TEST_F(OSDMonitorCommitDefaultsTest, StretchPoolSizeSix) {
+  EXPECT_EQ("3", defaults(true, crush.get_type_id("zone"), 6)
+                   .at("osd_pool_default_replica"));
+}
+
+// Test an odd stretch pool size rounds the replicas per zone down
+TEST_F(OSDMonitorCommitDefaultsTest, StretchPoolSizeFive) {
+  EXPECT_EQ("2", defaults(true, crush.get_type_id("zone"), 5)
+                   .at("osd_pool_default_replica"));
+}
+
+// Test an unknown stretch bucket type leaves the zone failure domain alone
+TEST_F(OSDMonitorCommitDefaultsTest, UnknownBucketTypeKeepsZoneDefault) {
+  const auto d = defaults(true, 77);
+  EXPECT_FALSE(d.contains("osd_pool_default_zone_failure_domain"));
+  EXPECT_EQ("2", d.at("osd_pool_default_num_zones"));
+}
+
+// Test the commit hint names the command and the release
+TEST(OSDMonitorUpgradeHintTest, NamesCommandAndRelease) {
+  EXPECT_EQ("the upgrade is committed with 'ceph osd require-osd-release "
+            "umbrella'", OSDMonitor::num_zones_upgrade_hint());
+}
+
+class OSDMonitorDefaultRuleTest
+  : public OSDMonitorValidateStretchModeNewPoolTest {
+protected:
+  int local_rule = -1;
+  int local_ec_rule = -1;
+
+  void SetUp() override {
+    OSDMonitorValidateStretchModeNewPoolTest::SetUp();
+    local_rule = crush.add_simple_rule("local_rule", root_name,
+                                       osd_failure_domain_name, 0, "",
+                                       "firstn", pg_pool_t::TYPE_REPLICATED,
+                                       &ss);
+    ASSERT_GE(local_rule, 0) << ss.str();
+    local_ec_rule = crush.add_simple_rule("local_ec_rule", root_name,
+                                          osd_failure_domain_name, 0, "",
+                                          "indep", pg_pool_t::TYPE_ERASURE,
+                                          &ss);
+    ASSERT_GE(local_ec_rule, 0) << ss.str();
+  }
+
+  bool suits(int64_t rule, int pool_type, int64_t num_zones,
+             const string& zone = "zone") {
+    return OSDMonitor::default_rule_suits_pool(crush, rule, pool_type,
+                                               num_zones, zone, pools);
+  }
+};
+
+// Test no default rule suits no pool
+TEST_F(OSDMonitorDefaultRuleTest, NoRule) {
+  EXPECT_FALSE(suits(-1, pg_pool_t::TYPE_REPLICATED, 1));
+  EXPECT_FALSE(suits(-1, pg_pool_t::TYPE_ERASURE, 2));
+}
+
+// Test a rule that does not exist suits no pool
+TEST_F(OSDMonitorDefaultRuleTest, MissingRule) {
+  EXPECT_FALSE(suits(99, pg_pool_t::TYPE_REPLICATED, 1));
+}
+
+// Test a single-zone pool takes a rule of its type
+TEST_F(OSDMonitorDefaultRuleTest, SingleZoneOfPoolType) {
+  EXPECT_TRUE(suits(local_rule, pg_pool_t::TYPE_REPLICATED, 1));
+  EXPECT_TRUE(suits(local_ec_rule, pg_pool_t::TYPE_ERASURE, 1));
+}
+
+// Test a rule of the other type suits no pool
+TEST_F(OSDMonitorDefaultRuleTest, OtherType) {
+  EXPECT_FALSE(suits(local_ec_rule, pg_pool_t::TYPE_REPLICATED, 1));
+  EXPECT_FALSE(suits(local_rule, pg_pool_t::TYPE_ERASURE, 1));
+  EXPECT_FALSE(suits(stretch_ec_rule, pg_pool_t::TYPE_REPLICATED, 2));
+}
+
+// Test a two-zone pool takes a stretch rule across its zone type
+TEST_F(OSDMonitorDefaultRuleTest, TwoZonesStretchRule) {
+  EXPECT_TRUE(suits(stretch_replica_rule, pg_pool_t::TYPE_REPLICATED, 2));
+  EXPECT_TRUE(suits(stretch_ec_rule, pg_pool_t::TYPE_ERASURE, 2));
+}
+
+// Test a two-zone pool does not take a rule that keeps to one zone
+TEST_F(OSDMonitorDefaultRuleTest, TwoZonesLocalRule) {
+  EXPECT_FALSE(suits(local_rule, pg_pool_t::TYPE_REPLICATED, 2));
+}
+
+// Test a two-zone pool does not take a rule across another zone type
+TEST_F(OSDMonitorDefaultRuleTest, TwoZonesOtherZoneType) {
+  EXPECT_FALSE(suits(stretch_replica_rule, pg_pool_t::TYPE_REPLICATED, 2,
+                     "datacenter"));
+  EXPECT_FALSE(suits(stretch_replica_rule, pg_pool_t::TYPE_REPLICATED, 2,
+                     "nosuchtype"));
+}
+
+// Test a two-zone pool takes a rule that takes each zone itself
+TEST_F(OSDMonitorDefaultRuleTest, TwoZonesTakeEachZone) {
+  const int zone1 = crush.get_item_id("zone1");
+  const int zone2 = crush.get_item_id("zone2");
+  const int host = crush.get_type_id("host");
+  int rule = crush.add_rule(-1, 6, pg_pool_t::TYPE_REPLICATED);
+  ASSERT_GE(rule, 0);
+  crush.set_rule_step_take(rule, 0, zone1);
+  crush.set_rule_step_choose_leaf_firstn(rule, 1, 2, host);
+  crush.set_rule_step_emit(rule, 2);
+  crush.set_rule_step_take(rule, 3, zone2);
+  crush.set_rule_step_choose_leaf_firstn(rule, 4, 2, host);
+  crush.set_rule_step_emit(rule, 5);
+  crush.set_rule_name(rule, "take_each_zone");
+  EXPECT_TRUE(suits(rule, pg_pool_t::TYPE_REPLICATED, 2));
+}
+
+// Test a two-zone pool does not take a rule that takes only one zone
+TEST_F(OSDMonitorDefaultRuleTest, TwoZonesTakeOneZone) {
+  const int zone1 = crush.get_item_id("zone1");
+  const int host = crush.get_type_id("host");
+  int rule = crush.add_rule(-1, 3, pg_pool_t::TYPE_REPLICATED);
+  ASSERT_GE(rule, 0);
+  crush.set_rule_step_take(rule, 0, zone1);
+  crush.set_rule_step_choose_leaf_firstn(rule, 1, 2, host);
+  crush.set_rule_step_emit(rule, 2);
+  crush.set_rule_name(rule, "take_one_zone");
+  EXPECT_FALSE(suits(rule, pg_pool_t::TYPE_REPLICATED, 2));
+}
+
+// Test a three-zone pool does not take a rule across two zones
+TEST_F(OSDMonitorDefaultRuleTest, ThreeZonesTwoZoneRule) {
+  EXPECT_FALSE(suits(stretch_replica_rule, pg_pool_t::TYPE_REPLICATED, 3));
 }
 
 int main(int argc, char **argv) {
