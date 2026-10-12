@@ -364,16 +364,9 @@ bool OSDMap::containing_subtree_is_down(CephContext *cct, int id, int subtree_ty
   }
 }
 
-const OSDMap::StretchZoneCache&
-OSDMap::_get_stretch_zone_cache(int crush_rule, int barrier_type) const
+void OSDMap::_compute_stretch_zones(int crush_rule, int barrier_type,
+                                    StretchZoneCache* cache) const
 {
-  auto key = std::make_pair(crush_rule, barrier_type);
-  auto it = stretch_zone_cache.find(key);
-  if (it != stretch_zone_cache.end()) {
-    return it->second;
-  }
-
-  StretchZoneCache& cache = stretch_zone_cache[key];
   set<int> rule_roots;
   crush->find_takes_by_rule(crush_rule, &rule_roots);
   for (int root : rule_roots) {
@@ -387,26 +380,69 @@ OSDMap::_get_stretch_zone_cache(int crush_rule, int barrier_type) const
       if (osds.empty()) {
         continue;
       }
-      cache.zones.push_back(zone);
-      auto& osd_set = cache.zone_osds[zone];
+      cache->zones.push_back(zone);
+      auto& osd_set = cache->zone_osds[zone];
       int non_shadow_zone = crush->get_non_shadow_id(zone);
       for (int osd : osds) {
         osd_set.insert(osd);
-        cache.osd_to_zone[osd] = non_shadow_zone;
+        cache->osd_to_zone[osd] = non_shadow_zone;
       }
     }
   }
-  return cache;
+}
+
+void OSDMap::_build_stretch_zone_cache()
+{
+  stretch_zone_cache.clear();
+  if (!crush) {
+    return;
+  }
+  for (const auto& pi : pools) {
+    const pg_pool_t& pool = pi.second;
+    if (!pool.is_stretch_pool()) {
+      continue;
+    }
+    auto key = std::make_pair((int)pool.crush_rule,
+                              (int)pool.peering_crush_bucket_barrier);
+    if (!stretch_zone_cache.contains(key)) {
+      _compute_stretch_zones(key.first, key.second, &stretch_zone_cache[key]);
+    }
+  }
 }
 
 void OSDMap::get_stretch_zones(const pg_pool_t& pool,
                                map<int, set<int>>* zone_osds) const
 {
-  const StretchZoneCache& cache = _get_stretch_zone_cache(
-    pool.crush_rule, pool.peering_crush_bucket_barrier);
-  for (int zone : cache.zones) {
-    (*zone_osds)[zone] = cache.zone_osds.at(zone);
+  auto key = std::make_pair((int)pool.crush_rule,
+                            (int)pool.peering_crush_bucket_barrier);
+  auto it = stretch_zone_cache.find(key);
+  if (it != stretch_zone_cache.end()) {
+    for (int zone : it->second.zones) {
+      (*zone_osds)[zone] = it->second.zone_osds.at(zone);
+    }
+    return;
   }
+  // Not precomputed (a rule/barrier no stretch pool uses); compute directly
+  // without mutating the shared cache, so const readers stay thread-safe.
+  StretchZoneCache tmp;
+  _compute_stretch_zones(key.first, key.second, &tmp);
+  for (int zone : tmp.zones) {
+    (*zone_osds)[zone] = std::move(tmp.zone_osds[zone]);
+  }
+}
+
+int OSDMap::get_osd_zone(int osd, int crush_rule, int barrier_type) const
+{
+  auto key = std::make_pair(crush_rule, barrier_type);
+  auto it = stretch_zone_cache.find(key);
+  if (it != stretch_zone_cache.end()) {
+    auto zit = it->second.osd_to_zone.find(osd);
+    return zit != it->second.osd_to_zone.end() ? zit->second : 0;
+  }
+  StretchZoneCache tmp;
+  _compute_stretch_zones(crush_rule, barrier_type, &tmp);
+  auto zit = tmp.osd_to_zone.find(osd);
+  return zit != tmp.osd_to_zone.end() ? zit->second : 0;
 }
 
 bool OSDMap::at_least_one_zone_has_min_size(const pg_pool_t& pool,
@@ -2481,8 +2517,6 @@ bool OSDMap::clean_pg_upmaps(
 
 int OSDMap::apply_incremental(const Incremental &inc)
 {
-  stretch_zone_cache.clear();
-
   new_blocklist_entries = false;
   if (inc.epoch == 1)
     fsid = inc.fsid;
@@ -2810,6 +2844,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
 
   calc_num_osds();
   _calc_up_osd_features();
+  _build_stretch_zone_cache();
   return 0;
 }
 
@@ -4085,6 +4120,7 @@ void OSDMap::post_decode()
 
   calc_num_osds();
   _calc_up_osd_features();
+  _build_stretch_zone_cache();
 }
 
 void OSDMap::dump_erasure_code_profiles(

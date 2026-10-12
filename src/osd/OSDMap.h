@@ -679,10 +679,11 @@ private:
     std::map<int, std::set<int>> zone_osds;
     std::map<int, int> osd_to_zone;
   };
-  mutable std::map<std::pair<int,int>, StretchZoneCache> stretch_zone_cache;
+  std::map<std::pair<int,int>, StretchZoneCache> stretch_zone_cache;
 
-  const StretchZoneCache& _get_stretch_zone_cache(int crush_rule,
-                                                   int barrier_type) const;
+  void _compute_stretch_zones(int crush_rule, int barrier_type,
+                              StretchZoneCache* cache) const;
+  void _build_stretch_zone_cache();
 
  public:
   bool have_crc() const { return crc_defined; }
@@ -753,7 +754,8 @@ public:
     // NOTE: we do not copy crush.  note that apply_incremental will
     // allocate a new CrushWrapper, though.
 
-    stretch_zone_cache.clear();
+    // The copied cache is keyed by (crush_rule, barrier) over the shared
+    // topology, so it stays valid; apply_incremental rebuilds it regardless.
   }
 
   // map info
@@ -1038,11 +1040,7 @@ public:
   bool at_least_one_zone_has_min_size(const pg_pool_t& pool, const std::vector<int>& acting) const ;
   unsigned stretch_num_acting_below_min_size(const pg_pool_t& pool, const std::vector<int>& acting) const;
 
-  int get_osd_zone(int osd, int crush_rule, int barrier_type) const {
-    const auto& cache = _get_stretch_zone_cache(crush_rule, barrier_type);
-    auto it = cache.osd_to_zone.find(osd);
-    return it != cache.osd_to_zone.end() ? it->second : 0;
-  }
+  int get_osd_zone(int osd, int crush_rule, int barrier_type) const;
 
   bool subtree_type_is_down(CephContext *cct, int id, int subtree_type, std::set<int> *down_in_osds, std::set<int> *up_in_osds,
                             std::set<int> *subtree_up, std::unordered_map<int, std::set<int> > *subtree_type_down) const;
