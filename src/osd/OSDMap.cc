@@ -364,25 +364,97 @@ bool OSDMap::containing_subtree_is_down(CephContext *cct, int id, int subtree_ty
   }
 }
 
-void OSDMap::get_stretch_zones(const pg_pool_t& pool,
-                               map<int, set<int>>* zone_osds) const
+void OSDMap::_compute_stretch_zones(int crush_rule, int barrier_type,
+                                    StretchZoneCache* cache) const
 {
   set<int> rule_roots;
-  crush->find_takes_by_rule(pool.crush_rule, &rule_roots);
+  crush->find_takes_by_rule(crush_rule, &rule_roots);
   for (int root : rule_roots) {
     vector<int> zones;
     // A device-class rule takes a shadow root, whose zones are shadow buckets
-    crush->get_children_of_type(root, pool.peering_crush_bucket_barrier, &zones,
-                                false);
+    crush->get_children_of_type(root, barrier_type, &zones, false);
     for (int zone : zones) {
       vector<int> osds;
       crush->get_children_of_type(zone, 0, &osds);
       // A zone with no OSDs the rule can use cannot hold any of the pool
-      if (!osds.empty()) {
-        (*zone_osds)[zone].insert(osds.begin(), osds.end());
+      if (osds.empty()) {
+        continue;
+      }
+      cache->zones.push_back(zone);
+      auto& osd_set = cache->zone_osds[zone];
+      int non_shadow_zone = crush->get_non_shadow_id(zone);
+      for (int osd : osds) {
+        osd_set.insert(osd);
+        cache->osd_to_zone[osd] = non_shadow_zone;
       }
     }
   }
+}
+
+void OSDMap::_build_stretch_zone_cache()
+{
+  stretch_zone_cache.clear();
+  if (!crush) {
+    return;
+  }
+  for (const auto& pi : pools) {
+    const pg_pool_t& pool = pi.second;
+    if (!pool.is_stretch_pool()) {
+      continue;
+    }
+    auto key = std::make_pair((int)pool.crush_rule,
+                              (int)pool.peering_crush_bucket_barrier);
+    if (!stretch_zone_cache.contains(key)) {
+      _compute_stretch_zones(key.first, key.second, &stretch_zone_cache[key]);
+    }
+  }
+}
+
+void OSDMap::get_stretch_zones(const pg_pool_t& pool,
+                               map<int, set<int>>* zone_osds) const
+{
+  auto key = std::make_pair((int)pool.crush_rule,
+                            (int)pool.peering_crush_bucket_barrier);
+  auto it = stretch_zone_cache.find(key);
+  if (it != stretch_zone_cache.end()) {
+    for (int zone : it->second.zones) {
+      (*zone_osds)[zone] = it->second.zone_osds.at(zone);
+    }
+    return;
+  }
+  // Not precomputed (a rule/barrier no stretch pool uses); compute directly
+  // without mutating the shared cache, so const readers stay thread-safe.
+  StretchZoneCache tmp;
+  _compute_stretch_zones(key.first, key.second, &tmp);
+  for (int zone : tmp.zones) {
+    (*zone_osds)[zone] = std::move(tmp.zone_osds[zone]);
+  }
+}
+
+int OSDMap::get_osd_zone(int osd, int crush_rule, int barrier_type) const
+{
+  auto key = std::make_pair(crush_rule, barrier_type);
+  auto it = stretch_zone_cache.find(key);
+  if (it != stretch_zone_cache.end()) {
+    auto zit = it->second.osd_to_zone.find(osd);
+    return zit != it->second.osd_to_zone.end() ? zit->second : 0;
+  }
+  StretchZoneCache tmp;
+  _compute_stretch_zones(crush_rule, barrier_type, &tmp);
+  auto zit = tmp.osd_to_zone.find(osd);
+  return zit != tmp.osd_to_zone.end() ? zit->second : 0;
+}
+
+static unsigned count_acting_in_zone(const set<int>& zone_osds,
+                                     const vector<int>& acting)
+{
+  unsigned zone_acting = 0;
+  for (int osd : acting) {
+    if (osd != CRUSH_ITEM_NONE && zone_osds.find(osd) != zone_osds.end()) {
+      ++zone_acting;
+    }
+  }
+  return zone_acting;
 }
 
 bool OSDMap::at_least_one_zone_has_min_size(const pg_pool_t& pool,
@@ -391,19 +463,12 @@ bool OSDMap::at_least_one_zone_has_min_size(const pg_pool_t& pool,
   map<int, set<int>> zones;
   get_stretch_zones(pool, &zones);
   for (const auto& [zone, zone_osd_set] : zones) {
-    unsigned zone_acting = 0;
-    for (int osd : acting) {
-      if (osd != CRUSH_ITEM_NONE && zone_osd_set.find(osd) != zone_osd_set.end()) {
-        ++zone_acting;
-      }
-    }
-
-    if (zone_acting >= pool.min_size) {
+    if (count_acting_in_zone(zone_osd_set, acting) >= pool.min_size) {
       return true;
     }
   }
   return false;
-}                                      
+}
 
 unsigned OSDMap::stretch_num_acting_below_min_size(const pg_pool_t& pool,
                                         const vector<int>& acting) const
@@ -431,12 +496,7 @@ unsigned OSDMap::stretch_num_acting_below_min_size(const pg_pool_t& pool,
           crush->get_non_shadow_id(zone) != (int)pool.peering_crush_mandatory_member) {
         continue;
       }
-      unsigned zone_acting = 0;
-      for (int osd : acting) {
-        if (osd != CRUSH_ITEM_NONE && zone_osd_set.find(osd) != zone_osd_set.end()) {
-          ++zone_acting;
-        }
-      }
+      unsigned zone_acting = count_acting_in_zone(zone_osd_set, acting);
       if (zone_acting < pool.min_size) {
         deficit += (pool.min_size - zone_acting);
       }
@@ -2785,6 +2845,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
 
   calc_num_osds();
   _calc_up_osd_features();
+  _build_stretch_zone_cache();
   return 0;
 }
 
@@ -4060,6 +4121,7 @@ void OSDMap::post_decode()
 
   calc_num_osds();
   _calc_up_osd_features();
+  _build_stretch_zone_cache();
 }
 
 void OSDMap::dump_erasure_code_profiles(
