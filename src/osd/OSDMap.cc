@@ -445,19 +445,25 @@ int OSDMap::get_osd_zone(int osd, int crush_rule, int barrier_type) const
   return zit != tmp.osd_to_zone.end() ? zit->second : 0;
 }
 
+static unsigned count_acting_in_zone(const set<int>& zone_osds,
+                                     const vector<int>& acting)
+{
+  unsigned zone_acting = 0;
+  for (int osd : acting) {
+    if (osd != CRUSH_ITEM_NONE && zone_osds.find(osd) != zone_osds.end()) {
+      ++zone_acting;
+    }
+  }
+  return zone_acting;
+}
+
 bool OSDMap::at_least_one_zone_has_min_size(const pg_pool_t& pool,
                                         const vector<int>& acting) const
 {
   map<int, set<int>> zones;
   get_stretch_zones(pool, &zones);
   for (const auto& [zone, zone_osd_set] : zones) {
-    unsigned zone_acting = 0;
-    for (int osd : acting) {
-      if (osd != CRUSH_ITEM_NONE && zone_osd_set.find(osd) != zone_osd_set.end()) {
-        ++zone_acting;
-      }
-    }
-    if (zone_acting >= pool.min_size) {
+    if (count_acting_in_zone(zone_osd_set, acting) >= pool.min_size) {
       return true;
     }
   }
@@ -490,12 +496,7 @@ unsigned OSDMap::stretch_num_acting_below_min_size(const pg_pool_t& pool,
           crush->get_non_shadow_id(zone) != (int)pool.peering_crush_mandatory_member) {
         continue;
       }
-      unsigned zone_acting = 0;
-      for (int osd : acting) {
-        if (osd != CRUSH_ITEM_NONE && zone_osd_set.find(osd) != zone_osd_set.end()) {
-          ++zone_acting;
-        }
-      }
+      unsigned zone_acting = count_acting_in_zone(zone_osd_set, acting);
       if (zone_acting < pool.min_size) {
         deficit += (pool.min_size - zone_acting);
       }
