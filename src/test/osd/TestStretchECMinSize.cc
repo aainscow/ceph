@@ -744,3 +744,83 @@ TEST_F(StretchZoneCacheTest, CacheNotCarried_CopyWithDifferentMinSize)
   // Source must be unaffected
   EXPECT_EQ(2u, osdmap->stretch_num_acting_below_min_size(*pool, acting));
 }
+
+// ===========================================================================
+// StretchZoneCache — CRUSH topology invalidation
+//
+// The existing invalidation tests only vary min_size, which is not cached, so
+// they pass even if the cache is never refreshed. These change the CRUSH
+// topology (a new OSD in dc1) across a map interval and check the new topology
+// is reflected through both cache consumers: get_osd_zone (stretch_set_can_peer)
+// and get_stretch_zones (the min_size helpers).
+// ===========================================================================
+
+// A topology change decoded into an existing OSDMap must refresh the cache.
+// Recreates the missing post-decode rebuild: decode() left a warmed cache in
+// place, so the helpers served stale zone membership from the previous map.
+TEST_F(StretchECMinSizeTest, CacheRefreshed_AfterDecodeNewTopology)
+{
+  const int barrier = pool->peering_crush_bucket_barrier;
+  // Warm the cache against the original topology, where osd 8 does not exist.
+  ASSERT_EQ(0, osdmap->get_osd_zone(8, pool->crush_rule, barrier));
+
+  // A new map identical to the original except that osd 8 joins dc1.
+  auto moved = make_stretch_ec_osdmap();
+  {
+    CrushWrapper crush;
+    bufferlist cbl;
+    moved->crush->encode(cbl, CEPH_FEATURES_SUPPORTED_DEFAULT);
+    auto cp = cbl.cbegin();
+    crush.decode(cp);
+    int r = crush.insert_item(g_ceph_context, 8, 1.0, "osd.8",
+                              {{"root", "default"}, {"datacenter", "dc1"},
+                               {"host", "host8"}});
+    ceph_assert(r == 0);
+    OSDMap::Incremental cinc(moved->get_epoch() + 1);
+    cinc.fsid = moved->get_fsid();
+    crush.encode(cinc.crush, CEPH_FEATURES_SUPPORTED_DEFAULT);
+    moved->apply_incremental(cinc);
+  }
+  const int dc1 = moved->crush->get_item_id("dc1");
+
+  bufferlist bl;
+  moved->encode(bl, CEPH_FEATURES_SUPPORTED_DEFAULT);
+  auto p = bl.cbegin();
+  osdmap->decode(p);
+  pool = osdmap->get_pg_pool(1);
+  ASSERT_NE(pool, nullptr);
+
+  // get_osd_zone must see osd 8 in dc1, not the stale "unknown" sentinel.
+  EXPECT_EQ(dc1, osdmap->get_osd_zone(8, pool->crush_rule,
+                                      pool->peering_crush_bucket_barrier));
+
+  // The min_size helpers must count osd 8 as a dc1 member: dc0 has 2 acting
+  // (0,1), dc1 has 1 acting (osd 8), so the deficit is min_size-1 = 1. A stale
+  // cache would not know osd 8 and report dc1 empty, a deficit of 2.
+  const int N = CRUSH_ITEM_NONE;
+  EXPECT_EQ(1u, osdmap->stretch_num_acting_below_min_size(
+    *pool, {0, 1, N, 8, N, N}));
+}
+
+// A topology change applied via apply_incremental (the monitor's normal path)
+// must also be reflected. Guards against a future regression that drops the
+// apply_incremental invalidation.
+TEST_F(StretchECMinSizeTest, CacheRefreshed_AfterApplyIncrementalTopology)
+{
+  const int barrier = pool->peering_crush_bucket_barrier;
+  ASSERT_EQ(0, osdmap->get_osd_zone(8, pool->crush_rule, barrier));
+
+  modify_crush([&](CrushWrapper &crush) {
+    int r = crush.insert_item(g_ceph_context, 8, 1.0, "osd.8",
+                              {{"root", "default"}, {"datacenter", "dc1"},
+                               {"host", "host8"}});
+    ceph_assert(r == 0);
+  });
+  const int dc1 = osdmap->crush->get_item_id("dc1");
+
+  EXPECT_EQ(dc1, osdmap->get_osd_zone(8, pool->crush_rule,
+                                      pool->peering_crush_bucket_barrier));
+  const int N = CRUSH_ITEM_NONE;
+  EXPECT_EQ(1u, osdmap->stretch_num_acting_below_min_size(
+    *pool, {0, 1, N, 8, N, N}));
+}
