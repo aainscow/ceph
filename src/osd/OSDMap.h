@@ -669,10 +669,9 @@ private:
   void _calc_up_osd_features();
 
   /**
-   * Per-zone OSD membership cache for stretch pool peering helpers.
-   * Keyed by (crush_rule, barrier_bucket_type)
-   * Valid for the lifetime of this OSDMap since CRUSH topology and pool
-   * parameters are immutable once an epoch is committed.
+   * Per-zone OSD membership for stretch pool peering helpers, keyed by
+   * (crush_rule, barrier_bucket_type). Rebuilt by _build_stretch_zone_cache()
+   * whenever the map changes (post_decode, apply_incremental), then only read.
    */
   struct StretchZoneCache {
     std::vector<int> zones;
@@ -1040,6 +1039,8 @@ public:
   bool at_least_one_zone_has_min_size(const pg_pool_t& pool, const std::vector<int>& acting) const ;
   unsigned stretch_num_acting_below_min_size(const pg_pool_t& pool, const std::vector<int>& acting) const;
 
+  // Non-shadow barrier bucket (zone) id for osd under the given rule, or 0 if
+  // the osd is not placed under that rule's tree.
   int get_osd_zone(int osd, int crush_rule, int barrier_type) const;
 
   bool subtree_type_is_down(CephContext *cct, int id, int subtree_type, std::set<int> *down_in_osds, std::set<int> *up_in_osds,
