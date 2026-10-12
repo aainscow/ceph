@@ -784,7 +784,7 @@ TEST_F(StretchECMinSizeTest, CacheRefreshed_AfterDecodeNewTopology)
   const int dc1 = moved->crush->get_item_id("dc1");
 
   bufferlist bl;
-  moved->encode(bl, CEPH_FEATURES_SUPPORTED_DEFAULT);
+  moved->encode(bl, CEPH_FEATURES_SUPPORTED_DEFAULT | CEPH_FEATURE_RESERVED);
   auto p = bl.cbegin();
   osdmap->decode(p);
   pool = osdmap->get_pg_pool(1);
