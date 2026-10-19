@@ -1111,7 +1111,8 @@ int PGBackendTestFixture::direct_read(
   const hobject_t& hoid,
   uint64_t offset,
   uint64_t length,
-  bufferlist& out_data)
+  bufferlist& out_data,
+  uint32_t op_flags)
 {
   // do_op refuses a direct read to a pool without EC optimizations.
   if (!backend->get_is_ec_optimized()) {
@@ -1119,13 +1120,14 @@ int PGBackendTestFixture::direct_read(
   }
   std::vector<OSDOp> ops(1);
   ops[0].op.op = CEPH_OSD_OP_READ;
+  ops[0].op.flags = op_flags;
   ops[0].op.extent.offset = offset;
   ops[0].op.extent.length = length;
   int r = backend->check_direct_read(ops);
   if (r < 0) {
     return r;
   }
-  return backend->objects_read_local(hoid, offset, length, 0, &out_data);
+  return backend->objects_read_local(hoid, offset, length, op_flags, &out_data);
 }
 
 void PGBackendTestFixture::visualize_miscompare(

@@ -300,6 +300,10 @@ public:
     ceph_abort_msg("Direct reads legacy EC");
   }
 
+  bool supports_shard_extent_reads() const override {
+    return is_optimized() && optimized.supports_shard_extent_reads();
+  }
+
   std::pair<uint64_t, uint64_t> extent_to_shard_extent(
     uint64_t off, uint64_t len) override {
     if (is_optimized()) {

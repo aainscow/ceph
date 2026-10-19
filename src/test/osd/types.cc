@@ -1877,6 +1877,21 @@ TEST(shard_id_t, iostream) {
     ASSERT_GT(zero, noshard);
 }
 
+TEST(ceph_osd_op_flag, scrub_name) {
+  EXPECT_STREQ("scrub", ceph_osd_op_flag_name(CEPH_OSD_OP_FLAG_SCRUB));
+  EXPECT_EQ("fadvise_dontneed+scrub",
+            ceph_osd_op_flag_string(CEPH_OSD_OP_FLAG_SCRUB |
+                                    CEPH_OSD_OP_FLAG_FADVISE_DONTNEED));
+}
+
+TEST(ceph_osd_op_flag, ec_shard_extent_name) {
+  EXPECT_STREQ("ec_shard_extent",
+               ceph_osd_op_flag_name(CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT));
+  EXPECT_EQ("fadvise_dontneed+ec_shard_extent",
+            ceph_osd_op_flag_string(CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT |
+                                    CEPH_OSD_OP_FLAG_FADVISE_DONTNEED));
+}
+
 TEST(spg_t, parse) {
   spg_t a(pg_t(1,2), shard_id_t::NO_SHARD);
   spg_t aa, bb;

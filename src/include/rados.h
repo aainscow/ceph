@@ -511,6 +511,7 @@ enum {
 									 * and handle them separately from normal ops,
 									 * apply scrub-specific behavior (e.g. bypassing clean cache)
 									 */
+        CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT = 0x200, /* EC direct read: extent of the shard object itself */
 };
 
 #define EOLDSNAPC    85  /* ORDERSNAP flag set; writer has old snapc*/

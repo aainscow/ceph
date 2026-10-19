@@ -494,6 +494,272 @@ TEST_P(TestBackendBasics, DirectReadRefusedForOtherShardsData) {
   }
 }
 
+/**
+ * ShardExtentReadChecks - a shard extent read is a READ of a non-zero length,
+ * which any shard serves, coding shards included.
+ */
+TEST_P(TestBackendBasics, ShardExtentReadChecks) {
+  const auto& backend_config = GetParam().backend;
+
+  if (backend_config.pool_type != EC ||
+      !(backend_config.pool_flags & pg_pool_t::FLAG_EC_OPTIMIZATIONS)) {
+    GTEST_SKIP() << "Direct reads need optimized EC";
+  }
+
+  for (auto& [shard_id, osd_fixture] : osd_fixtures) {
+    for (auto& [spgid, test_pg] : osd_fixture->pgs) {
+      if (!test_pg || !test_pg->has_backend()) {
+        continue;
+      }
+      PGBackend* backend = test_pg->backend.get();
+      std::vector<OSDOp> ops(1);
+      ops[0].op.op = CEPH_OSD_OP_READ;
+      ops[0].op.flags = CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT;
+      ops[0].op.extent.offset = stripe_unit;
+      ops[0].op.extent.length = stripe_unit;
+      EXPECT_EQ(0, backend->check_direct_read(ops)) << "shard " << shard_id;
+
+      ops[0].op.extent.length = 0;
+      EXPECT_EQ(-EINVAL, backend->check_direct_read(ops))
+        << "shard " << shard_id;
+
+      ops[0].op.op = CEPH_OSD_OP_SPARSE_READ;
+      ops[0].op.extent.length = stripe_unit;
+      EXPECT_EQ(-EINVAL, backend->check_direct_read(ops))
+        << "shard " << shard_id;
+    }
+  }
+}
+
+/**
+ * ShardExtentReadWrapping - a shard extent read whose end wraps is refused.
+ */
+TEST_P(TestBackendBasics, ShardExtentReadWrapping) {
+  const auto& backend_config = GetParam().backend;
+
+  if (backend_config.pool_type != EC ||
+      !(backend_config.pool_flags & pg_pool_t::FLAG_EC_OPTIMIZATIONS)) {
+    GTEST_SKIP() << "Direct reads need optimized EC";
+  }
+
+  const std::vector<std::pair<uint64_t, uint64_t>> wrapping = {
+    {1, UINT64_MAX},
+    {EC_ALIGN_SIZE, UINT64_MAX - EC_ALIGN_SIZE + 2},
+    {UINT64_MAX - EC_ALIGN_SIZE + 1, 2 * EC_ALIGN_SIZE},
+    {UINT64_MAX, 1},
+  };
+
+  for (auto& [shard_id, osd_fixture] : osd_fixtures) {
+    for (auto& [spgid, test_pg] : osd_fixture->pgs) {
+      if (!test_pg || !test_pg->has_backend()) {
+        continue;
+      }
+      PGBackend* backend = test_pg->backend.get();
+      for (auto [off, len] : wrapping) {
+        std::vector<OSDOp> ops(1);
+        ops[0].op.op = CEPH_OSD_OP_READ;
+        ops[0].op.flags = CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT;
+        ops[0].op.extent.offset = off;
+        ops[0].op.extent.length = len;
+        EXPECT_EQ(-EINVAL, backend->check_direct_read(ops))
+          << "shard " << shard_id << " " << off << "~" << len;
+      }
+    }
+  }
+}
+
+/**
+ * ShardExtentReadNotWrapping - a shard extent read whose end does not wrap is
+ * trimmed to the shard object, even where it ends past a shard of an
+ * osd_max_object_size object.
+ */
+TEST_P(TestBackendBasics, ShardExtentReadNotWrapping) {
+  const auto& backend_config = GetParam().backend;
+
+  if (backend_config.pool_type != EC ||
+      !(backend_config.pool_flags & pg_pool_t::FLAG_EC_OPTIMIZATIONS)) {
+    GTEST_SKIP() << "Direct reads need optimized EC";
+  }
+
+  const std::string obj_name = "test_shard_extent_not_wrapping_" +
+    backend_config.label + "_" + GetParam().write_read.label;
+  std::string data;
+  for (int c = 0; c < k; c++) {
+    data.append(stripe_unit, 'A' + c);
+  }
+  ASSERT_EQ(0, create_and_write(obj_name, data));
+  hobject_t hoid = make_test_object(obj_name);
+
+  const uint64_t max_size = g_conf()->osd_max_object_size;
+  const std::vector<std::pair<uint64_t, uint64_t>> extents = {
+    {0, max_size + 1},
+    {max_size, EC_ALIGN_SIZE},
+    {0, UINT64_MAX},
+    {1, UINT64_MAX - 1},
+    {UINT64_MAX - EC_ALIGN_SIZE, EC_ALIGN_SIZE},
+  };
+
+  for (auto& [shard_id, osd_fixture] : osd_fixtures) {
+    for (auto& [spgid, test_pg] : osd_fixture->pgs) {
+      if (!test_pg || !test_pg->has_backend()) {
+        continue;
+      }
+      PGBackend* backend = test_pg->backend.get();
+      for (auto [off, len] : extents) {
+        const uint64_t expected = off < stripe_unit ? stripe_unit - off : 0;
+        bufferlist bl;
+        EXPECT_EQ(int(expected), direct_read(backend, hoid, off, len, bl,
+                                             CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT))
+          << "shard " << shard_id << " " << off << "~" << len;
+        EXPECT_EQ(expected, bl.length())
+          << "shard " << shard_id << " " << off << "~" << len;
+        if (shard_id < k) {
+          EXPECT_EQ(std::string(expected, 'A' + shard_id), bl.to_str())
+            << "shard " << shard_id << " " << off << "~" << len;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * ClientDecodeFromShardExtents - a client plans a degraded read without
+ * knowing the object size, reads shard extents from the remaining data and
+ * coding shards, and rebuilds the data once it knows the size.
+ */
+TEST_P(TestBackendBasics, ClientDecodeFromShardExtents) {
+  const auto& backend_config = GetParam().backend;
+
+  if (backend_config.pool_type != EC ||
+      !(backend_config.pool_flags & pg_pool_t::FLAG_EC_OPTIMIZATIONS)) {
+    GTEST_SKIP() << "Direct reads need optimized EC";
+  }
+  ECUtil::stripe_info_t sinfo(ec_impl, &get_pool(), get_stripe_width());
+  if (sinfo.supports_sub_chunks()) {
+    GTEST_SKIP() << "Clients do not decode for plugins with sub-chunks";
+  }
+
+  const uint64_t sw = get_stripe_width();
+  const std::string prefix = "test_client_decode_" + backend_config.label +
+    "_" + GetParam().write_read.label;
+  auto pattern = [](uint64_t len, int seed) {
+    std::string s(len, 0);
+    for (uint64_t i = 0; i < len; i++) {
+      s[i] = 'a' + (i * 7 + seed) % 26;
+    }
+    return s;
+  };
+
+  std::map<std::string, std::string> objects;
+  int seed = 0;
+  for (uint64_t size : {uint64_t(1), stripe_unit - 1, stripe_unit,
+                        stripe_unit + 1, sw - 1, sw, sw + stripe_unit / 2,
+                        2 * sw + 3 * stripe_unit / 2 + 5}) {
+    std::string name = prefix + "_" + std::to_string(size);
+    objects[name] = pattern(size, seed++);
+    ASSERT_EQ(0, create_and_write(name, objects[name]));
+  }
+
+  // A partial write leaves some data shards at an older version.
+  std::string partial = prefix + "_partial";
+  objects[partial] = pattern(2 * sw, seed++);
+  ASSERT_EQ(0, create_and_write(partial, objects[partial]));
+  std::string update = pattern(200, seed++);
+  ASSERT_EQ(0, write(partial, stripe_unit + 100, update, 2 * sw));
+  objects[partial].replace(stripe_unit + 100, update.size(), update);
+
+  std::string truncated = prefix + "_truncated";
+  objects[truncated] = pattern(3 * sw, seed++);
+  ASSERT_EQ(0, create_and_write(truncated, objects[truncated]));
+  ASSERT_EQ(0, truncate_and_write(truncated, 3 * sw, sw + 100, {}));
+  objects[truncated].resize(sw + 100);
+
+  auto backend_for = [this](shard_id_t shard) -> PGBackend* {
+    for (auto& [spgid, test_pg] : osd_fixtures.at(int(shard))->pgs) {
+      if (test_pg && test_pg->has_backend()) {
+        return test_pg->backend.get();
+      }
+    }
+    return nullptr;
+  };
+
+  auto client_read = [&](const std::string& name, uint64_t off, uint64_t len,
+                         const shard_id_set& missing) {
+    const std::string& data = objects.at(name);
+    const uint64_t size = data.size();
+    hobject_t hoid = make_test_object(name);
+    std::ostringstream what_ss;
+    what_ss << name << " " << off << "~" << len << " missing " << missing;
+    const std::string what = what_ss.str();
+
+    shard_id_set available = shard_id_set::difference(sinfo.get_all_shards(),
+                                                      missing);
+    ECUtil::shard_extent_set_t want(sinfo.get_k_plus_m());
+    sinfo.ro_range_to_shard_extent_set(off, len, want);
+    ECUtil::shard_extent_set_t reads(sinfo.get_k_plus_m());
+    ECUtil::shard_extent_set_t zeros(sinfo.get_k_plus_m());
+    ASSERT_EQ(0, ECUtil::plan_read(sinfo, ec_impl, want, available, false,
+                                   std::nullopt, reads, zeros)) << what;
+    ASSERT_TRUE(zeros.empty()) << what;
+
+    ECUtil::shard_extent_map_t buffers(&sinfo);
+    for (auto&& [shard, eset] : reads) {
+      ASSERT_FALSE(missing.contains(shard)) << what;
+      PGBackend* backend = backend_for(shard);
+      ASSERT_NE(nullptr, backend) << what;
+      for (auto [shard_off, shard_len] : eset) {
+        bufferlist bl;
+        ASSERT_LE(0, direct_read(backend, hoid, shard_off, shard_len, bl,
+                                 CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT))
+          << what << " shard " << shard;
+        ASSERT_LE(bl.length(), shard_len) << what << " shard " << shard;
+        if (bl.length()) {
+          buffers.insert_in_shard(shard, shard_off, bl);
+        }
+      }
+    }
+
+    const uint64_t end = std::min(off + len, size);
+    ECUtil::shard_extent_set_t trimmed(sinfo.get_k_plus_m());
+    if (off < end) {
+      sinfo.ro_range_to_shard_extent_set(off, end - off, trimmed);
+    }
+    ASSERT_EQ(0, ECUtil::complete_read(sinfo, ec_impl, trimmed,
+                                       reads.get_shard_id_set(), size,
+                                       buffers)) << what;
+    std::string got;
+    if (off < end) {
+      got = buffers.get_ro_buffer(off, end - off).to_str();
+    }
+    EXPECT_EQ(off < end ? data.substr(off, end - off) : "", got) << what;
+  };
+
+  const uint64_t max_size = g_conf()->osd_max_object_size;
+  for (auto& [name, data] : objects) {
+    const uint64_t size = data.size();
+    std::vector<std::pair<uint64_t, uint64_t>> ranges = {
+      {0, size}, {0, size + 2 * sw}, {size / 2, stripe_unit}, {size, sw},
+      {0, max_size + sw}, {max_size, sw}};
+    if (size > 1) {
+      ranges.emplace_back(1, size - 1);
+    }
+    for (int d = 0; d < k; d++) {
+      std::vector<shard_id_set> missing_sets(1);
+      missing_sets[0].insert(sinfo.get_shard(raw_shard_id_t(d)));
+      if (m >= 2) {
+        shard_id_set two = missing_sets[0];
+        two.insert(sinfo.get_shard(raw_shard_id_t((d + 1) % k)));
+        missing_sets.push_back(two);
+      }
+      for (auto& missing : missing_sets) {
+        for (auto [off, len] : ranges) {
+          client_read(name, off, len, missing);
+        }
+      }
+    }
+  }
+}
+
 /*
  * DirectReadRefusedOnLegacyEC - a direct read to a pool without EC
  * optimizations is refused with -EOPNOTSUPP. A client only sends a direct read

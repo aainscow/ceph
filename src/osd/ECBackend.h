@@ -153,6 +153,10 @@ class ECBackend : public ECCommon {
     return extent_to_shard_extent(off, len).second != 0;
   }
 
+  bool supports_shard_extent_reads() const {
+    return sinfo.supports_direct_reads();
+  }
+
   int objects_readv_sync(const hobject_t &hoid,
      std::map<uint64_t, uint64_t>& m,
      uint32_t op_flags,

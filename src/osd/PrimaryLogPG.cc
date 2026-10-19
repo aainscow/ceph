@@ -2004,6 +2004,11 @@ bool PrimaryLogPG::should_use_coroutine(MOSDOp* m)
   return false;
 }
 
+static bool is_shard_extent_read(const OSDOp &o)
+{
+  return o.op.flags & CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT;
+}
+
 void PrimaryLogPG::do_op_impl(OpRequestRef op)
 {
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
@@ -2269,6 +2274,11 @@ void PrimaryLogPG::do_op_impl(OpRequestRef op)
       osd->reply_op_error(op, r);
       return;
     }
+  } else if (std::ranges::any_of(m->ops, is_shard_extent_read)) {
+    dout(4) << __func__ << ": shard extent read outside a direct read "
+            << *m << dendl;
+    osd->reply_op_error(op, -EINVAL);
+    return;
   }
 
   if (write_ordered) {
@@ -2409,6 +2419,13 @@ void PrimaryLogPG::do_op_impl(OpRequestRef op)
     dout(20) << __func__ << ": serving read on oid " << oid
              << dendl;
     osd->logger->inc(l_osd_replica_read_served);
+  }
+  if (m->has_flag(CEPH_OSD_FLAG_EC_DIRECT_READ)) {
+    osd->logger->inc(l_osd_ec_direct_read_served);
+    if (int(pg_whoami.shard) >= pool.info.get_ec_data_shard_count() &&
+        std::ranges::any_of(m->ops, is_shard_extent_read)) {
+      osd->logger->inc(l_osd_ec_direct_read_coding_served);
+    }
   }
 
   int r = find_object_context(
@@ -5985,6 +6002,21 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
   dout(30) << __func__ << " oi.truncate_seq: " << oi.truncate_seq << dendl;
   dout(30) << __func__ << " op.extent.truncate_seq: " << op.extent.truncate_seq << dendl;
   dout(30) << __func__ << " op.extent.truncate_size: " << op.extent.truncate_size << dendl;
+
+  // The extent is in this shard's own space: oi.size, which is logical, does
+  // not bound it.
+  if (op.flags & CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT) {
+    int r = pgbackend->objects_read_local(
+      soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata);
+    dout(20) << " EC local shard extent read for " << soid << " result=" << r
+             << dendl;
+    if (r < 0) {
+      return r;
+    }
+    ctx->delta_stats.num_rd_kb += shift_round_up(r, 10);
+    ctx->delta_stats.num_rd++;
+    return 0;
+  }
 
   // are we beyond truncate_size?
   if ( (seq < op.extent.truncate_seq) &&

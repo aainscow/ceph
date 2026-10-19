@@ -148,6 +148,14 @@ PerfCounters *build_osd_logger(CephContext *cct) {
     l_osd_replica_read_served,
     "replica_read_served",
     "Count of replica reads served");
+  osd_plb.add_u64_counter(
+    l_osd_ec_direct_read_served,
+    "ec_direct_read_served",
+    "Count of EC direct reads served");
+  osd_plb.add_u64_counter(
+    l_osd_ec_direct_read_coding_served,
+    "ec_direct_read_coding_served",
+    "Count of EC direct reads of shard extents served by a coding shard");
 
   osd_plb.add_u64_counter(
     l_osd_sop, "subop", "Suboperations");

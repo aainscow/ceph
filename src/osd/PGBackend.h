@@ -30,6 +30,7 @@
 #include "os/ObjectStore.h"
 #include "osd/scrubber_common.h"
 #include "common/LogClient.h"
+#include <limits>
 #include <string>
 #include "PGTransaction.h"
 #include "common/ostream_temp.h"
@@ -675,11 +676,26 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      return true;
    }
 
-   /// -EINVAL if a read of a direct read op holds none of this shard's data.
+   virtual bool supports_shard_extent_reads() const {
+     return false;
+   }
+
+   /// -EINVAL if a read of a direct read op holds none of this shard's data,
+   /// or is a shard extent read that this backend cannot serve or whose end
+   /// wraps.
    int check_direct_read(const std::vector<OSDOp> &ops) {
      for (auto &o : ops) {
-       if ((o.op.op == CEPH_OSD_OP_READ || o.op.op == CEPH_OSD_OP_SPARSE_READ) &&
-           !is_direct_read_local(o.op.extent.offset, o.op.extent.length)) {
+       if (o.op.flags & CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT) {
+         if (o.op.op != CEPH_OSD_OP_READ || o.op.extent.length == 0 ||
+             o.op.extent.length >
+               std::numeric_limits<uint64_t>::max() - o.op.extent.offset ||
+             !supports_shard_extent_reads()) {
+           return -EINVAL;
+         }
+       } else if ((o.op.op == CEPH_OSD_OP_READ ||
+                   o.op.op == CEPH_OSD_OP_SPARSE_READ) &&
+                  !is_direct_read_local(o.op.extent.offset,
+                                        o.op.extent.length)) {
          return -EINVAL;
        }
      }

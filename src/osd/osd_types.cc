@@ -160,6 +160,9 @@ const char * ceph_osd_op_flag_name(unsigned flag)
     case CEPH_OSD_OP_FLAG_SCRUB:
       name = "scrub";
       break;
+    case CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT:
+      name = "ec_shard_extent";
+      break;
     default:
       name = "???";
   };

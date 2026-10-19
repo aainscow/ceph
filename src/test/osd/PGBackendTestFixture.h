@@ -733,7 +733,8 @@ public:
     const hobject_t& hoid,
     uint64_t offset,
     uint64_t length,
-    bufferlist& out_data);
+    bufferlist& out_data,
+    uint32_t op_flags = 0);
 
   int delete_object(const std::string& obj_name);
 

@@ -1252,7 +1252,10 @@ int ECBackend::objects_read_local(
   // been done earlier.
   ceph_assert(!get_parent()->get_local_missing().is_missing(hoid));
 
-  auto [shard_offset, shard_len] = extent_to_shard_extent(off, len);
+  auto [shard_offset, shard_len] =
+    (op_flags & CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT) ?
+    std::pair(off, len) : extent_to_shard_extent(off, len);
+  op_flags &= ~CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT;
   if (shard_len == 0) {
     // The store would read the whole object for 0~0.
     bl->clear();
