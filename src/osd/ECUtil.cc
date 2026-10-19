@@ -6,7 +6,6 @@
 
 #include <errno.h>
 #include "common/ceph_context.h"
-#include "global/global_context.h"
 #include "include/encoding.h"
 
 using namespace std;

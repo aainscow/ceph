@@ -48,7 +48,6 @@ set(osd_srcs
   ECBackend.cc
   ECExtentCache.cc
   ECTransaction.cc
-  ECUtil.cc
   ECInject.cc
   ECInject.h
   Coroutines.h
