@@ -1550,6 +1550,12 @@ void OSDMonitor::prime_pg_temp(
  * @note receiving a transaction in this function gives a fair amount of
  * freedom to the service implementation if it does need it. It shouldn't.
  */
+// Clients send EC direct reads of coding shards and of shard extents only to
+// OSDs of a release that serves them.
+static bool ec_client_decode_release_ok(ceph_release_t release) {
+  return release > ceph_release_t::umbrella;
+}
+
 void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
 {
   dout(10) << "encode_pending e " << pending_inc.epoch
@@ -2018,6 +2024,22 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
           pending_inc.new_pools[pool_id].flags |= pg_pool_t::FLAG_OMAP;
           dout(10) << __func__ << " replicated pool " << pool_id
                    << " has OMAP support auto-enabled" << dendl;
+        }
+      }
+    }
+
+    if (!ec_client_decode_release_ok(osdmap.require_osd_release) &&
+        ec_client_decode_release_ok(tmp.require_osd_release)) {
+      dout(10) << __func__ << " first epoch with EC client decode" << dendl;
+      for (auto& [id, pool] : tmp.get_pools()) {
+        if (pool.is_erasure() && pool.allows_ecoptimizations() &&
+            !pool.is_crimson() &&
+            !pool.has_flag(pg_pool_t::FLAG_EC_CLIENT_DECODE)) {
+          if (pending_inc.new_pools.count(id) == 0) {
+            pending_inc.new_pools[id] = pool;
+          }
+          maybe_enable_pool_split_ops(pending_inc.new_pools[id],
+                                      tmp.require_osd_release);
         }
       }
     }
@@ -5598,7 +5620,7 @@ namespace {
     PG_AUTOSCALE_BIAS, DEDUP_TIER, DEDUP_CHUNK_ALGORITHM, 
     DEDUP_CDC_CHUNK_SIZE, POOL_EIO, BULK, PG_NUM_MAX, READ_RATIO,
     EC_OPTIMIZATIONS, EC_DATA_SHARD_COUNT, EC_CODING_SHARD_COUNT,
-    SUPPORTS_OMAP };
+    SUPPORTS_OMAP, EC_CLIENT_DECODE };
 
   std::set<osd_pool_get_choices>
     subtract_second_from_first(const std::set<osd_pool_get_choices>& first,
@@ -6422,6 +6444,7 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
       {"ec_data_shard_count", EC_DATA_SHARD_COUNT},
       {"ec_coding_shard_count", EC_CODING_SHARD_COUNT},
       {"supports_omap", SUPPORTS_OMAP},
+      {"ec_client_decode", EC_CLIENT_DECODE},
     };
 
     typedef std::set<osd_pool_get_choices> choices_set_t;
@@ -6437,7 +6460,7 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
     };
     const choices_set_t ONLY_ERASURE_CHOICES = {
       EC_OVERWRITES, ERASURE_CODE_PROFILE, EC_OPTIMIZATIONS,
-      EC_DATA_SHARD_COUNT, EC_CODING_SHARD_COUNT
+      EC_DATA_SHARD_COUNT, EC_CODING_SHARD_COUNT, EC_CLIENT_DECODE
     };
     const choices_set_t ONLY_REPLICA_CHOICES = {
       READ_RATIO
@@ -6697,6 +6720,10 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
           case SUPPORTS_OMAP:
             f->dump_bool("supports_omap", p->supports_omap());
             break;
+          case EC_CLIENT_DECODE:
+            f->dump_bool("ec_client_decode",
+                         p->has_flag(pg_pool_t::FLAG_EC_CLIENT_DECODE));
+            break;
 	}
       }
       f->close_section();
@@ -6886,6 +6913,11 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
           case SUPPORTS_OMAP:
             ss << "supports_omap: " <<
               (p->supports_omap() ? "true" : "false") << "\n";
+            break;
+          case EC_CLIENT_DECODE:
+            ss << "ec_client_decode: " <<
+              (p->has_flag(pg_pool_t::FLAG_EC_CLIENT_DECODE) ?
+               "true" : "false") << "\n";
             break;
 	}
 	rdata.append(ss.str());
@@ -8742,6 +8774,11 @@ void OSDMonitor::maybe_enable_pool_split_ops(pg_pool_t &p,
       !p.has_flag(pg_pool_t::FLAG_CRIMSON)) {
     p.flags |= pg_pool_t::FLAG_CLIENT_SPLIT_READS;
   }
+
+  if (p.is_erasure() && !p.has_flag(pg_pool_t::FLAG_CRIMSON) &&
+      ec_client_decode_release_ok(release)) {
+    p.flags |= pg_pool_t::FLAG_EC_CLIENT_DECODE;
+  }
 }
 
 int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
@@ -9299,6 +9336,36 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
           pending_inc.new_pg_temp[pg_temp->first] = mempool::osdmap::vector<int>(new_pg_temp.begin(), new_pg_temp.end());
         }
       }
+    }
+  } else if (var == "ec_client_decode") {
+    bool enable = false;
+    if (val == "true" || (interr.empty() && n == 1)) {
+      enable = true;
+    } else if (val == "false" || (interr.empty() && n == 0)) {
+      enable = false;
+    } else {
+      ss << "expecting value 'true', 'false', '0', or '1'";
+      return -EINVAL;
+    }
+    if (!p.is_erasure() || !p.allows_ecoptimizations()) {
+      ss << "pool '" << poolstr << "' is not an erasure-coded pool with "
+         << "allow_ec_optimizations enabled";
+      return -EINVAL;
+    }
+    if (p.has_flag(pg_pool_t::FLAG_CRIMSON)) {
+      ss << "pool '" << poolstr << "' is a crimson pool; client erasure-code "
+         << "decode is not supported";
+      return -EINVAL;
+    }
+    if (enable && !ec_client_decode_release_ok(osdmap.require_osd_release)) {
+      ss << "all OSDs must be running a release after umbrella; raise "
+         << "require_osd_release first";
+      return -EPERM;
+    }
+    if (enable) {
+      p.flags |= pg_pool_t::FLAG_EC_CLIENT_DECODE;
+    } else {
+      p.flags &= ~pg_pool_t::FLAG_EC_CLIENT_DECODE;
     }
   } else if (var == "set_pool_flags" || var == "unset_pool_flags") {
     bool force;

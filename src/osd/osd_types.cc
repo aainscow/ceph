@@ -2215,12 +2215,12 @@ void pg_pool_t::encode(ceph::buffer::list& bl, uint64_t features) const
     encode(flags, bl);
   } else if (v >= 27) {
     auto tmp = flags;
-    tmp &= ~FLAG_CLIENT_SPLIT_READS;
+    tmp &= ~(FLAG_CLIENT_SPLIT_READS | FLAG_EC_CLIENT_DECODE);
     encode(tmp, bl);
   } else {
     auto tmp = flags;
     tmp &= ~(FLAG_SELFMANAGED_SNAPS | FLAG_POOL_SNAPS | FLAG_CREATING |
-             FLAG_CLIENT_SPLIT_READS);
+             FLAG_CLIENT_SPLIT_READS | FLAG_EC_CLIENT_DECODE);
     encode(tmp, bl);
   }
   encode((uint32_t)0, bl); // crash_replay_interval
