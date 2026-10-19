@@ -23,6 +23,7 @@
  *  2. ECStripeIterator / ECStripeView — stripe-traversal geometry
  *  3. ECSplitOp::local_zone_for_acting_set() — zone selection edge cases
  *  4. SplitOp::create() — the OSD a single direct op is sent to
+ *  5. SplitOp::assemble_rc() — which errors go to the primary
  *
  * Sections 1-3 use a minimal pg_pool_t built inline (no OSDMap, no peering).
  * For ECStripeIterator, a thin helper subclass exposes the protected types.
@@ -926,6 +927,28 @@ protected:
     EXPECT_FALSE(SplitOp::create(op, *objecter, sul, cct));
     return op;
   }
+
+  Objecter::Op *prepare(const object_t &oid, ObjectOperation &rd) {
+    return objecter->prepare_read_op(
+      oid, object_locator_t(pool_id), rd, CEPH_NOSNAP, nullptr,
+      CEPH_OSD_FLAG_BALANCE_READS, -1, nullptr);
+  }
+
+  // What SplitOp::create() gets from _calc_target().
+  void fill_target(Objecter::Op *op) {
+    pg_t pgid = osdmap.raw_pg_to_pg(
+      osdmap.object_locator_to_pg(op->target.base_oid, op->target.base_oloc));
+    std::vector<int> acting;
+    int primary;
+    osdmap.pg_to_acting_osds(pgid, &acting, &primary);
+    op->target.acting = acting;
+    op->target.acting_primary = primary;
+    for (unsigned i = 0; i < acting.size(); ++i) {
+      if (acting[i] == primary) {
+        op->target.actual_pgid = spg_t(pgid, shard_id_t(i));
+      }
+    }
+  }
 };
 
 TEST_F(TestSingleDirectOpTarget, ReadGoesToItsShard)
@@ -964,5 +987,60 @@ TEST_F(TestSingleDirectOpTarget, CallGoesDirectToPrimaryShardZero)
   Objecter::Op *op = create(oid, rd);
   EXPECT_EQ(op->target.acting_primary, op->target.osd);
   EXPECT_TRUE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  op->put();
+}
+
+// ===========================================================================
+// Section 5: SplitOp::assemble_rc() — which errors go to the primary
+// ===========================================================================
+
+class ECSplitOpProbe : public ECSplitOp {
+public:
+  using ECSplitOp::ECSplitOp;
+  using SplitOp::abort;
+  using SplitOp::assemble_rc;
+  using SplitOp::reference_sub_read;
+  using SplitOp::sub_reads;
+};
+
+// A shard error other than -EAGAIN from a sub-read that only reads, such as
+// a medium error, sends the op to the primary, which records and repairs it.
+// Errors from the reference are those the primary returns, and other errors
+// are returned as they are. A cancelled or timed out op is not resent, even
+// when another sub-read returned -EAGAIN.
+TEST_F(TestSingleDirectOpTarget, ShardErrorsGoToThePrimary)
+{
+  object_t oid = object_with_primary(k);
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(0, 2 * chunk_size, &out, nullptr, nullptr);
+  Objecter::Op *op = prepare(oid, rd);
+  fill_target(op);
+
+  auto rc_for = [&](int reference_rc, int shard_rc) {
+    ECSplitOpProbe split_op(op, *objecter, cct, k + m);
+    split_op.init_reference_sub_read();
+    split_op.sub_reads.emplace(split_op.reference_sub_read, 2);
+    split_op.sub_reads.emplace(0, 2);
+    split_op.sub_reads.at(split_op.reference_sub_read).rc = reference_rc;
+    split_op.sub_reads.at(0).rc = shard_rc;
+    int rc = split_op.assemble_rc();
+    split_op.abort = true;
+    return rc;
+  };
+
+  EXPECT_EQ(-EAGAIN, rc_for(0, -EIO));
+  EXPECT_EQ(-EAGAIN, rc_for(0, -ENOENT));
+  EXPECT_EQ(-EAGAIN, rc_for(0, -ENODATA));
+  EXPECT_EQ(-EAGAIN, rc_for(-EIO, 0));
+  EXPECT_EQ(-EAGAIN, rc_for(0, -EAGAIN));
+  EXPECT_EQ(-ENOENT, rc_for(-ENOENT, -ENOENT));
+  EXPECT_EQ(-ECANCELED, rc_for(-ECANCELED, 0));
+  EXPECT_EQ(-EINVAL, rc_for(0, -EINVAL));
+  EXPECT_EQ(-ETIMEDOUT, rc_for(0, -ETIMEDOUT));
+  EXPECT_EQ(-ETIMEDOUT, rc_for(-ETIMEDOUT, 0));
+  EXPECT_EQ(-ECANCELED, rc_for(-EAGAIN, -ECANCELED));
+  EXPECT_EQ(-ETIMEDOUT, rc_for(-ETIMEDOUT, -EAGAIN));
+  EXPECT_EQ(-ECANCELED, rc_for(-ECANCELED, -EAGAIN));
   op->put();
 }

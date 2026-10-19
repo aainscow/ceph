@@ -192,6 +192,9 @@ enum {
   l_osdc_replica_read_completed,
 
   l_osdc_split_op_reads,
+  l_osdc_split_op_fallback_eagain,
+  l_osdc_split_op_fallback_version,
+  l_osdc_split_op_fallback_shard_error,
 
   l_osdc_last,
 };
@@ -236,6 +239,21 @@ std::vector<std::string> Objecter::get_tracked_keys() const noexcept
     "osd_min_split_replica_read_size"s,
     "rados_replica_read_policy"s,
   };
+}
+
+void Objecter::count_split_op_event(SplitOpEvent event)
+{
+  switch (event) {
+  case SplitOpEvent::fallback_eagain:
+    logger->inc(l_osdc_split_op_fallback_eagain);
+    break;
+  case SplitOpEvent::fallback_version:
+    logger->inc(l_osdc_split_op_fallback_version);
+    break;
+  case SplitOpEvent::fallback_shard_error:
+    logger->inc(l_osdc_split_op_fallback_shard_error);
+    break;
+  }
 }
 
 
@@ -427,6 +445,15 @@ void Objecter::init()
 			"Operations completed by replica");
     pcb.add_u64_counter(l_osdc_split_op_reads, "split_op_reads",
                     "Client read ops split by SplitOp");
+    pcb.add_u64_counter(l_osdc_split_op_fallback_eagain,
+                        "split_op_fallback_eagain",
+                        "Split ops resent to the primary after -EAGAIN");
+    pcb.add_u64_counter(l_osdc_split_op_fallback_version,
+                        "split_op_fallback_version",
+                        "Split ops resent to the primary after a version mismatch");
+    pcb.add_u64_counter(l_osdc_split_op_fallback_shard_error,
+                        "split_op_fallback_shard_error",
+                        "Split ops resent to the primary after a shard error");
 
     logger = pcb.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);

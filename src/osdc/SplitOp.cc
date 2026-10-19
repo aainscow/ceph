@@ -409,25 +409,46 @@ void ReplicaSplitOp::init_read(OSDOp &op, bool sparse, int ops_index, bool singl
 int SplitOp::assemble_rc() const {
   int rc = 0;
   bool eagain = false;
+  bool shard_error = false;
 
   // Sub-reads which use a single op should re-use original op.
   ceph_assert(sub_reads.size() > 1);
 
-  // Pick the first bad RC, otherwise return 0.
   for (auto & [index, sub_read] : sub_reads) {
     if (sub_read.rc == -EAGAIN) {
       eagain = true;
+    } else if (index == reference_sub_read) {
+      rc = sub_read.rc;
+    } else if (sub_read.rc == -EIO || sub_read.rc == -ENOENT ||
+               sub_read.rc == -ENODATA) {
+      // A race, or a medium error that the primary must record and repair.
+      shard_error = true;
     } else if (sub_read.rc < 0) {
       return sub_read.rc;
     }
-
-    // The non-reference indices only get reads, which only ever have zero RCs.
-    if (index == reference_sub_read) {
-      rc = sub_read.rc;
-    }
   }
 
-  if (eagain || version_mismatch()) {
+  // A cancelled or timed out op must not be resent.
+  if (rc == -ECANCELED || rc == -ETIMEDOUT) {
+    return rc;
+  }
+  if (eagain) {
+    objecter.count_split_op_event(Objecter::SplitOpEvent::fallback_eagain);
+    return -EAGAIN;
+  }
+  // The reference decides whether the object exists and runs the ops other
+  // than reads, so its errors are those the primary would return.
+  if (rc == -EIO) {
+    shard_error = true;
+  } else if (rc < 0) {
+    return rc;
+  }
+  if (shard_error) {
+    objecter.count_split_op_event(Objecter::SplitOpEvent::fallback_shard_error);
+    return -EAGAIN;
+  }
+  if (version_mismatch()) {
+    objecter.count_split_op_event(Objecter::SplitOpEvent::fallback_version);
     return -EAGAIN;
   }
   return rc;

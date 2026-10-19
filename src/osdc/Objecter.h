@@ -3043,6 +3043,13 @@ public:
     return min_split_replica_read_size;
   }
 
+  enum class SplitOpEvent {
+    fallback_eagain,   ///< a sub-read returned -EAGAIN
+    fallback_version,  ///< sub-reads returned different object versions
+    fallback_shard_error,
+  };
+  void count_split_op_event(SplitOpEvent event);
+
   /// cancel an in-progress request with the given return code
 private:
   int op_cancel(OSDSession *s, ceph_tid_t tid, int r,
