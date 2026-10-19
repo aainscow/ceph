@@ -229,93 +229,24 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
 
   get_all_avail_shards(hoid, have, shards, for_recovery, error_shards);
 
-  shard_id_set need_set;
-  shard_id_set want;
-
-  read_request.shard_want_to_read.populate_shard_id_set(want);
-
-  int r = 0;
-  auto kth_iter = want.find_nth(sinfo.get_k());
-  if (kth_iter != want.end()) {
-    // If we support partial reads, we are making the assumption that only
-    // K shards need to be read to recover data.  We opt here for minimising
-    // the number of reads over minimising the amount of parity calculations
-    // that are needed.
-    shard_id_set want_for_plugin = want;
-    shard_id_t kth = *kth_iter;
-    want_for_plugin.erase_range(kth, sinfo.get_k_plus_m() - (int)kth);
-    r = ec_impl->minimum_to_decode(want_for_plugin, have, need_set);
-  } else {
-    r = ec_impl->minimum_to_decode(want, have, need_set);
-  }
-
+  ECUtil::shard_extent_set_t reads(sinfo.get_k_plus_m());
+  ECUtil::shard_extent_set_t zeros_for_decode(sinfo.get_k_plus_m());
+  int r = ECUtil::plan_read(sinfo, ec_impl, read_request.shard_want_to_read,
+                            have, do_redundant_reads, read_request.object_size,
+                            reads, zeros_for_decode);
   if (r < 0) {
-    dout(20) << "minimum_to_decode_failed r: " << r << "want: " << want
-      << " have: " << have << " need: " << need_set << dendl;
+    dout(20) << "minimum_to_decode_failed r: " << r
+      << " want: " << read_request.shard_want_to_read
+      << " have: " << have << dendl;
     return r;
   }
 
-  if (do_redundant_reads) {
-    need_set.insert(have);
-  }
-
-  extent_set extra_extents;
-  ECUtil::shard_extent_set_t read_mask(sinfo.get_k_plus_m());
-  ECUtil::shard_extent_set_t zero_mask(sinfo.get_k_plus_m());
-
-  sinfo.ro_size_to_read_mask(read_request.object_size, read_mask);
-  sinfo.ro_size_to_zero_mask(read_request.object_size, zero_mask);
-
-  /* First deal with missing shards */
-  for (auto &&[shard, extent_set]: read_request.shard_want_to_read) {
-    /* Work out what extra extents we need to read on each shard. If do
-     * redundant reads is set, then we want to have the same reads on
-     * every extent. Otherwise, we need to read every shard only if the
-     * necessary shard is missing.
-     * In some (recovery) scenarios, we can "want" a shard, but not "need" to
-     * read it.  This typically happens when we do not have a data shard and the
-     * recovery for this will read enough shards to also generate all the parity.
-     *
-     * Since parity shards are often larger than data shards, we must make sure
-     * to read the extra bit!
-     */
-    if (!have.contains(shard) || do_redundant_reads ||
-        (want.contains(shard) && !need_set.contains(shard))) {
-      extra_extents.union_of(extent_set);
-    }
-  }
-
-  read_request.zeros_for_decode.clear();
-  for (auto &shard: need_set) {
-    if (!have.contains(shard)) {
-      continue;
-    }
-    shard_id_t shard_id(shard);
-    extent_set extents = extra_extents;
+  read_request.zeros_for_decode = std::move(zeros_for_decode);
+  for (auto &&[shard, extents] : reads) {
     shard_read_t shard_read;
-    shard_read.pg_shard = shards[shard_id];
-
-    if (read_request.shard_want_to_read.contains(shard)) {
-      extents.union_of(read_request.shard_want_to_read.at(shard));
-    }
-
-    extents.align(EC_ALIGN_SIZE);
-    if (read_mask.contains(shard)) {
-      shard_read.extents.intersection_of(extents, read_mask.at(shard));
-    }
-
-    if (zero_mask.contains(shard)) {
-      extents.intersection_of(zero_mask.at(shard));
-
-      /* Any remaining extents can be assumed ot be zeros... so record these. */
-      if (!extents.empty()) {
-        read_request.zeros_for_decode.emplace(shard, std::move(extents));
-      }
-    }
-
-    if (!shard_read.extents.empty()) {
-      read_request.shard_reads[shard_id] = std::move(shard_read);
-    }
+    shard_read.pg_shard = shards[shard];
+    shard_read.extents = std::move(extents);
+    read_request.shard_reads[shard] = std::move(shard_read);
   }
 
   dout(20) << __func__ << " for_recovery: " << for_recovery

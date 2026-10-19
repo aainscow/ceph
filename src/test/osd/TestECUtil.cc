@@ -13,7 +13,9 @@
  *
  */
 
+#include <algorithm>
 #include <iostream>
+#include <random>
 #include <errno.h>
 #include <signal.h>
 #include "osd/ECUtil.h"
@@ -21,6 +23,7 @@
 #include "osd/osd_types.h"
 #include "common/ceph_argparse.h"
 #include "osd/ECTransaction.h"
+#include "test/osd/MockErasureCode.h"
 using namespace std;
 using namespace ECUtil;
 
@@ -1956,4 +1959,195 @@ TEST(ECUtil, ro_range_to_shard_range)
   EXPECT_EQ(0u, s.ro_range_to_shard_range(4096, 2048, raw_shard_id_t(0)).second);
   EXPECT_EQ(std::make_pair(uint64_t(0), uint64_t(2048)),
             s.ro_range_to_shard_range(4096, 2048, raw_shard_id_t(1)));
+}
+
+namespace {
+
+// The planner of ECCommon::ReadPipeline::get_min_avail_to_read_shards() from
+// before plan_read() replaced it, kept as an oracle. Its early return for an
+// empty object is still in get_min_avail_to_read_shards().
+int old_get_min_avail_to_read_shards(
+    const stripe_info_t &sinfo,
+    const ErasureCodeInterfaceRef &ec_impl,
+    const shard_extent_set_t &shard_want_to_read,
+    const shard_id_set &have,
+    bool do_redundant_reads,
+    uint64_t object_size,
+    shard_extent_set_t &shard_reads,
+    shard_extent_set_t &zeros_for_decode)
+{
+  shard_id_set need_set;
+  shard_id_set want;
+
+  shard_want_to_read.populate_shard_id_set(want);
+
+  int r = 0;
+  auto kth_iter = want.find_nth(sinfo.get_k());
+  if (kth_iter != want.end()) {
+    shard_id_set want_for_plugin = want;
+    shard_id_t kth = *kth_iter;
+    want_for_plugin.erase_range(kth, sinfo.get_k_plus_m() - (int)kth);
+    r = ec_impl->minimum_to_decode(want_for_plugin, have, need_set);
+  } else {
+    r = ec_impl->minimum_to_decode(want, have, need_set);
+  }
+
+  if (r < 0) {
+    return r;
+  }
+
+  if (do_redundant_reads) {
+    need_set.insert(have);
+  }
+
+  extent_set extra_extents;
+  shard_extent_set_t read_mask(sinfo.get_k_plus_m());
+  shard_extent_set_t zero_mask(sinfo.get_k_plus_m());
+
+  sinfo.ro_size_to_read_mask(object_size, read_mask);
+  sinfo.ro_size_to_zero_mask(object_size, zero_mask);
+
+  for (auto &&[shard, extent_set]: shard_want_to_read) {
+    if (!have.contains(shard) || do_redundant_reads ||
+        (want.contains(shard) && !need_set.contains(shard))) {
+      extra_extents.union_of(extent_set);
+    }
+  }
+
+  zeros_for_decode.clear();
+  for (auto &shard: need_set) {
+    if (!have.contains(shard)) {
+      continue;
+    }
+    extent_set extents = extra_extents;
+    extent_set read_extents;
+
+    if (shard_want_to_read.contains(shard)) {
+      extents.union_of(shard_want_to_read.at(shard));
+    }
+
+    extents.align(EC_ALIGN_SIZE);
+    if (read_mask.contains(shard)) {
+      read_extents.intersection_of(extents, read_mask.at(shard));
+    }
+
+    if (zero_mask.contains(shard)) {
+      extents.intersection_of(zero_mask.at(shard));
+      if (!extents.empty()) {
+        zeros_for_decode.emplace(shard, std::move(extents));
+      }
+    }
+
+    if (!read_extents.empty()) {
+      shard_reads[shard] = std::move(read_extents);
+    }
+  }
+  return 0;
+}
+
+} // anonymous namespace
+
+TEST(ECUtil, plan_read_matches_old_planner)
+{
+  std::mt19937 rng(1);
+  auto pick = [&rng](uint64_t lo, uint64_t hi) {
+    return std::uniform_int_distribution<uint64_t>(lo, hi)(rng);
+  };
+  int failed = 0;
+  int degraded = 0;
+  int zero_padded = 0;
+  for (int i = 0; i < 5000; i++) {
+    const unsigned k = pick(2, 8);
+    const unsigned m = pick(1, 4);
+    const uint64_t chunk_size = EC_ALIGN_SIZE * pick(1, 16);
+    std::vector<shard_id_t> mapping;
+    for (unsigned s = 0; s < k + m; s++) {
+      mapping.push_back(shard_id_t(s));
+    }
+    if (pick(0, 1)) {
+      std::shuffle(mapping.begin(), mapping.end(), rng);
+    }
+    stripe_info_t sinfo(k, m, k * chunk_size, mapping);
+    ErasureCodeInterfaceRef ec_impl =
+      std::make_shared<MockErasureCode>(k, k + m);
+    const uint64_t sw = sinfo.get_stripe_width();
+
+    shard_id_set have = sinfo.get_all_shards();
+    for (unsigned j = pick(0, m + 1); j > 0; j--) {
+      have.erase(shard_id_t(pick(0, k + m - 1)));
+    }
+
+    const uint64_t off = pick(0, 4 * sw);
+    const uint64_t len = pick(1, 4 * sw);
+    shard_extent_set_t want(k + m);
+    switch (pick(0, 2)) {
+    case 0:
+      sinfo.ro_range_to_shard_extent_set(off, len, want);
+      break;
+    case 1:
+      sinfo.ro_range_to_shard_extent_set_with_parity(off, len, want);
+      for (auto shard : sinfo.get_all_shards()) {
+        if (pick(0, 1)) {
+          want.erase(shard);
+        }
+      }
+      break;
+    default:
+      for (auto shard : sinfo.get_all_shards()) {
+        if (pick(0, 1)) {
+          want[shard].union_insert(pick(0, 4 * chunk_size),
+                                   pick(1, 2 * chunk_size));
+        }
+      }
+    }
+
+    const bool redundant = pick(0, 1);
+    uint64_t object_size = pick(0, 6 * sw);
+    if (pick(0, 1)) {
+      object_size = p2align(object_size, chunk_size);
+    }
+
+    std::ostringstream what;
+    what << "case " << i << " k=" << k << " m=" << m
+         << " chunk_size=" << chunk_size << " mapping=" << mapping
+         << " want=" << want << " have=" << have
+         << " redundant=" << redundant << " object_size=" << object_size;
+    SCOPED_TRACE(what.str());
+
+    shard_extent_set_t old_reads(k + m);
+    shard_extent_set_t old_zeros(k + m);
+    int r = old_get_min_avail_to_read_shards(sinfo, ec_impl, want, have,
+                                             redundant, object_size,
+                                             old_reads, old_zeros);
+    shard_extent_set_t reads(k + m);
+    shard_extent_set_t zeros(k + m);
+    ASSERT_EQ(r, plan_read(sinfo, ec_impl, want, have, redundant,
+                           object_size, reads, zeros));
+    ASSERT_EQ(old_reads, reads);
+    ASSERT_EQ(old_zeros, zeros);
+
+    // A client plans before it knows the size: trimmed to the object, its
+    // reads are the OSD's.
+    shard_extent_set_t unsized_reads(k + m);
+    shard_extent_set_t unsized_zeros(k + m);
+    ASSERT_EQ(r, plan_read(sinfo, ec_impl, want, have, redundant,
+                           std::nullopt, unsized_reads, unsized_zeros));
+    ASSERT_TRUE(unsized_zeros.empty());
+    shard_extent_set_t read_mask(k + m);
+    sinfo.ro_size_to_read_mask(object_size, read_mask);
+    unsized_reads.intersection_of(read_mask);
+    ASSERT_EQ(old_reads, unsized_reads);
+
+    if (r < 0) {
+      failed++;
+    } else if (!have.includes(want.get_shard_id_set())) {
+      degraded++;
+    }
+    if (!zeros.empty()) {
+      zero_padded++;
+    }
+  }
+  EXPECT_LT(0, failed);
+  EXPECT_LT(0, degraded);
+  EXPECT_LT(0, zero_padded);
 }

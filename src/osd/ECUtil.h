@@ -16,6 +16,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <ostream>
 #include <set>
 #include <string>
@@ -1189,6 +1190,43 @@ struct log_entry_t {
 
   friend std::ostream &operator<<(std::ostream &out, const log_entry_t &lhs);
 };
+
+/**
+ * Work out the shard extents to read to rebuild want from the shards in
+ * have: the plan of the OSD's read pipeline.
+ *
+ * Without object_size the reads are not trimmed to the object and no zeros
+ * are recorded. A client plans like this before it knows the size, then
+ * calls complete_read() once it does.
+ *
+ * @return 0, or the plugin's minimum_to_decode() error.
+ */
+int plan_read(const stripe_info_t &sinfo,
+              const ErasureCodeInterfaceRef &ec_impl,
+              const shard_extent_set_t &want,
+              const shard_id_set &have,
+              bool do_redundant_reads,
+              std::optional<uint64_t> object_size,
+              shard_extent_set_t &reads,
+              shard_extent_set_t &zeros_for_decode);
+
+/**
+ * Rebuild want from buffers read from the shards in have for a plan_read()
+ * made without the object size. want must be trimmed to object_size. Reads
+ * may be short where a shard object ends.
+ *
+ * The buffers are trimmed to the reads the OSD would make for this size, so
+ * the decode is the OSD's.
+ *
+ * @return 0, -EIO if a shard returned less than the OSD would read, or the
+ *         plugin's error.
+ */
+int complete_read(const stripe_info_t &sinfo,
+                  const ErasureCodeInterfaceRef &ec_impl,
+                  const shard_extent_set_t &want,
+                  const shard_id_set &have,
+                  uint64_t object_size,
+                  shard_extent_map_t &buffers);
 
 bool is_hinfo_key_string(const std::string &key);
 const std::string &get_hinfo_key();

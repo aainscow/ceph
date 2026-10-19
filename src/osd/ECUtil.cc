@@ -1164,6 +1164,130 @@ std::ostream &operator<<(std::ostream &out, const log_entry_t &rhs) {
   return out << "[" << rhs.shard << "]->" << rhs.io << "\n";
 }
 
+int plan_read(const stripe_info_t &sinfo,
+              const ErasureCodeInterfaceRef &ec_impl,
+              const shard_extent_set_t &want,
+              const shard_id_set &have,
+              bool do_redundant_reads,
+              std::optional<uint64_t> object_size,
+              shard_extent_set_t &reads,
+              shard_extent_set_t &zeros_for_decode) {
+  shard_id_set need_set;
+  shard_id_set want_set;
+  want.populate_shard_id_set(want_set);
+
+  int r = 0;
+  auto kth_iter = want_set.find_nth(sinfo.get_k());
+  if (kth_iter != want_set.end()) {
+    // If we support partial reads, we are making the assumption that only
+    // K shards need to be read to recover data.  We opt here for minimising
+    // the number of reads over minimising the amount of parity calculations
+    // that are needed.
+    shard_id_set want_for_plugin = want_set;
+    shard_id_t kth = *kth_iter;
+    want_for_plugin.erase_range(kth, sinfo.get_k_plus_m() - (int)kth);
+    r = ec_impl->minimum_to_decode(want_for_plugin, have, need_set);
+  } else {
+    r = ec_impl->minimum_to_decode(want_set, have, need_set);
+  }
+  if (r < 0) {
+    return r;
+  }
+
+  if (do_redundant_reads) {
+    need_set.insert(have);
+  }
+
+  /* Work out what extra extents we need to read on each shard. If do
+   * redundant reads is set, then we want to have the same reads on
+   * every extent. Otherwise, we need to read every shard only if the
+   * necessary shard is missing.
+   * In some (recovery) scenarios, we can "want" a shard, but not "need" to
+   * read it.  This typically happens when we do not have a data shard and the
+   * recovery for this will read enough shards to also generate all the parity.
+   *
+   * Since parity shards are often larger than data shards, we must make sure
+   * to read the extra bit!
+   */
+  extent_set extra_extents;
+  for (auto &&[shard, eset] : want) {
+    if (!have.contains(shard) || do_redundant_reads ||
+        !need_set.contains(shard)) {
+      extra_extents.union_of(eset);
+    }
+  }
+
+  shard_extent_set_t read_mask(sinfo.get_k_plus_m());
+  shard_extent_set_t zero_mask(sinfo.get_k_plus_m());
+  if (object_size) {
+    sinfo.ro_size_to_read_mask(*object_size, read_mask);
+    sinfo.ro_size_to_zero_mask(*object_size, zero_mask);
+  }
+
+  for (auto &shard : need_set) {
+    if (!have.contains(shard)) {
+      continue;
+    }
+    extent_set extents = extra_extents;
+    if (want.contains(shard)) {
+      extents.union_of(want.at(shard));
+    }
+    extents.align(EC_ALIGN_SIZE);
+
+    if (!object_size) {
+      if (!extents.empty()) {
+        reads.emplace(shard, std::move(extents));
+      }
+      continue;
+    }
+
+    extent_set shard_reads;
+    if (read_mask.contains(shard)) {
+      shard_reads.intersection_of(extents, read_mask.at(shard));
+    }
+
+    if (zero_mask.contains(shard)) {
+      extents.intersection_of(zero_mask.at(shard));
+
+      /* Any remaining extents can be assumed ot be zeros... so record these. */
+      if (!extents.empty()) {
+        zeros_for_decode.emplace(shard, std::move(extents));
+      }
+    }
+
+    if (!shard_reads.empty()) {
+      reads.emplace(shard, std::move(shard_reads));
+    }
+  }
+  return 0;
+}
+
+int complete_read(const stripe_info_t &sinfo,
+                  const ErasureCodeInterfaceRef &ec_impl,
+                  const shard_extent_set_t &want,
+                  const shard_id_set &have,
+                  uint64_t object_size,
+                  shard_extent_map_t &buffers) {
+  if (want.empty()) {
+    buffers.clear();
+    return 0;
+  }
+
+  shard_extent_set_t reads(sinfo.get_k_plus_m());
+  shard_extent_set_t zeros_for_decode(sinfo.get_k_plus_m());
+  int r = plan_read(sinfo, ec_impl, want, have, false, object_size, reads,
+                    zeros_for_decode);
+  if (r < 0) {
+    return r;
+  }
+  if (!buffers.contains(reads)) {
+    return -EIO;
+  }
+  buffers = buffers.intersect(reads);
+  buffers.add_zero_padding_for_decode(zeros_for_decode);
+  return buffers.decode(ec_impl, want, object_size);
+}
+
 // Upgraded pools can still have keys, so there are a few functions that still
 // require these keys.
 const string HINFO_KEY = "hinfo_key";
