@@ -38,6 +38,10 @@
 
 #include "Objecter.h"
 
+namespace ECUtil {
+class shard_extent_map_t;
+}
+
 /**
  * @class SplitOp
  * @brief Base class for splitting operations across multiple OSDs for improved performance.
@@ -274,7 +278,10 @@ class SplitOp {
   struct SubRead {
     ::ObjectOperation rd;
     mini_flat_map<int, Details> details;
+    /// Reads of shard extents, by shard offset.
+    std::map<uint64_t, Details> shard_extents;
     int rc = -EIO;
+    epoch_t reply_epoch = 0;
     std::optional<InternalVersion> internal_version;
 
     SubRead(int count) : details(count) {}
@@ -313,6 +320,9 @@ class SplitOp {
   virtual bool legacy_version_mismatch() const = 0;
   virtual bool version_mismatch_v2() const = 0;
   virtual void init_reference_sub_read() = 0;
+  /// Work done on the sub-read results before assembly; -EAGAIN to resend
+  /// the op to the primary.
+  virtual int prepare_assembly() { return 0; }
   void init(OSDOp &op, int ops_index, bool single_op);
 
   Objecter::Op *orig_op;
@@ -444,7 +454,7 @@ private:
  */
 class ECSplitOp : public SplitOp{
  public:
-  using SplitOp::SplitOp;
+  ECSplitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct, int count);
   
   /**
    * @brief Initialize reference_sub_read to primary shard.
@@ -513,10 +523,45 @@ class ECSplitOp : public SplitOp{
    * @return true if versions mismatch, false if consistent
    */
   bool version_mismatch_v2() const override;
-  
-  ~ECSplitOp() {
-    complete();
-  }
+
+  /// Shards of the target's acting set whose OSD is up, less any excluded
+  /// for testing.
+  static shard_id_set available_shards(const Objecter::op_target_t &target,
+                                       Objecter &objecter);
+
+  /// True if a read of op needs a data shard that is not available.
+  static bool reads_unavailable_shard(Objecter::Op *op, const pg_pool_t *pi,
+                                      const shard_id_set &available);
+
+  /// True if pool and client settings let the client decode reads of op.
+  static bool may_decode(Objecter::Op *op, const pg_pool_t *pi,
+                         Objecter &objecter);
+
+  /// True if op, which reads a single chunk, reads one that is not available.
+  static bool single_op_reads_unavailable_shard(Objecter::Op *op,
+                                                Objecter &objecter);
+
+  /// The pool's plugin and geometry, or nullptr if the client cannot decode.
+  std::shared_ptr<const ECCodecInfo> get_codec(int64_t pool_id,
+                                               const pg_pool_t *pi);
+
+  /**
+   * Read enough of the available shards, data and coding, as shard extents
+   * to rebuild the reads of the op, and the object size from the primary.
+   * Sets abort if the shards are not enough.
+   */
+  void init_degraded(std::shared_ptr<const ECCodecInfo> codec,
+                     const shard_id_set &available);
+
+  int prepare_assembly() override;
+
+  ~ECSplitOp();
+
+ private:
+  std::shared_ptr<const ECCodecInfo> codec;
+  shard_id_set read_shards;
+  uint64_t object_size = 0;
+  std::unique_ptr<ECUtil::shard_extent_map_t> decoded;
 };
 
 /**

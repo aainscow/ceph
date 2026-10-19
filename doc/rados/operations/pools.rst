@@ -459,6 +459,11 @@ You may set values for the following keys:
 
    .. versionadded:: 20.2.0
 
+.. describe:: ec_client_decode
+
+   :Description: Allows clients to rebuild missing shards of an optimized erasure-coded pool themselves when reading directly from the OSDs, instead of sending the read to the primary OSD. Set automatically once ``require_osd_release`` is later than Umbrella. For more details, see :ref:`rados_ops_erasure_coding_client_decode`.
+   :Type: Boolean
+
 .. describe:: supports_omap
 
     :Description: Determines whether omap operations can be performed on a pool. On for replicated and erasure-coded pools with EC optimizations enabled (excluding Crimson pools), off for all other erasure-coded pools.

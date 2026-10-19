@@ -805,6 +805,15 @@ public:
     return allow_crimson;
   }
 
+  /// Clients send EC direct reads of coding shards and of shard extents
+  /// only to OSDs of a release that serves them.
+  static bool ec_client_decode_release_ok(ceph_release_t release) {
+    return release > ceph_release_t::umbrella;
+  }
+  bool ec_client_decode_release_ok() const {
+    return ec_client_decode_release_ok(require_osd_release);
+  }
+
   bool exists(int osd) const {
     //ceph_assert(osd >= 0);
     return osd >= 0 && osd < max_osd && (osd_state[osd] & CEPH_OSD_EXISTS);

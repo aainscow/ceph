@@ -55,6 +55,7 @@
 #include "common/config.h"
 #include "common/perf_counters.h"
 #include "common/scrub_types.h"
+#include "common/strtol.h"
 #include "include/str_list.h"
 #include "common/errno.h"
 #include "common/EventTrace.h"
@@ -192,9 +193,18 @@ enum {
   l_osdc_replica_read_completed,
 
   l_osdc_split_op_reads,
+  l_osdc_split_op_completed_ops,
+  l_osdc_split_op_completed_bytes,
+  l_osdc_split_op_unsupported,
   l_osdc_split_op_fallback_eagain,
+  l_osdc_split_op_fallback_interval,
   l_osdc_split_op_fallback_version,
   l_osdc_split_op_fallback_shard_error,
+  l_osdc_ec_split_op_decode_ops,
+  l_osdc_ec_split_op_decode_bytes,
+  l_osdc_ec_split_op_decode_lat,
+  l_osdc_ec_split_op_no_decode,
+  l_osdc_ec_split_op_decode_error,
 
   l_osdc_last,
 };
@@ -238,14 +248,43 @@ std::vector<std::string> Objecter::get_tracked_keys() const noexcept
     "rados_osd_op_timeout"s,
     "osd_min_split_replica_read_size"s,
     "rados_replica_read_policy"s,
+    "rados_ec_client_decode"s,
+    "objecter_debug_ec_direct_read_exclude_shards"s,
+    "objecter_debug_ec_client_decode_skip_release_check"s,
   };
 }
 
-void Objecter::count_split_op_event(SplitOpEvent event)
+static uint64_t parse_shard_mask(const std::string &shards)
+{
+  uint64_t mask = 0;
+  for (auto &s : get_str_vec(shards, ",")) {
+    std::string err;
+    int64_t shard = strict_strtoll(s, 10, &err);
+    if (err.empty() && shard >= 0 && shard < 64) {
+      mask |= 1ull << shard;
+    }
+  }
+  return mask;
+}
+
+void Objecter::count_split_op_event(SplitOpEvent event, uint64_t bytes)
 {
   switch (event) {
+  case SplitOpEvent::decode:
+    logger->inc(l_osdc_ec_split_op_decode_ops);
+    logger->inc(l_osdc_ec_split_op_decode_bytes, bytes);
+    break;
+  case SplitOpEvent::no_decode:
+    logger->inc(l_osdc_ec_split_op_no_decode);
+    break;
+  case SplitOpEvent::decode_error:
+    logger->inc(l_osdc_ec_split_op_decode_error);
+    break;
   case SplitOpEvent::fallback_eagain:
     logger->inc(l_osdc_split_op_fallback_eagain);
+    break;
+  case SplitOpEvent::fallback_interval:
+    logger->inc(l_osdc_split_op_fallback_interval);
     break;
   case SplitOpEvent::fallback_version:
     logger->inc(l_osdc_split_op_fallback_version);
@@ -253,7 +292,35 @@ void Objecter::count_split_op_event(SplitOpEvent event)
   case SplitOpEvent::fallback_shard_error:
     logger->inc(l_osdc_split_op_fallback_shard_error);
     break;
+  case SplitOpEvent::unsupported:
+    logger->inc(l_osdc_split_op_unsupported);
+    break;
   }
+}
+
+void Objecter::count_split_op_completed(const std::vector<OSDOp> &out_ops)
+{
+  uint64_t bytes = 0;
+  for (auto &o : out_ops) {
+    if (o.op.op == CEPH_OSD_OP_READ || o.op.op == CEPH_OSD_OP_SPARSE_READ) {
+      bytes += o.outdata.length();
+    }
+  }
+  logger->inc(l_osdc_split_op_completed_ops);
+  logger->inc(l_osdc_split_op_completed_bytes, bytes);
+}
+
+void Objecter::count_ec_split_op_decode_latency(ceph::timespan latency)
+{
+  logger->tinc(l_osdc_ec_split_op_decode_lat, latency);
+}
+
+// Only SplitOp sets FORCE_OSD: on its sub-reads, which also set
+// FAIL_ON_EAGAIN, and on a direct read it sends whole to one shard.
+static bool is_single_direct_read(const Objecter::op_target_t &t)
+{
+  return (t.flags & (CEPH_OSD_FLAG_FORCE_OSD | CEPH_OSD_FLAG_FAIL_ON_EAGAIN)) ==
+    CEPH_OSD_FLAG_FORCE_OSD;
 }
 
 
@@ -284,6 +351,17 @@ void Objecter::handle_conf_change(const ConfigProxy& conf,
     } else {
       extra_read_flags = 0;
     }
+  }
+  if (changed.count("rados_ec_client_decode")) {
+    ec_client_decode = conf.get_val<bool>("rados_ec_client_decode");
+  }
+  if (changed.count("objecter_debug_ec_direct_read_exclude_shards")) {
+    debug_ec_direct_read_exclude_shards = parse_shard_mask(
+      conf.get_val<std::string>("objecter_debug_ec_direct_read_exclude_shards"));
+  }
+  if (changed.count("objecter_debug_ec_client_decode_skip_release_check")) {
+    debug_ec_client_decode_skip_release_check = conf.get_val<bool>(
+      "objecter_debug_ec_client_decode_skip_release_check");
   }
 }
 
@@ -445,15 +523,44 @@ void Objecter::init()
 			"Operations completed by replica");
     pcb.add_u64_counter(l_osdc_split_op_reads, "split_op_reads",
                     "Client read ops split by SplitOp");
+    pcb.add_u64_counter(l_osdc_split_op_completed_ops,
+                        "split_op_completed_ops",
+                        "Direct reads completed without a resend to the primary");
+    pcb.add_u64_counter(l_osdc_split_op_completed_bytes,
+                        "split_op_completed_bytes",
+                        "Bytes returned by direct reads completed without a resend",
+                        NULL, 0, unit_t(UNIT_BYTES));
+    pcb.add_u64_counter(l_osdc_split_op_unsupported,
+                        "split_op_unsupported",
+                        "Balanced reads not split: unsupported op or zero-length read");
     pcb.add_u64_counter(l_osdc_split_op_fallback_eagain,
                         "split_op_fallback_eagain",
                         "Split ops resent to the primary after -EAGAIN");
+    pcb.add_u64_counter(l_osdc_split_op_fallback_interval,
+                        "split_op_fallback_interval",
+                        "Split ops resent to the primary after their PG changed");
     pcb.add_u64_counter(l_osdc_split_op_fallback_version,
                         "split_op_fallback_version",
                         "Split ops resent to the primary after a version mismatch");
     pcb.add_u64_counter(l_osdc_split_op_fallback_shard_error,
                         "split_op_fallback_shard_error",
                         "Split ops resent to the primary after a shard error");
+    pcb.add_u64_counter(l_osdc_ec_split_op_decode_ops,
+                        "ec_split_op_decode_ops",
+                        "EC split ops that rebuilt missing shards in the client");
+    pcb.add_u64_counter(l_osdc_ec_split_op_decode_bytes,
+                        "ec_split_op_decode_bytes",
+                        "Bytes returned by EC split ops that decoded",
+                        NULL, 0, unit_t(UNIT_BYTES));
+    pcb.add_time_avg(l_osdc_ec_split_op_decode_lat,
+                     "ec_split_op_decode_lat",
+                     "Time EC split ops spent decoding in the client");
+    pcb.add_u64_counter(l_osdc_ec_split_op_no_decode,
+                        "ec_split_op_no_decode",
+                        "EC reads of unavailable shards sent to the primary");
+    pcb.add_u64_counter(l_osdc_ec_split_op_decode_error,
+                        "ec_split_op_decode_error",
+                        "EC split ops resent to the primary after a decode error");
 
     logger = pcb.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);
@@ -1435,6 +1542,7 @@ void Objecter::handle_osd_map(MOSDMap *m)
 	logger->set(l_osdc_map_epoch, osdmap->get_epoch());
 
         prune_pg_mapping(osdmap->get_pools());
+        prune_ec_codecs(osdmap->get_pools());
 	cluster_full = cluster_full || _osdmap_full_flag();
 	update_pool_full_map(pool_full_map);
 
@@ -4146,6 +4254,9 @@ void Objecter::handle_osd_op_reply(cref_t<MOSDOpReply> m)
 
   // per-op result demuxing
   auto& out_ops = m->get_ops();
+  if (rc >= 0 && is_single_direct_read(op->target)) {
+    count_split_op_completed(out_ops);
+  }
 
   if (out_ops.size() != op->ops.size())
     ldout(cct, 0) << "WARNING: tid " << op->tid << " reply ops " << out_ops
@@ -5676,6 +5787,11 @@ Objecter::Objecter(CephContext *cct,
     ldout(cct, 20) << __func__ << ": read policy: balance" << dendl;
     extra_read_flags = CEPH_OSD_FLAG_BALANCE_READS;
   }
+  ec_client_decode = cct->_conf.get_val<bool>("rados_ec_client_decode");
+  debug_ec_direct_read_exclude_shards = parse_shard_mask(
+    cct->_conf.get_val<std::string>("objecter_debug_ec_direct_read_exclude_shards"));
+  debug_ec_client_decode_skip_release_check = cct->_conf.get_val<bool>(
+    "objecter_debug_ec_client_decode_skip_release_check");
 }
 
 Objecter::~Objecter()

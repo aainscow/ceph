@@ -485,6 +485,7 @@ options:
   services:
   - mon
   - osd
+  - client
   flags:
   - startup
   with_legacy: true
@@ -6945,6 +6946,45 @@ options:
     write ops to be sent to the wrong OSD, in which case the system won't function
     correctly.
   default: false
+- name: rados_ec_client_decode
+  type: bool
+  level: advanced
+  desc: Rebuild missing erasure-coded shards in the client for direct reads
+  fmt_desc: |
+    When a direct read of an erasure-coded pool with the ``ec_client_decode``
+    pool flag needs a shard that is unavailable, read enough of the other data
+    and coding shards and decode in the client, instead of sending the read to
+    the primary OSD. Needs the pool's erasure code plugin on the client.
+  default: true
+  services:
+  - client
+  see_also:
+  - rados_replica_read_policy
+  flags:
+  - runtime
+- name: objecter_debug_ec_direct_read_exclude_shards
+  type: str
+  level: dev
+  desc: Comma-separated erasure-coded shard ids that direct reads treat as unavailable
+  long_desc: Forces client decode in testing.
+  services:
+  - client
+  flags:
+  - runtime
+- name: objecter_debug_ec_client_decode_skip_release_check
+  type: bool
+  level: dev
+  desc: Let clients decode EC direct reads regardless of require_osd_release
+  long_desc: Clients decode only once require_osd_release is past umbrella. For
+    testing client decode on a cluster whose OSDs all serve shard extent reads,
+    on a pool that set_pool_flags gave ec_client_decode.
+  default: false
+  services:
+  - client
+  see_also:
+  - rados_ec_client_decode
+  flags:
+  - runtime
 # true if LTTng-UST tracepoints should be enabled
 - name: rados_tracing
   type: bool

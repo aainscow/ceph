@@ -38,6 +38,7 @@
 #include <boost/asio/io_context.hpp>
 
 #include "common/Cond.h"
+#include "erasure-code/ErasureCodePlugin.h"
 #include "global/global_context.h"
 #include "include/rados.h"
 #include "messages/MOSDMap.h"
@@ -287,4 +288,110 @@ TEST_F(TestSplitOpMapChange, ECDirectReadRedrivesWhenPrimaryMoves)
 TEST_F(TestSplitOpMapChange, ECDirectReadRedrivesWhenMinSizeChanges)
 {
   direct_read_redriven_on_new_interval([this] { raise_min_size(); }, primary);
+}
+
+// Shard 1 is excluded from direct reads, so a two-chunk read is decoded from
+// shard extents read from shard 0, whose sub-read also reads the object size,
+// and from the coding shard 2.
+class TestSplitOpDecodeMapChange : public TestSplitOpMapChange {
+protected:
+  void SetUp() override
+  {
+    TestSplitOpMapChange::SetUp();
+    const ErasureCodeProfile profile = {
+      {"plugin", "jerasure"}, {"technique", "reed_sol_van"},
+      {"k", "2"}, {"m", "1"}, {"stripe_unit", "4096"}};
+    // Tests run from the build directory, which has the plugins in ./lib.
+    // Once loaded from there, the client finds the plugin loaded.
+    ErasureCodeProfile loaded = profile;
+    ceph::ErasureCodeInterfaceRef ec_impl;
+    std::stringstream ss;
+    ASSERT_EQ(0, ceph::ErasureCodePluginRegistry::instance().factory(
+      "jerasure", "./lib", loaded, &ec_impl, &ss)) << ss.str();
+
+    set_conf("objecter_debug_ec_direct_read_exclude_shards", "1");
+    auto pool = objecter->with_osdmap([](const OSDMap& o) {
+      return *o.get_pg_pool(ec_pool_id);
+    });
+    pool.erasure_code_profile = "ec";
+    pool.set_flag(pg_pool_t::FLAG_EC_CLIENT_DECODE);
+    advance_map([&](OSDMap::Incremental& inc) {
+      inc.new_erasure_code_profiles["ec"] = profile;
+      inc.new_pools[ec_pool_id] = pool;
+      // Ops are resent on a split only once all OSDs are luminous or later.
+      inc.new_require_osd_release = ceph_release();
+    });
+  }
+
+  void TearDown() override
+  {
+    set_conf("objecter_debug_ec_direct_read_exclude_shards", "");
+    TestSplitOpMapChange::TearDown();
+  }
+
+  void set_conf(const std::string& key, const std::string& val)
+  {
+    g_ceph_context->_conf.set_val_or_die(key, val);
+    g_ceph_context->_conf.apply_changes(nullptr);
+  }
+
+  const osdc_opvec& first_ops_sent_to(int osd)
+  {
+    return boost::static_pointer_cast<_mosdop::MOSDOp<osdc_opvec>>(
+      cons[osd]->sent.front())->ops;
+  }
+
+  // The object moves to the child PG 1.1. As pgp_num is unchanged, the child
+  // stays on its parent's OSDs, which here come from the parent's pg_temp.
+  void split_pg()
+  {
+    auto pool = objecter->with_osdmap([](const OSDMap& o) {
+      return *o.get_pg_pool(ec_pool_id);
+    });
+    pool.set_pg_num(2);
+    advance_map([this, &pool](OSDMap::Incremental& inc) {
+      inc.new_pools[ec_pool_id] = pool;
+      inc.new_pg_temp[pg_t(1, ec_pool_id)] =
+        mempool::osdmap::vector<int32_t>(acting.begin(), acting.end());
+    });
+  }
+
+  // The coding shard's sub-read is still outstanding when the PG starts a
+  // new interval, so the whole read is redriven to the primary.
+  void decode_read_redriven_on_new_interval(
+    const std::function<void()>& new_interval)
+  {
+    ceph_tid_t parent = submit_read(0, 2 * chunk_size,
+                                    CEPH_OSD_FLAG_BALANCE_READS);
+    ASSERT_EQ(1u, sent_to(primary).size());
+    ASSERT_EQ(1u, sent_to(parity_osd).size());
+    EXPECT_TRUE(sent_to(shard1_osd).empty());
+    EXPECT_EQ(shard_of(parity_osd), sent_to(parity_osd).front().second);
+    EXPECT_TRUE(first_ops_sent_to(parity_osd)[0].op.flags &
+                CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT);
+    EXPECT_TRUE(first_ops_sent_to(primary)[0].op.flags &
+                CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT);
+    EXPECT_TRUE(std::ranges::any_of(first_ops_sent_to(primary),
+                                    [](const OSDOp& o) {
+      return o.op.op == CEPH_OSD_OP_STAT;
+    }));
+    reply(primary, cons[primary]->sent.back());
+
+    new_interval();
+    EXPECT_EQ(1u, sent_to(parity_osd).size());
+    ASSERT_EQ(2u, sent_to(primary).size());
+    EXPECT_EQ(parent, sent_to(primary).back().first);
+    reply(primary, cons[primary]->sent.back());
+    EXPECT_EQ(0, done.wait_for(0));
+  }
+};
+
+TEST_F(TestSplitOpDecodeMapChange, ECDecodeReadRedrivesWhenPgSplits)
+{
+  decode_read_redriven_on_new_interval([this] { split_pg(); });
+}
+
+TEST_F(TestSplitOpDecodeMapChange, ECDecodeReadRedrivesWhenCodingShardOsdDown)
+{
+  decode_read_redriven_on_new_interval([this] { mark_down(parity_osd); });
 }

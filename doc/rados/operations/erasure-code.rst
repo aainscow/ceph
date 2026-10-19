@@ -277,6 +277,47 @@ of ``k`` more viable. Increasing ``m`` still impacts write performance,
 especially for small writes, so for block and file workloads a value of ``m``
 no larger than 3 is recommended.
 
+.. _rados_ops_erasure_coding_client_decode:
+
+Direct Reads and Client Decode
+------------------------------
+
+Clients that request balanced reads, per operation or with
+:confval:`rados_replica_read_policy` set to ``balance``, read from an optimized
+erasure-coded pool directly from the OSDs that store the data shards, rather
+than through the primary OSD. RGW uses direct reads when
+:confval:`rados_replica_read_policy` is set to ``balance`` for the RGW
+daemons, for example:
+
+.. prompt:: bash $
+
+    ceph config set client.rgw rados_replica_read_policy balance
+
+When a shard that a read needs is unavailable, for example because its OSD is
+down, a client can read enough of the other data and coding shards and rebuild
+the missing data itself, instead of sending the read to the primary OSD. This
+keeps reads off the primary OSDs while the pool is degraded. It is allowed for
+pools with the ``ec_client_decode`` flag, which the monitors set on optimized
+erasure-coded pools once ``require_osd_release`` is later than Umbrella, and
+which can be cleared with:
+
+.. prompt:: bash $
+
+    ceph osd pool set ec_pool ec_client_decode false
+
+A client can also stop rebuilding data itself by setting
+:confval:`rados_ec_client_decode` to ``false``. Reads that the client does not
+rebuild itself go to the primary OSD. These include ordered reads, reads with
+operations other than reads and a few metadata operations, sparse reads, and
+reads of pools whose plugin uses sub-chunks (CLAY).
+
+The client needs the pool's erasure code plugin, found in
+:confval:`erasure_code_dir`. A client that cannot load the plugin logs a
+warning once and sends degraded reads to the primary OSD. Ceph daemons,
+including RGW, and the ``rados``, ``rbd``, ``rbd-nbd`` and ``ceph-fuse``
+commands load the plugin. Applications that use the Ceph client libraries, such
+as QEMU and programs that use the Python bindings, cannot load it.
+
 Erasure-coded pool overhead
 ---------------------------
 

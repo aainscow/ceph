@@ -14,7 +14,10 @@
 
 #include "osdc/SplitOp.h"
 #include "osdc/Objecter.h"
+#include "osd/ECUtil.h"
 #include "osd/osd_types.h"
+#include "erasure-code/ErasureCodePlugin.h"
+#include "global/global_context.h"
 
 using namespace std::literals;
 
@@ -28,6 +31,20 @@ inline boost::system::error_code osdcode(int r) {
 }
 
 constexpr static uint64_t kReplicaMinShardReads = 2;
+
+/**
+ * A pool's EC plugin and stripe geometry, for client decode. sinfo points at
+ * the copy of the pool here, which outlives the OSDMap it came from.
+ */
+struct ECCodecInfo {
+  pg_pool_t pool;
+  ceph::ErasureCodeInterfaceRef ec_impl;
+  std::optional<ECUtil::stripe_info_t> sinfo;
+
+  explicit ECCodecInfo(const pg_pool_t &pool) : pool(pool) {}
+  ECCodecInfo(const ECCodecInfo &) = delete;
+  ECCodecInfo &operator=(const ECCodecInfo &) = delete;
+};
 
 #undef dout_prefix
 #define dout_prefix *_dout << " ECSplitOp::"
@@ -133,6 +150,15 @@ std::pair<SplitOp::extent_set, bufferlist> ECSplitOp::assemble_buffer_sparse_rea
  */
 void ECSplitOp::assemble_buffer_read(bufferlist &bl_out, int ops_index) const {
   auto &orig_osd_op = orig_op->ops[ops_index].op;
+  if (decoded) {
+    uint64_t offset = orig_osd_op.extent.offset;
+    if (offset < object_size) {
+      uint64_t length = std::min<uint64_t>(orig_osd_op.extent.length,
+                                           object_size - offset);
+      bl_out.append(decoded->get_ro_buffer(offset, length));
+    }
+    return;
+  }
   const pg_pool_t *pi = objecter.osdmap->get_pg_pool(orig_op->target.base_oloc.pool);
   ceph_assert(pi);
   ECStripeView stripe_view(orig_osd_op.extent.offset, orig_osd_op.extent.length, pi);
@@ -248,6 +274,212 @@ void ECSplitOp::init_read(OSDOp &op, bool sparse, int ops_index, bool single_op)
   if (primary_required && !sub_reads.contains(reference_sub_read)) {
     sub_reads.emplace(reference_sub_read, orig_op->ops.size() + 1);
   }
+}
+
+shard_id_set ECSplitOp::available_shards(const Objecter::op_target_t &target,
+                                         Objecter &objecter) {
+  uint64_t excluded = objecter.debug_ec_direct_read_exclude_shards;
+  shard_id_set available;
+  for (unsigned i = 0; i < target.acting.size(); i++) {
+    int osd = target.acting[i];
+    if (osd != CRUSH_ITEM_NONE && objecter.osdmap->is_up(osd) &&
+        (i >= 64 || !(excluded & (1ull << i)))) {
+      available.insert(shard_id_t(i));
+    }
+  }
+  return available;
+}
+
+bool ECSplitOp::reads_unavailable_shard(Objecter::Op *op, const pg_pool_t *pi,
+                                        const shard_id_set &available) {
+  ECUtil::stripe_info_t sinfo(pi);
+  ECUtil::shard_extent_set_t want(sinfo.get_k_plus_m());
+  for (auto &o : op->ops) {
+    if (o.op.op == CEPH_OSD_OP_READ || o.op.op == CEPH_OSD_OP_SPARSE_READ) {
+      sinfo.ro_range_to_shard_extent_set(o.op.extent.offset,
+                                         o.op.extent.length, want);
+    }
+  }
+  return !available.includes(want.get_shard_id_set());
+}
+
+bool ECSplitOp::may_decode(Objecter::Op *op, const pg_pool_t *pi,
+                           Objecter &objecter) {
+  if (!pi->has_flag(pg_pool_t::FLAG_EC_CLIENT_DECODE) ||
+      !objecter.ec_client_decode) {
+    return false;
+  }
+  // set_pool_flags sets the pool flag at any release.
+  if (!objecter.osdmap->ec_client_decode_release_ok() &&
+      !objecter.debug_ec_client_decode_skip_release_check) {
+    return false;
+  }
+  // Decode loses allocation information, and the size from a STAT does not
+  // account for truncates that the client knows of and the OSD does not yet.
+  return std::ranges::none_of(op->ops, [](const OSDOp &o) {
+    return o.op.op == CEPH_OSD_OP_SPARSE_READ ||
+      (o.op.op == CEPH_OSD_OP_READ && o.op.extent.truncate_seq != 0);
+  });
+}
+
+bool ECSplitOp::single_op_reads_unavailable_shard(Objecter::Op *op,
+                                                  Objecter &objecter) {
+  const pg_pool_t *pi = objecter.osdmap->get_pg_pool(op->target.base_oloc.pool);
+  auto target = op->target;
+  target.flags &= ~CEPH_OSD_FLAG_BALANCE_READS;
+  objecter._calc_target(&target);
+  return reads_unavailable_shard(op, pi, available_shards(target, objecter));
+}
+
+std::shared_ptr<const ECCodecInfo> ECSplitOp::get_codec(int64_t pool_id,
+                                                        const pg_pool_t *pi) {
+  std::shared_ptr<const ECCodecInfo> codec;
+  {
+    std::lock_guard l{objecter.ec_codecs_lock};
+    if (auto it = objecter.ec_codecs.find(pool_id);
+        it != objecter.ec_codecs.end()) {
+      codec = it->second;
+    } else {
+      auto info = std::make_shared<ECCodecInfo>(*pi);
+      ErasureCodeProfile profile =
+        objecter.osdmap->get_erasure_code_profile(pi->erasure_code_profile);
+      std::stringstream ss;
+      int r = -EINVAL;
+      if (!g_ceph_context) {
+        ss << "erasure code plugins need the global context, which this "
+           << "process has not set up";
+      } else if (auto plugin = profile.find("plugin");
+                 plugin != profile.end()) {
+        r = ceph::ErasureCodePluginRegistry::instance().factory(
+          plugin->second, cct->_conf.get_val<std::string>("erasure_code_dir"),
+          profile, &info->ec_impl, &ss);
+      } else {
+        ss << "no plugin in erasure code profile "
+           << pi->erasure_code_profile;
+      }
+      if (r == 0) {
+        info->sinfo.emplace(info->ec_impl, &info->pool,
+                            pi->get_stripe_width());
+        codec = info;
+      } else {
+        lderr(cct) << "unable to load erasure code plugin for pool "
+                   << pool_id << ": " << ss.str()
+                   << "; degraded reads will use the primary OSD" << dendl;
+      }
+      objecter.ec_codecs[pool_id] = codec;
+    }
+  }
+  if (codec && codec->sinfo->supports_sub_chunks()) {
+    return nullptr;
+  }
+  return codec;
+}
+
+void ECSplitOp::init_degraded(std::shared_ptr<const ECCodecInfo> _codec,
+                              const shard_id_set &available) {
+  codec = std::move(_codec);
+  const ECUtil::stripe_info_t &sinfo = *codec->sinfo;
+
+  ECUtil::shard_extent_set_t want(sinfo.get_k_plus_m());
+  for (auto &o : orig_op->ops) {
+    if (o.op.op == CEPH_OSD_OP_READ) {
+      sinfo.ro_range_to_shard_extent_set(o.op.extent.offset,
+                                         o.op.extent.length, want);
+    }
+  }
+  ECUtil::shard_extent_set_t reads(sinfo.get_k_plus_m());
+  ECUtil::shard_extent_set_t zeros(sinfo.get_k_plus_m());
+  int r = ECUtil::plan_read(sinfo, codec->ec_impl, want, available, false,
+                            std::nullopt, reads, zeros);
+  if (r < 0) {
+    ldout(cct, DBG_LVL) << __func__ << " ABORT: cannot decode " << want
+                        << " from " << available << " r=" << r << dendl;
+    abort = true;
+    return;
+  }
+  ldout(cct, DBG_LVL) << __func__ << " object_id=" << orig_op->target.base_oid
+                      << " want=" << want << " available=" << available
+                      << " reads=" << reads << dendl;
+
+  read_shards = reads.get_shard_id_set();
+  for (auto &&[shard, eset] : reads) {
+    int index = int(shard);
+    if (!sub_reads.contains(index)) {
+      sub_reads.emplace(index, orig_op->ops.size() + 1);
+    }
+    SubRead &sr = sub_reads.at(index);
+    for (auto [off, len] : eset) {
+      Details &d = sr.shard_extents[off];
+      sr.rd.read(off, len, &d.ec, &d.bl);
+      sr.rd.set_last_op_flags(CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT);
+    }
+  }
+
+  for (unsigned i = 0; i < orig_op->ops.size(); ++i) {
+    if (orig_op->ops[i].op.op != CEPH_OSD_OP_READ) {
+      init(orig_op->ops[i], i, false);
+    }
+  }
+
+  if (!sub_reads.contains(reference_sub_read)) {
+    sub_reads.emplace(reference_sub_read, orig_op->ops.size() + 1);
+  }
+  sub_reads.at(reference_sub_read).rd.stat(&object_size, nullptr, nullptr);
+}
+
+int ECSplitOp::prepare_assembly() {
+  if (!codec) {
+    return 0;
+  }
+  const ECUtil::stripe_info_t &sinfo = *codec->sinfo;
+
+  auto buffers = std::make_unique<ECUtil::shard_extent_map_t>(&sinfo);
+  for (auto &&[index, sr] : sub_reads) {
+    for (auto &&[off, d] : sr.shard_extents) {
+      if (d.bl.length() != 0) {
+        buffers->insert_in_shard(shard_id_t(index), off, d.bl);
+      }
+    }
+  }
+
+  ECUtil::shard_extent_set_t want(sinfo.get_k_plus_m());
+  uint64_t bytes = 0;
+  for (auto &o : orig_op->ops) {
+    if (o.op.op == CEPH_OSD_OP_READ && o.op.extent.offset < object_size) {
+      uint64_t length = std::min<uint64_t>(o.op.extent.length,
+                                           object_size - o.op.extent.offset);
+      sinfo.ro_range_to_shard_extent_set(o.op.extent.offset, length, want);
+      bytes += length;
+    }
+  }
+
+  auto start = ceph::mono_clock::now();
+  int r = ECUtil::complete_read(sinfo, codec->ec_impl, want, read_shards,
+                                object_size, *buffers);
+  if (r < 0) {
+    ldout(cct, 0) << __func__ << " decode failed r=" << r
+                  << " pool=" << orig_op->target.base_oloc.pool
+                  << " pgid=" << orig_op->target.actual_pgid
+                  << " object_id=" << orig_op->target.base_oid
+                  << " epoch=" << orig_op->target.epoch
+                  << " size=" << object_size << " want=" << want
+                  << " read_shards=" << read_shards
+                  << "; resending to the primary" << dendl;
+    objecter.count_split_op_event(Objecter::SplitOpEvent::decode_error);
+    return -EAGAIN;
+  }
+  objecter.count_split_op_event(Objecter::SplitOpEvent::decode, bytes);
+  objecter.count_ec_split_op_decode_latency(ceph::mono_clock::now() - start);
+  decoded = std::move(buffers);
+  return 0;
+}
+
+ECSplitOp::ECSplitOp(Objecter::Op *op, Objecter &objecter, CephContext *cct,
+                     int count)
+  : SplitOp(op, objecter, cct, count) {}
+
+ECSplitOp::~ECSplitOp() {
+  complete();
 }
 
 #undef dout_prefix
@@ -409,6 +641,7 @@ void ReplicaSplitOp::init_read(OSDOp &op, bool sparse, int ops_index, bool singl
 int SplitOp::assemble_rc() const {
   int rc = 0;
   bool eagain = false;
+  bool interval_change = false;
   bool shard_error = false;
 
   // Sub-reads which use a single op should re-use original op.
@@ -416,7 +649,12 @@ int SplitOp::assemble_rc() const {
 
   for (auto & [index, sub_read] : sub_reads) {
     if (sub_read.rc == -EAGAIN) {
-      eagain = true;
+      // The Objecter fails a sub-read without a reply when its PG changes.
+      if (sub_read.reply_epoch) {
+        eagain = true;
+      } else {
+        interval_change = true;
+      }
     } else if (index == reference_sub_read) {
       rc = sub_read.rc;
     } else if (sub_read.rc == -EIO || sub_read.rc == -ENOENT ||
@@ -434,6 +672,10 @@ int SplitOp::assemble_rc() const {
   }
   if (eagain) {
     objecter.count_split_op_event(Objecter::SplitOpEvent::fallback_eagain);
+    return -EAGAIN;
+  }
+  if (interval_change) {
+    objecter.count_split_op_event(Objecter::SplitOpEvent::fallback_interval);
     return -EAGAIN;
   }
   // The reference decides whether the object exists and runs the ops other
@@ -671,6 +913,9 @@ void SplitOp::complete() {
 
   int rc = assemble_rc();
   if (rc >= 0) {
+    rc = prepare_assembly();
+  }
+  if (rc >= 0) {
 
     // In a "normal" completion, out_ops is generated in the MOSDOpReply reply
     // which we do not have here. Here we are going to mimic this behaviour
@@ -745,6 +990,7 @@ void SplitOp::complete() {
       orig_op->outbl = 0;
     }
 
+    objecter.count_split_op_completed(out_ops);
     handler_error = objecter.process_op_reply_handlers(orig_op, out_ops);
     ldout(cct, DBG_LVL) << __func__ << " object_id=" << orig_op->target.base_oid << " success this=" << this << " rc=" << rc << dendl;
   } else {
@@ -883,6 +1129,12 @@ bool validate_flags(const pg_pool_t *pi, Objecter::Op *op, CephContext *cct) {
     return false;
   }
 
+  // Only the primary orders reads against writes.
+  if (op->target.flags & CEPH_OSD_FLAG_RWORDERED) {
+    ldout(cct, DBG_LVL) << __func__ << " REJECT: ordered read" << dendl;
+    return false;
+  }
+
   if (pi->has_flag(pg_pool_t::FLAG_CRIMSON)) {
     ldout(cct, DBG_LVL) << __func__ <<" ABORT: Crimson doesn't support"
                                       " direct reads" << dendl;
@@ -907,11 +1159,14 @@ bool validate_flags(const pg_pool_t *pi, Objecter::Op *op, CephContext *cct) {
  * @param cct CephContext for logging
  * @param[out] has_primary_ops Set to true if primary-only ops are found
  * @param[out] single_direct_op Set to true if op can be sent directly to single OSD
+ * @param[out] unsupported Set to true if an op or a zero-length read cannot be
+ *             split
  * @return true if a suitable read operation was found, false otherwise
  */
 bool validate_operations(Objecter::Op *op, const pg_pool_t *pi, bool is_erasure,
                         uint64_t replica_min_read_size, CephContext *cct,
-                        bool &has_primary_ops, bool &single_direct_op) {
+                        bool &has_primary_ops, bool &single_direct_op,
+                        bool &unsupported) {
   bool suitable_read_found = false;
 
   std::optional<raw_shard_id_t> target_shard;
@@ -925,6 +1180,7 @@ bool validate_operations(Objecter::Op *op, const pg_pool_t *pi, bool is_erasure,
           // length of zero actually means "the whole object". This code cannot
           // know the size of the object efficiently, so reject the op.
           ldout(cct, DBG_LVL) << __func__ << " REJECT: Zero length read" << dendl;
+          unsupported = true;
           return false;
         }
         if ((is_erasure && length > 0) ||
@@ -952,6 +1208,7 @@ bool validate_operations(Objecter::Op *op, const pg_pool_t *pi, bool is_erasure,
       }
       default: {
         ldout(cct, DBG_LVL) << __func__ << " REJECT: unsupported op" << dendl;
+        unsupported = true;
         return false;
       }
     }
@@ -1005,9 +1262,14 @@ std::tuple<bool, bool, bool> validate(Objecter::Op *op, Objecter &objecter,
   uint64_t replica_min_read_size = replica_min_shard_read_size * kReplicaMinShardReads;
 
   // Validate operations and read sizes
+  bool unsupported = false;
   bool suitable_read_found = validate_operations(op, pi, is_erasure,
                                                  replica_min_read_size, cct,
-                                                 has_primary_ops, single_direct_op);
+                                                 has_primary_ops, single_direct_op,
+                                                 unsupported);
+  if (unsupported) {
+    objecter.count_split_op_event(Objecter::SplitOpEvent::unsupported);
+  }
 
   return {suitable_read_found, single_direct_op, has_primary_ops};
 }
@@ -1046,8 +1308,9 @@ bool test_validate_operations(Objecter::Op *op, const pg_pool_t *pi,
                               bool is_erasure, uint64_t replica_min_read_size,
                               CephContext *cct, bool &has_primary_ops,
                               bool &single_direct_op) {
+  bool unsupported = false;
   return validate_operations(op, pi, is_erasure, replica_min_read_size, cct,
-                             has_primary_ops, single_direct_op);
+                             has_primary_ops, single_direct_op, unsupported);
 }
 #endif
 
@@ -1186,9 +1449,14 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
   }
 
   if (single_op) {
-    ldout(cct, DBG_LVL) << __func__ <<" reusing original op " << dendl;
-    prepare_single_op(op, objecter, cct, has_primary_ops);
-    return false;
+    if (!pi->is_erasure() ||
+        !ECSplitOp::single_op_reads_unavailable_shard(op, objecter)) {
+      ldout(cct, DBG_LVL) << __func__ <<" reusing original op " << dendl;
+      prepare_single_op(op, objecter, cct, has_primary_ops);
+      return false;
+    }
+    ldout(cct, DBG_LVL) << __func__ << " single op chunk unavailable" << dendl;
+    single_op = false;
   }
 
   // STAGE 2: Create split op object (may set abort during construction)
@@ -1231,11 +1499,29 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     InternalVersionStrategy::FromPrimaryShard;
 
   // STAGE 4: Initialize sub-operations (may set abort if problems detected)
-  for (unsigned i = 0; i < op->ops.size(); ++i) {
-    split_read->init(op->ops[i], i, single_op);
-    if (split_read->abort) {
-      break;
+  bool decode = false;
+  if (pi->is_erasure()) {
+    auto &ec_split_read = static_cast<ECSplitOp&>(*split_read);
+    shard_id_set available = ECSplitOp::available_shards(target, objecter);
+    if (ECSplitOp::reads_unavailable_shard(op, pi, available)) {
+      std::shared_ptr<const ECCodecInfo> codec;
+      if (ECSplitOp::may_decode(op, pi, objecter)) {
+        codec = ec_split_read.get_codec(target.base_oloc.pool, pi);
+      }
+      if (codec) {
+        ec_split_read.init_degraded(std::move(codec), available);
+        decode = true;
+      } else {
+        split_read->abort = true;
+      }
+      if (split_read->abort) {
+        objecter.count_split_op_event(Objecter::SplitOpEvent::no_decode);
+      }
     }
+  }
+  for (unsigned i = 0; !decode && !split_read->abort && i < op->ops.size();
+       ++i) {
+    split_read->init(op->ops[i], i, single_op);
   }
 
   // STAGE 5: Final abort check - discard split op if problems were detected
@@ -1278,6 +1564,7 @@ bool SplitOp::create(Objecter::Op *op, Objecter &objecter,
     auto sub_op = objecter.prepare_read_op(
       target.base_oid, target.base_oloc, split_read->sub_reads.at(index).rd, op->snapid,
       nullptr, split_read->flags, -1, fin, objver);
+    sub_op->reply_epoch = &sub_read.reply_epoch;
 
     auto &st = sub_op->target;
     st = target; // Target can start off in same state as parent.

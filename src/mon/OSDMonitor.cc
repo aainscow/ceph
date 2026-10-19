@@ -1550,12 +1550,6 @@ void OSDMonitor::prime_pg_temp(
  * @note receiving a transaction in this function gives a fair amount of
  * freedom to the service implementation if it does need it. It shouldn't.
  */
-// Clients send EC direct reads of coding shards and of shard extents only to
-// OSDs of a release that serves them.
-static bool ec_client_decode_release_ok(ceph_release_t release) {
-  return release > ceph_release_t::umbrella;
-}
-
 void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
 {
   dout(10) << "encode_pending e " << pending_inc.epoch
@@ -2028,8 +2022,8 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
       }
     }
 
-    if (!ec_client_decode_release_ok(osdmap.require_osd_release) &&
-        ec_client_decode_release_ok(tmp.require_osd_release)) {
+    if (!osdmap.ec_client_decode_release_ok() &&
+        tmp.ec_client_decode_release_ok()) {
       dout(10) << __func__ << " first epoch with EC client decode" << dendl;
       for (auto& [id, pool] : tmp.get_pools()) {
         if (pool.is_erasure() && pool.allows_ecoptimizations() &&
@@ -8776,7 +8770,7 @@ void OSDMonitor::maybe_enable_pool_split_ops(pg_pool_t &p,
   }
 
   if (p.is_erasure() && !p.has_flag(pg_pool_t::FLAG_CRIMSON) &&
-      ec_client_decode_release_ok(release)) {
+      OSDMap::ec_client_decode_release_ok(release)) {
     p.flags |= pg_pool_t::FLAG_EC_CLIENT_DECODE;
   }
 }
@@ -9357,7 +9351,7 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
          << "decode is not supported";
       return -EINVAL;
     }
-    if (enable && !ec_client_decode_release_ok(osdmap.require_osd_release)) {
+    if (enable && !osdmap.ec_client_decode_release_ok()) {
       ss << "all OSDs must be running a release after umbrella; raise "
          << "require_osd_release first";
       return -EPERM;

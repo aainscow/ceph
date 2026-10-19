@@ -490,6 +490,14 @@ private:
     return chunk_mapping;
   }
 
+  static std::vector<shard_id_t> pool_chunk_mapping(const pg_pool_t *pool) {
+    std::vector<shard_id_t> chunk_mapping;
+    for (raw_shard_id_t raw_shard; raw_shard < pool->size; ++raw_shard) {
+      chunk_mapping.push_back(pool->get_shard(raw_shard));
+    }
+    return chunk_mapping;
+  }
+
   static std::vector<raw_shard_id_t> reverse_chunk_mapping(
       const std::vector<shard_id_t> &chunk_mapping) {
     size_t size = chunk_mapping.size();
@@ -536,6 +544,24 @@ public:
       m(ec_impl->get_coding_chunk_count()),
       chunk_mapping(
         complete_chunk_mapping(ec_impl->get_chunk_mapping(), k + m)),
+      chunk_mapping_reverse(reverse_chunk_mapping(chunk_mapping)),
+      data_shards(calc_shards(raw_shard_id_t(), k, chunk_mapping)),
+      parity_shards(calc_shards(raw_shard_id_t(k), m, chunk_mapping)),
+      all_shards(calc_all_shards(k + m)) {
+    ceph_assert(stripe_width != 0);
+    ceph_assert(stripe_width % k == 0);
+  }
+
+  // The pool's geometry, for a client that has not loaded the plugin. No
+  // plugin optimizations are reported as supported.
+  explicit stripe_info_t(const pg_pool_t *pool)
+    : stripe_width(pool->get_stripe_width()),
+      plugin_flags(0),
+      chunk_size(stripe_width / pool->get_ec_data_shard_count()),
+      pool(pool),
+      k(pool->get_ec_data_shard_count()),
+      m(pool->size - k),
+      chunk_mapping(pool_chunk_mapping(pool)),
       chunk_mapping_reverse(reverse_chunk_mapping(chunk_mapping)),
       data_shards(calc_shards(raw_shard_id_t(), k, chunk_mapping)),
       parity_shards(calc_shards(raw_shard_id_t(k), m, chunk_mapping)),

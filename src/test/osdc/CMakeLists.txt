@@ -33,6 +33,7 @@ add_executable(unittest_splitop
   )
 add_ceph_unittest(unittest_splitop)
 target_link_libraries(unittest_splitop global ${BLKID_LIBRARIES})
+add_dependencies(unittest_splitop ec_jerasure)
 
 # unittest_objecter_direct_reads
 add_executable(unittest_objecter_direct_reads
@@ -41,3 +42,4 @@ add_executable(unittest_objecter_direct_reads
   )
 add_ceph_unittest(unittest_objecter_direct_reads)
 target_link_libraries(unittest_objecter_direct_reads osdc global ${BLKID_LIBRARIES})
+add_dependencies(unittest_objecter_direct_reads ec_jerasure)

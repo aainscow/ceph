@@ -1703,6 +1703,8 @@ inline std::ostream& operator <<(std::ostream& m, const ObjectOperation& oo) {
 
 // ----------------
 
+struct ECCodecInfo;
+
 class Objecter : public md_config_obs_t, public Dispatcher {
   friend class SplitOp;
   friend class ECSplitOp;
@@ -1814,6 +1816,12 @@ private:
       }
       it++;
     }
+  }
+  void prune_ec_codecs(const mempool::osdmap::map<int64_t,pg_pool_t>& pools) {
+    std::lock_guard l{ec_codecs_lock};
+    std::erase_if(ec_codecs, [&pools](const auto& e) {
+      return !pools.contains(e.first);
+    });
   }
 
 public:
@@ -2616,6 +2624,14 @@ public:
 
   uint64_t min_split_replica_read_size;
 
+  std::atomic<bool> ec_client_decode{true};
+  std::atomic<uint64_t> debug_ec_direct_read_exclude_shards{0};
+  std::atomic<bool> debug_ec_client_decode_skip_release_check{false};
+
+  // Per pool; nullptr where the pool's plugin could not be loaded.
+  ceph::mutex ec_codecs_lock = ceph::make_mutex("Objecter::ec_codecs_lock");
+  std::map<int64_t, std::shared_ptr<const ECCodecInfo>> ec_codecs;
+
   // last time osdmap was requested
   ceph::coarse_mono_time last_osdmap_request_time;
 
@@ -3044,11 +3060,18 @@ public:
   }
 
   enum class SplitOpEvent {
+    decode,            ///< EC split op rebuilt missing shards in the client
+    no_decode,         ///< EC split op needed a decode it could not do
+    decode_error,
     fallback_eagain,   ///< a sub-read returned -EAGAIN
+    fallback_interval, ///< the PG changed, or the pool was deleted
     fallback_version,  ///< sub-reads returned different object versions
     fallback_shard_error,
+    unsupported,       ///< a balanced read has an unsupported op or no length
   };
-  void count_split_op_event(SplitOpEvent event);
+  void count_split_op_event(SplitOpEvent event, uint64_t bytes = 0);
+  void count_split_op_completed(const std::vector<OSDOp> &out_ops);
+  void count_ec_split_op_decode_latency(ceph::timespan latency);
 
   /// cancel an in-progress request with the given return code
 private:

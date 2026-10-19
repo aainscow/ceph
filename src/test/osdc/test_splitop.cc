@@ -24,6 +24,7 @@
  *  3. ECSplitOp::local_zone_for_acting_set() — zone selection edge cases
  *  4. SplitOp::create() — the OSD a single direct op is sent to
  *  5. SplitOp::assemble_rc() — which errors go to the primary
+ *  6. ECSplitOp — reads planned around an unavailable shard
  *
  * Sections 1-3 use a minimal pg_pool_t built inline (no OSDMap, no peering).
  * For ECStripeIterator, a thin helper subclass exposes the protected types.
@@ -35,6 +36,7 @@
 
 #include "common/ref.h"
 #include "common/async/context_pool.h"
+#include "common/ceph_json.h"
 #include "common/common_init.h"
 #include "global/global_context.h"
 #include "global/global_init.h"
@@ -821,6 +823,8 @@ protected:
       objecter_cct = global_init(nullptr, args, CEPH_ENTITY_TYPE_CLIENT,
                                  CODE_ENVIRONMENT_UTILITY,
                                  CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
+      // Tests run from the build directory, which has the plugins in ./lib.
+      objecter_cct->_conf.set_val("erasure_code_dir", "./lib");
       common_init_finish(objecter_cct.get());
     }
   }
@@ -880,7 +884,13 @@ protected:
     pool_inc.fsid = fsid;
     pool_inc.new_pool_max = osdmap.get_pool_max();
     pool_id = ++pool_inc.new_pool_max;
-    pg_pool_t pool = make_ec_pool(k, m, chunk_size);
+    pool_inc.new_erasure_code_profiles["ec"] = {
+      {"plugin", "jerasure"}, {"technique", "reed_sol_van"},
+      {"k", std::to_string(k)}, {"m", std::to_string(m)},
+      {"stripe_unit", std::to_string(chunk_size)}};
+    pg_pool_t pool = make_ec_pool(k, m, chunk_size,
+                                  pg_pool_t::FLAG_EC_CLIENT_DECODE);
+    pool.erasure_code_profile = "ec";
     pool.set_flag(pg_pool_t::FLAG_HASHPSPOOL);
     pool.object_hash = CEPH_STR_HASH_RJENKINS;
     pool.set_pg_num(64);
@@ -892,10 +902,14 @@ protected:
     pool_inc.new_pools[pool_id] = pool;
     pool_inc.new_pool_names[pool_id] = "ec";
     osdmap.apply_incremental(pool_inc);
+    send_map();
+  }
 
+  void send_map() {
     bufferlist bl;
     osdmap.encode(bl, CEPH_FEATURES_ALL | CEPH_FEATURE_RESERVED);
-    auto msg = ceph::make_message<MOSDMap>(fsid, CEPH_FEATURES_ALL);
+    auto msg = ceph::make_message<MOSDMap>(osdmap.get_fsid(),
+                                           CEPH_FEATURES_ALL);
     msg->maps[osdmap.get_epoch()] = bl;
     objecter->handle_osd_map(msg.get());
   }
@@ -1044,3 +1058,440 @@ TEST_F(TestSingleDirectOpTarget, ShardErrorsGoToThePrimary)
   EXPECT_EQ(-ECANCELED, rc_for(-ECANCELED, -EAGAIN));
   op->put();
 }
+
+// ===========================================================================
+// Section 6: ECSplitOp — reads planned around an unavailable shard
+//
+// Data shard 1 is excluded with objecter_debug_ec_direct_read_exclude_shards,
+// as if its OSD were down. The parity shard is the primary. No release past
+// umbrella exists yet to decode at.
+// ===========================================================================
+
+class TestECClientDecode : public TestSingleDirectOpTarget {
+protected:
+  void SetUp() override {
+    TestSingleDirectOpTarget::SetUp();
+    set_conf("objecter_debug_ec_direct_read_exclude_shards", "1");
+    set_conf("objecter_debug_ec_client_decode_skip_release_check", "true");
+  }
+
+  void TearDown() override {
+    set_conf("objecter_debug_ec_direct_read_exclude_shards", "");
+    set_conf("objecter_debug_ec_client_decode_skip_release_check", "false");
+    set_conf("rados_ec_client_decode", "true");
+    TestSingleDirectOpTarget::TearDown();
+  }
+
+  void set_conf(const std::string &key, const std::string &val) {
+    cct->_conf.set_val(key, val);
+    cct->_conf.apply_changes(nullptr);
+  }
+
+  std::shared_ptr<const ECCodecInfo> load_codec() {
+    ObjectOperation rd;
+    bufferlist out;
+    rd.read(chunk_size, chunk_size / 2, &out, nullptr, nullptr);
+    Objecter::Op *op = prepare(object_with_primary(k), rd);
+    fill_target(op);
+    std::shared_ptr<const ECCodecInfo> codec;
+    {
+      ECSplitOpProbe split_op(op, *objecter, cct, k + m);
+      codec = split_op.get_codec(pool_id, osdmap.get_pg_pool(pool_id));
+      split_op.abort = true;
+    }
+    op->put();
+    return codec;
+  }
+
+  int64_t add_pool_like_ec_pool(const std::string &name) {
+    OSDMap::Incremental inc(osdmap.get_epoch() + 1);
+    inc.fsid = osdmap.get_fsid();
+    inc.new_pool_max = osdmap.get_pool_max();
+    int64_t id = ++inc.new_pool_max;
+    inc.new_pools[id] = *osdmap.get_pg_pool(pool_id);
+    inc.new_pool_names[id] = name;
+    EXPECT_EQ(0, osdmap.apply_incremental(inc));
+    send_map();
+    return id;
+  }
+
+  void delete_pool(int64_t id) {
+    OSDMap::Incremental inc(osdmap.get_epoch() + 1);
+    inc.fsid = osdmap.get_fsid();
+    inc.old_pools.insert(id);
+    ASSERT_EQ(0, osdmap.apply_incremental(inc));
+    send_map();
+    ASSERT_FALSE(objecter->with_osdmap([id](const OSDMap &o) {
+      return o.have_pg_pool(id);
+    }));
+  }
+};
+
+TEST_F(TestECClientDecode, ExcludedShardIsUnavailable)
+{
+  object_t oid = object_with_primary(k);
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(chunk_size, chunk_size / 2, &out, nullptr, nullptr);
+  Objecter::Op *op = prepare(oid, rd);
+  const pg_pool_t *pi = osdmap.get_pg_pool(pool_id);
+  EXPECT_TRUE(ECSplitOp::single_op_reads_unavailable_shard(op, *objecter));
+  EXPECT_TRUE(ECSplitOp::may_decode(op, pi, *objecter));
+
+  set_conf("rados_ec_client_decode", "false");
+  EXPECT_TRUE(ECSplitOp::single_op_reads_unavailable_shard(op, *objecter));
+  EXPECT_FALSE(ECSplitOp::may_decode(op, pi, *objecter));
+  op->put();
+}
+
+TEST_F(TestECClientDecode, ReadOfAvailableShardNeedsNoDecode)
+{
+  object_t oid = object_with_primary(k);
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(0, chunk_size / 2, &out, nullptr, nullptr);
+  Objecter::Op *op = prepare(oid, rd);
+  EXPECT_FALSE(ECSplitOp::single_op_reads_unavailable_shard(op, *objecter));
+  op->put();
+}
+
+TEST_F(TestECClientDecode, SparseReadIsNotDecoded)
+{
+  object_t oid = object_with_primary(k);
+  ObjectOperation rd;
+  rd.sparse_read(chunk_size, chunk_size / 2);
+  Objecter::Op *op = prepare(oid, rd);
+  EXPECT_TRUE(ECSplitOp::single_op_reads_unavailable_shard(op, *objecter));
+  EXPECT_FALSE(ECSplitOp::may_decode(op, osdmap.get_pg_pool(pool_id),
+                                     *objecter));
+  op->put();
+}
+
+// set_pool_flags can give a pool ec_client_decode on a cluster at umbrella,
+// whose OSDs may read shard extents as object extents.
+TEST_F(TestECClientDecode, UmbrellaClusterIsNotDecoded)
+{
+  set_conf("objecter_debug_ec_client_decode_skip_release_check", "false");
+  OSDMap::Incremental inc(osdmap.get_epoch() + 1);
+  inc.fsid = osdmap.get_fsid();
+  inc.new_require_osd_release = ceph_release_t::umbrella;
+  ASSERT_EQ(0, osdmap.apply_incremental(inc));
+  send_map();
+
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(chunk_size, chunk_size / 2, &out, nullptr, nullptr);
+  Objecter::Op *op = prepare(object_with_primary(k), rd);
+  EXPECT_TRUE(ECSplitOp::single_op_reads_unavailable_shard(op, *objecter));
+  EXPECT_FALSE(ECSplitOp::may_decode(op, osdmap.get_pg_pool(pool_id),
+                                     *objecter));
+  op->put();
+}
+
+// A 4+2 pool whose data shards are 2-5, so that a shard id and its chunk
+// index differ. Each case lists its reads and the shards they need.
+TEST_F(TestECClientDecode, ReadsUnavailableShardOfEachRange)
+{
+  constexpr uint64_t cs = 4096;
+  pg_pool_t pool;
+  pool.type = pg_pool_t::TYPE_ERASURE;
+  pool.size = 6;
+  pool.ec_data_shard_count = 4;
+  pool.set_stripe_width(4 * cs);
+  pool.set_shard_mapping({shard_id_t(2), shard_id_t(3), shard_id_t(4),
+                          shard_id_t(5), shard_id_t(0), shard_id_t(1)});
+
+  struct Case {
+    std::vector<std::pair<uint64_t, uint64_t>> reads;
+    std::vector<int> shards;
+    bool sparse = false;
+  };
+  const std::vector<Case> cases = {
+    {{{0, 1}}, {2}},
+    {{{cs - 1, 2}}, {2, 3}},
+    {{{3 * cs, cs}}, {5}},
+    {{{3 * cs + 1, cs}}, {5, 2}},
+    {{{cs, 3 * cs}}, {3, 4, 5}},
+    {{{5 * cs, 100 * cs}}, {2, 3, 4, 5}},
+    {{{30 * cs, 10}}, {4}},
+    {{{0, 1}, {2 * cs + 7, 1}}, {2, 4}},
+    {{{cs, 1}}, {3}, true},
+  };
+
+  shard_id_set all;
+  all.insert_range(shard_id_t(0), 6);
+  for (unsigned c = 0; c < cases.size(); ++c) {
+    ObjectOperation rd;
+    std::vector<bufferlist> out(cases[c].reads.size());
+    uint64_t size;
+    rd.stat(&size, nullptr, nullptr);
+    for (unsigned i = 0; i < cases[c].reads.size(); ++i) {
+      auto [off, len] = cases[c].reads[i];
+      if (cases[c].sparse) {
+        rd.sparse_read(off, len, nullptr, &out[i], nullptr);
+      } else {
+        rd.read(off, len, &out[i], nullptr, nullptr);
+      }
+    }
+    Objecter::Op *op = prepare(object_with_primary(k), rd);
+    EXPECT_FALSE(ECSplitOp::reads_unavailable_shard(op, &pool, all)) << c;
+    for (int s = 0; s < 6; ++s) {
+      shard_id_set available = all;
+      available.erase(shard_id_t(s));
+      EXPECT_EQ(std::ranges::count(cases[c].shards, s) == 1,
+                ECSplitOp::reads_unavailable_shard(op, &pool, available))
+        << "case " << c << " shard " << s;
+    }
+    op->put();
+  }
+}
+
+TEST_F(TestECClientDecode, PlanReadsShardExtentsAndStatsOnPrimary)
+{
+  object_t oid = object_with_primary(k);
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(0, 2 * chunk_size, &out, nullptr, nullptr);
+  Objecter::Op *op = prepare(oid, rd);
+  fill_target(op);
+  const pg_pool_t *pi = osdmap.get_pg_pool(pool_id);
+
+  {
+    ECSplitOpProbe split_op(op, *objecter, cct, k + m);
+    split_op.init_reference_sub_read();
+    ASSERT_EQ(k, split_op.reference_sub_read);
+
+    shard_id_set available = ECSplitOp::available_shards(op->target,
+                                                         *objecter);
+    EXPECT_FALSE(available.contains(shard_id_t(1)));
+    ASSERT_TRUE(ECSplitOp::reads_unavailable_shard(op, pi, available));
+    ASSERT_TRUE(ECSplitOp::may_decode(op, pi, *objecter));
+    auto codec = split_op.get_codec(pool_id, pi);
+    ASSERT_TRUE(codec);
+    split_op.init_degraded(std::move(codec), available);
+    ASSERT_FALSE(split_op.abort);
+
+    // Shard 0 and the parity shard each read their first chunk.
+    ASSERT_EQ(2u, split_op.sub_reads.size());
+    for (int shard : {0, k}) {
+      ASSERT_TRUE(split_op.sub_reads.contains(shard)) << shard;
+      auto &sr = split_op.sub_reads.at(shard);
+      ASSERT_EQ(1u, sr.shard_extents.size()) << shard;
+      EXPECT_TRUE(sr.shard_extents.contains(0)) << shard;
+      ASSERT_LE(1u, sr.rd.ops.size()) << shard;
+      auto &read = sr.rd.ops[0].op;
+      EXPECT_EQ(CEPH_OSD_OP_READ, read.op) << shard;
+      EXPECT_EQ(0u, read.extent.offset) << shard;
+      EXPECT_EQ(chunk_size, read.extent.length) << shard;
+      EXPECT_TRUE(read.flags & CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT) << shard;
+    }
+    // The primary also reads the object size, to trim and decode.
+    auto &primary_ops = split_op.sub_reads.at(k).rd.ops;
+    EXPECT_EQ(CEPH_OSD_OP_STAT, primary_ops.back().op.op);
+
+    split_op.abort = true; // Never sent, so there is nothing to complete.
+  }
+  op->put();
+}
+
+// A librados application that never called global_init has no global
+// context, and the erasure code plugins log through it.
+class NoGlobalContext {
+  CephContext *saved = g_ceph_context;
+public:
+  NoGlobalContext() { g_ceph_context = nullptr; }
+  ~NoGlobalContext() { g_ceph_context = saved; }
+};
+
+TEST_F(TestECClientDecode, NoGlobalContextReadsFromPrimary)
+{
+  NoGlobalContext no_global_context;
+  EXPECT_FALSE(load_codec());
+
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(chunk_size, chunk_size / 2, &out, nullptr, nullptr);
+  Objecter::Op *op = create(object_with_primary(k), rd);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  op->put();
+}
+
+// The Objecter's cache holds the only reference to a codec it has loaded.
+TEST_F(TestECClientDecode, CodecIsKeptWhenAnotherPoolIsDeleted)
+{
+  int64_t other = add_pool_like_ec_pool("other");
+  std::weak_ptr<const ECCodecInfo> cached = load_codec();
+  ASSERT_FALSE(cached.expired());
+  delete_pool(other);
+  EXPECT_FALSE(cached.expired());
+  EXPECT_EQ(cached.lock(), load_codec());
+}
+
+TEST_F(TestECClientDecode, CodecIsDroppedWhenItsPoolIsDeleted)
+{
+  std::weak_ptr<const ECCodecInfo> cached = load_codec();
+  ASSERT_FALSE(cached.expired());
+  delete_pool(pool_id);
+  EXPECT_TRUE(cached.expired());
+}
+
+// A single-chunk read of the excluded shard that the client may not decode
+// goes to the primary, as a read of several chunks does. A read of an
+// available shard still goes direct.
+enum class DecodeOff {
+  client_option, pool_flag, sparse_read, truncate_seq, release
+};
+
+class TestECClientDecodeOff : public TestECClientDecode,
+                              public ::testing::WithParamInterface<DecodeOff> {
+protected:
+  bufferlist out;
+
+  void SetUp() override {
+    TestECClientDecode::SetUp();
+    if (GetParam() == DecodeOff::client_option) {
+      set_conf("rados_ec_client_decode", "false");
+    } else if (GetParam() == DecodeOff::pool_flag) {
+      OSDMap::Incremental inc(osdmap.get_epoch() + 1);
+      inc.fsid = osdmap.get_fsid();
+      pg_pool_t pool = *osdmap.get_pg_pool(pool_id);
+      pool.unset_flag(pg_pool_t::FLAG_EC_CLIENT_DECODE);
+      pool.last_change = inc.epoch;
+      inc.new_pools[pool_id] = pool;
+      ASSERT_EQ(0, osdmap.apply_incremental(inc));
+      send_map();
+    } else if (GetParam() == DecodeOff::release) {
+      set_conf("objecter_debug_ec_client_decode_skip_release_check", "false");
+    }
+  }
+
+  Objecter::Op *create_read(uint64_t off, uint64_t len) {
+    ObjectOperation rd;
+    if (GetParam() == DecodeOff::sparse_read) {
+      rd.sparse_read(off, len);
+    } else {
+      rd.read(off, len, &out, nullptr, nullptr);
+    }
+    if (GetParam() == DecodeOff::truncate_seq) {
+      rd.ops.back().op.extent.truncate_seq = 1;
+      rd.ops.back().op.extent.truncate_size = 2 * chunk_size;
+    }
+    return create(object_with_primary(k), rd);
+  }
+
+  Objecter::Op *create_read_of_shard(int shard) {
+    return create_read(shard * chunk_size, chunk_size / 2);
+  }
+
+  // Shard 1 is unavailable because its OSD is down, not because it is
+  // excluded.
+  void mark_shard_1_down() {
+    set_conf("objecter_debug_ec_direct_read_exclude_shards", "");
+    pg_t pgid = osdmap.object_locator_to_pg(object_with_primary(k),
+                                            object_locator_t(pool_id));
+    std::vector<int> acting;
+    osdmap.pg_to_acting_osds(pgid, acting);
+    ASSERT_EQ(size_t(k + m), acting.size());
+    OSDMap::Incremental inc(osdmap.get_epoch() + 1);
+    inc.fsid = osdmap.get_fsid();
+    inc.new_state[acting[1]] = CEPH_OSD_UP;
+    ASSERT_EQ(0, osdmap.apply_incremental(inc));
+    send_map();
+    osdmap.pg_to_acting_osds(osdmap.object_locator_to_pg(
+      object_with_primary(k), object_locator_t(pool_id)), acting);
+    ASSERT_EQ(CRUSH_ITEM_NONE, acting[1]);
+  }
+
+  uint64_t no_decode_count() {
+    JSONFormatter f;
+    f.open_object_section("perf");
+    objecter->get_logger()->dump_formatted(&f, false,
+                                           select_labeled_t::unlabeled,
+                                           "ec_split_op_no_decode");
+    f.close_section();
+    std::stringstream ss;
+    f.flush(ss);
+    JSONParser parser;
+    EXPECT_TRUE(parser.parse(ss.str().c_str(), ss.str().length()));
+    JSONObj *objecter_section = parser.find_obj("objecter");
+    JSONObj *counter = objecter_section ?
+      objecter_section->find_obj("ec_split_op_no_decode") : nullptr;
+    EXPECT_TRUE(counter) << ss.str();
+    return counter ? std::stoull(counter->get_data()) : 0;
+  }
+};
+
+TEST_P(TestECClientDecodeOff, ReadOfAvailableShardGoesDirect)
+{
+  Objecter::Op *op = create_read_of_shard(0);
+  EXPECT_TRUE(op->target.flags & CEPH_OSD_FLAG_FORCE_OSD);
+  EXPECT_TRUE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  EXPECT_EQ(op->target.acting[0], op->target.osd);
+  op->put();
+}
+
+TEST_P(TestECClientDecodeOff, ReadOfExcludedShardGoesToThePrimary)
+{
+  std::vector<int> acting;
+  osdmap.pg_to_acting_osds(
+    osdmap.object_locator_to_pg(object_with_primary(k),
+                                object_locator_t(pool_id)), acting);
+  ASSERT_EQ(size_t(k + m), acting.size());
+  Objecter::Op *op = create_read_of_shard(1);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_FORCE_OSD)
+    << "forced to osd." << op->target.osd << ", shard 1 is osd." << acting[1];
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  EXPECT_NE(acting[1], op->target.osd);
+  op->put();
+}
+
+// With shard 1's OSD down, a read of shard 1 that may not be decoded counts
+// ec_split_op_no_decode whether it reads one chunk or several.
+TEST_P(TestECClientDecodeOff, ReadOfAvailableShardWithShardDownCountsNothing)
+{
+  mark_shard_1_down();
+  uint64_t no_decode = no_decode_count();
+  Objecter::Op *op = create_read_of_shard(0);
+  EXPECT_TRUE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  EXPECT_EQ(op->target.acting[0], op->target.osd);
+  EXPECT_EQ(no_decode, no_decode_count());
+  op->put();
+}
+
+TEST_P(TestECClientDecodeOff, ReadOfSeveralChunksWithShardDownCountsNoDecode)
+{
+  mark_shard_1_down();
+  uint64_t no_decode = no_decode_count();
+  Objecter::Op *op = create_read(0, 2 * chunk_size);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_FORCE_OSD);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  EXPECT_EQ(no_decode + 1, no_decode_count());
+  op->put();
+}
+
+TEST_P(TestECClientDecodeOff, ReadOfDownShardCountsNoDecode)
+{
+  mark_shard_1_down();
+  uint64_t no_decode = no_decode_count();
+  Objecter::Op *op = create_read_of_shard(1);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_FORCE_OSD);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  EXPECT_EQ(no_decode + 1, no_decode_count());
+  op->put();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+  DecodeOff, TestECClientDecodeOff,
+  ::testing::Values(DecodeOff::client_option, DecodeOff::pool_flag,
+                    DecodeOff::sparse_read, DecodeOff::truncate_seq,
+                    DecodeOff::release),
+  [](const ::testing::TestParamInfo<DecodeOff> &info) {
+    switch (info.param) {
+    case DecodeOff::client_option: return "ClientOptionOff";
+    case DecodeOff::pool_flag: return "PoolFlagCleared";
+    case DecodeOff::sparse_read: return "SparseRead";
+    case DecodeOff::truncate_seq: return "ReadWithTruncateSeq";
+    case DecodeOff::release: return "ReleaseNotPastUmbrella";
+    }
+    return "";
+  });
