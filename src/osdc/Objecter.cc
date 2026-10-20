@@ -2634,6 +2634,9 @@ void Objecter::op_post_split_op_complete(Op* op, bs::error_code ec, int rc) {
       // This removes from session and unlocks sl.
       complete_op_reply(op, ec, op->session, sl, rc);
     } else {
+      if (op->has_completion()) {
+        num_in_flight--;
+      }
       _session_op_remove(op->session, op);
       sl.unlock();
       op->split_op_tids.reset();
@@ -2702,6 +2705,9 @@ void Objecter::add_op_to_splitop_session(Op *op) {
   _session_op_assign(splitop_session, op);
   _maybe_arm_op_timeout(op);
   _take_inflight_slot(op);
+  if (op->has_completion()) {
+    num_in_flight++;
+  }
   sl.unlock();
 }
 
