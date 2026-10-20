@@ -339,6 +339,72 @@ function TEST_chunk_mapping() {
     ceph osd erasure-code-profile rm remap-profile
 }
 
+function sum_osd_counter() {
+    local counter=$1
+    local sum=0
+    local id count
+
+    for id in $(ceph osd ls) ; do
+        count=$(CEPH_ARGS='' ceph --admin-daemon $(get_asok_path osd.$id) \
+            perf dump osd $counter | jq -e ".osd.$counter") || return 1
+        sum=$((sum + count))
+    done
+    echo $sum
+}
+
+function TEST_ec_direct_read_osd_counters() {
+    local dir=$1
+    local poolname=pool-direct-read
+    local profile=profile-direct-read
+
+    ceph osd erasure-code-profile set $profile \
+        plugin=jerasure \
+        k=2 m=1 stripe_unit=4K \
+        crush-failure-domain=osd || return 1
+    create_pool $poolname 1 1 erasure $profile || return 1
+    ceph osd pool set $poolname allow_ec_optimizations true || return 1
+    ceph osd pool set $poolname set_pool_flags 8388608 \
+        --yes-i-really-mean-it || return 1
+    wait_for_clean || return 1
+
+    head -c 8192 /dev/urandom > $dir/ORIGINAL
+    rados --pool $poolname put obj $dir/ORIGINAL || return 1
+    # The next write to the PG tells the shards that the first one committed,
+    # so that they serve direct reads of it.
+    rados --pool $poolname put other $dir/ORIGINAL || return 1
+
+    # The read is split between the data shards, plus a coding primary that
+    # returns the object version.
+    local -a acting=($(get_osds $poolname obj))
+    local expected=2
+    if [ $(get_primary $poolname obj) = ${acting[2]} ] ; then
+        expected=3
+    fi
+    local served=$(sum_osd_counter ec_direct_read_served)
+    local coding=$(sum_osd_counter ec_direct_read_coding_served)
+    rados --rados-replica-read-policy=balance --pool $poolname \
+        get obj $dir/COPY || return 1
+    diff $dir/ORIGINAL $dir/COPY || return 1
+    test $(sum_osd_counter ec_direct_read_served) = $((served + expected)) \
+        || return 1
+    test $(sum_osd_counter ec_direct_read_coding_served) = $coding || return 1
+
+    # Without shard 1, the client decodes from shard extents read from
+    # shards 0 and 2.
+    served=$(sum_osd_counter ec_direct_read_served)
+    rados --rados-replica-read-policy=balance \
+        --objecter-debug-ec-direct-read-exclude-shards=1 --pool $poolname \
+        get obj $dir/COPY || return 1
+    diff $dir/ORIGINAL $dir/COPY || return 1
+    test $(sum_osd_counter ec_direct_read_served) = $((served + 2)) || return 1
+    test $(sum_osd_counter ec_direct_read_coding_served) = $((coding + 1)) \
+        || return 1
+
+    rm $dir/ORIGINAL $dir/COPY
+    delete_pool $poolname
+    ceph osd erasure-code-profile rm $profile
+}
+
 main test-erasure-code "$@"
 
 # Local Variables:
