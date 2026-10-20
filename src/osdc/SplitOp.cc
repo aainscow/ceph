@@ -456,6 +456,9 @@ int ECSplitOp::prepare_assembly() {
   auto start = ceph::mono_clock::now();
   int r = ECUtil::complete_read(sinfo, codec->ec_impl, want, read_shards,
                                 object_size, *buffers);
+  if (objecter.debug_ec_inject_decode_error) {
+    r = -EIO;
+  }
   if (r < 0) {
     ldout(cct, 0) << __func__ << " decode failed r=" << r
                   << " pool=" << orig_op->target.base_oloc.pool

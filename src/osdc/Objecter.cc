@@ -251,6 +251,7 @@ std::vector<std::string> Objecter::get_tracked_keys() const noexcept
     "rados_ec_client_decode"s,
     "objecter_debug_ec_direct_read_exclude_shards"s,
     "objecter_debug_ec_client_decode_skip_release_check"s,
+    "objecter_debug_ec_inject_decode_error"s,
   };
 }
 
@@ -362,6 +363,10 @@ void Objecter::handle_conf_change(const ConfigProxy& conf,
   if (changed.count("objecter_debug_ec_client_decode_skip_release_check")) {
     debug_ec_client_decode_skip_release_check = conf.get_val<bool>(
       "objecter_debug_ec_client_decode_skip_release_check");
+  }
+  if (changed.count("objecter_debug_ec_inject_decode_error")) {
+    debug_ec_inject_decode_error =
+      conf.get_val<bool>("objecter_debug_ec_inject_decode_error");
   }
 }
 
@@ -5805,6 +5810,8 @@ Objecter::Objecter(CephContext *cct,
     cct->_conf.get_val<std::string>("objecter_debug_ec_direct_read_exclude_shards"));
   debug_ec_client_decode_skip_release_check = cct->_conf.get_val<bool>(
     "objecter_debug_ec_client_decode_skip_release_check");
+  debug_ec_inject_decode_error =
+    cct->_conf.get_val<bool>("objecter_debug_ec_inject_decode_error");
 }
 
 Objecter::~Objecter()

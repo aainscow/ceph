@@ -1177,6 +1177,7 @@ protected:
   void TearDown() override {
     set_conf("objecter_debug_ec_direct_read_exclude_shards", "");
     set_conf("objecter_debug_ec_client_decode_skip_release_check", "false");
+    set_conf("objecter_debug_ec_inject_decode_error", "false");
     set_conf("rados_ec_client_decode", "true");
     TestSingleDirectOpTarget::TearDown();
   }
@@ -1184,6 +1185,10 @@ protected:
   void set_conf(const std::string &key, const std::string &val) {
     cct->_conf.set_val(key, val);
     cct->_conf.apply_changes(nullptr);
+  }
+
+  uint64_t counter(const std::string &name) {
+    return split_op_counters(cct).at(name);
   }
 
   std::shared_ptr<const ECCodecInfo> load_codec() {
@@ -1393,6 +1398,38 @@ TEST_F(TestECClientDecode, PlanReadsShardExtentsAndStatsOnPrimary)
   op->put();
 }
 
+TEST_F(TestECClientDecode, InjectedDecodeErrorReturnsEagain)
+{
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(0, 2 * chunk_size, &out, nullptr, nullptr);
+  Objecter::Op *op = prepare(object_with_primary(k), rd);
+  fill_target(op);
+  const pg_pool_t *pi = osdmap.get_pg_pool(pool_id);
+
+  {
+    ECSplitOpProbe split_op(op, *objecter, cct, k + m);
+    split_op.init_reference_sub_read();
+    split_op.init_degraded(split_op.get_codec(pool_id, pi),
+                           ECSplitOp::available_shards(op->target,
+                                                       *objecter));
+    ASSERT_FALSE(split_op.abort);
+
+    // The stat was never sent, so the object looks empty and nothing is
+    // decoded.
+    uint64_t decode_errors = counter("ec_split_op_decode_error");
+    EXPECT_EQ(0, split_op.prepare_assembly());
+    EXPECT_EQ(decode_errors, counter("ec_split_op_decode_error"));
+
+    set_conf("objecter_debug_ec_inject_decode_error", "true");
+    EXPECT_EQ(-EAGAIN, split_op.prepare_assembly());
+    EXPECT_EQ(decode_errors + 1, counter("ec_split_op_decode_error"));
+
+    split_op.abort = true;
+  }
+  op->put();
+}
+
 // A librados application that never called global_init has no global
 // context, and the erasure code plugins log through it.
 class NoGlobalContext {
@@ -1502,7 +1539,7 @@ protected:
   }
 
   uint64_t no_decode_count() {
-    return split_op_counters(cct).at("ec_split_op_no_decode");
+    return counter("ec_split_op_no_decode");
   }
 };
 

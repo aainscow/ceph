@@ -6985,6 +6985,19 @@ options:
   - rados_ec_client_decode
   flags:
   - runtime
+- name: objecter_debug_ec_inject_decode_error
+  type: bool
+  level: dev
+  desc: Fail every erasure-coded decode in the client
+  long_desc: The read is resent to the primary, as after a real decode error.
+    For testing.
+  default: false
+  services:
+  - client
+  see_also:
+  - objecter_debug_ec_direct_read_exclude_shards
+  flags:
+  - runtime
 # true if LTTng-UST tracepoints should be enabled
 - name: rados_tracing
   type: bool

@@ -2627,6 +2627,7 @@ public:
   std::atomic<bool> ec_client_decode{true};
   std::atomic<uint64_t> debug_ec_direct_read_exclude_shards{0};
   std::atomic<bool> debug_ec_client_decode_skip_release_check{false};
+  std::atomic<bool> debug_ec_inject_decode_error{false};
 
   // Per pool; nullptr where the pool's plugin could not be loaded.
   ceph::mutex ec_codecs_lock = ceph::make_mutex("Objecter::ec_codecs_lock");
