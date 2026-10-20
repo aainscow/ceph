@@ -36,7 +36,6 @@
 
 #include "common/ref.h"
 #include "common/async/context_pool.h"
-#include "common/ceph_json.h"
 #include "common/common_init.h"
 #include "global/global_context.h"
 #include "global/global_init.h"
@@ -48,6 +47,7 @@
 #include "osdc/SplitOp.h"
 #include "global/global_context.h"
 #include "include/rados.h"
+#include "test/osdc/SplitOpCounters.h"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1011,52 +1011,151 @@ TEST_F(TestSingleDirectOpTarget, CallGoesDirectToPrimaryShardZero)
 class ECSplitOpProbe : public ECSplitOp {
 public:
   using ECSplitOp::ECSplitOp;
+  using SplitOp::InternalVersionStrategy;
   using SplitOp::abort;
   using SplitOp::assemble_rc;
   using SplitOp::reference_sub_read;
+  using SplitOp::strategy;
   using SplitOp::sub_reads;
+};
+
+// A read of two chunks, split into a sub-read to the reference, which holds
+// the parity shard, and one to shard 0.
+class TestAssembleRc : public TestSingleDirectOpTarget {
+protected:
+  using Counts = std::map<std::string, uint64_t>;
+  using Strategy = ECSplitOpProbe::InternalVersionStrategy;
+  using Versions = std::map<shard_id_t, eversion_t>;
+  static inline const shard_id_t s0{0};
+  static inline const shard_id_t parity{k};
+  static inline const eversion_t v7{1, 7};
+  static inline const eversion_t v8{1, 8};
+  bufferlist out;
+  Objecter::Op *op = nullptr;
+
+  void SetUp() override {
+    TestSingleDirectOpTarget::SetUp();
+    ObjectOperation rd;
+    rd.read(0, 2 * chunk_size, &out, nullptr, nullptr);
+    op = prepare(object_with_primary(k), rd);
+    fill_target(op);
+  }
+
+  void TearDown() override {
+    op->put();
+    TestSingleDirectOpTarget::TearDown();
+  }
+
+  // What assemble_rc() returns, and the split op counters that went up. By
+  // default the sub-reads return the versions of an object whose last write
+  // did not change shard 0.
+  std::pair<int, Counts> rc_for(int reference_rc, int shard_rc,
+                                Strategy strategy = Strategy::FromPrimaryShard,
+                                const Versions &reference_versions =
+                                  {{s0, v7}, {parity, v8}},
+                                const Versions &shard_versions = {{s0, v7}}) {
+    Counts before = split_op_counters(cct);
+    ECSplitOpProbe split_op(op, *objecter, cct, k + m);
+    split_op.init_reference_sub_read();
+    split_op.strategy = strategy;
+    auto add_sub_read = [&](int index, int rc, const Versions &versions) {
+      split_op.sub_reads.emplace(index, 2);
+      auto &sub_read = split_op.sub_reads.at(index);
+      sub_read.rc = rc;
+      // As for a sub-read its OSD replied to, not one failed on a PG change.
+      sub_read.reply_epoch = 1;
+      sub_read.internal_version.emplace();
+      if (strategy == Strategy::FromParticipatingShards) {
+        encode(internal_versions_v2_response_t{versions},
+               sub_read.internal_version->bl);
+      } else {
+        encode(versions, sub_read.internal_version->bl);
+      }
+    };
+    add_sub_read(split_op.reference_sub_read, reference_rc,
+                 reference_versions);
+    add_sub_read(0, shard_rc, shard_versions);
+    int rc = split_op.assemble_rc();
+    split_op.abort = true;
+
+    Counts counted;
+    for (auto &[name, value] : split_op_counters(cct)) {
+      if (value != before.at(name)) {
+        counted[name] = value - before.at(name);
+      }
+    }
+    return {rc, counted};
+  }
 };
 
 // A shard error other than -EAGAIN from a sub-read that only reads, such as
 // a medium error, sends the op to the primary, which records and repairs it.
 // Errors from the reference are those the primary returns, and other errors
-// are returned as they are. A cancelled or timed out op is not resent, even
-// when another sub-read returned -EAGAIN.
-TEST_F(TestSingleDirectOpTarget, ShardErrorsGoToThePrimary)
+// are returned as they are, even over an error from the reference. A
+// cancelled or timed out op is not resent, even when another sub-read
+// returned -EAGAIN.
+TEST_F(TestAssembleRc, ShardErrorsGoToThePrimary)
 {
-  object_t oid = object_with_primary(k);
-  ObjectOperation rd;
-  bufferlist out;
-  rd.read(0, 2 * chunk_size, &out, nullptr, nullptr);
-  Objecter::Op *op = prepare(oid, rd);
-  fill_target(op);
+  const Counts none;
+  const Counts eagain = {{"split_op_fallback_eagain", 1}};
+  const Counts shard_error = {{"split_op_fallback_shard_error", 1}};
+  EXPECT_EQ(std::pair(-EAGAIN, shard_error), rc_for(0, -EIO));
+  EXPECT_EQ(std::pair(-EAGAIN, shard_error), rc_for(0, -ENOENT));
+  EXPECT_EQ(std::pair(-EAGAIN, shard_error), rc_for(0, -ENODATA));
+  EXPECT_EQ(std::pair(-EAGAIN, shard_error), rc_for(-EIO, 0));
+  EXPECT_EQ(std::pair(-EAGAIN, shard_error), rc_for(-EIO, -ENOENT));
+  EXPECT_EQ(std::pair(-EAGAIN, eagain), rc_for(0, -EAGAIN));
+  EXPECT_EQ(std::pair(-EAGAIN, eagain), rc_for(-EAGAIN, -EIO));
+  EXPECT_EQ(std::pair(-EAGAIN, eagain), rc_for(-EIO, -EAGAIN));
+  EXPECT_EQ(std::pair(-EAGAIN, eagain), rc_for(-ENOENT, -EAGAIN));
+  EXPECT_EQ(std::pair(-ENOENT, none), rc_for(-ENOENT, -ENOENT));
+  EXPECT_EQ(std::pair(-ENOENT, none), rc_for(-ENOENT, -EIO));
+  EXPECT_EQ(std::pair(-ECANCELED, none), rc_for(-ECANCELED, 0));
+  EXPECT_EQ(std::pair(-EINVAL, none), rc_for(0, -EINVAL));
+  EXPECT_EQ(std::pair(-EINVAL, none), rc_for(-ENOENT, -EINVAL));
+  EXPECT_EQ(std::pair(-ETIMEDOUT, none), rc_for(0, -ETIMEDOUT));
+  EXPECT_EQ(std::pair(-ETIMEDOUT, none), rc_for(-ETIMEDOUT, 0));
+  EXPECT_EQ(std::pair(-ECANCELED, none), rc_for(-EAGAIN, -ECANCELED));
+  EXPECT_EQ(std::pair(-ETIMEDOUT, none), rc_for(-ETIMEDOUT, -EAGAIN));
+  EXPECT_EQ(std::pair(-ECANCELED, none), rc_for(-ECANCELED, -EAGAIN));
+}
 
-  auto rc_for = [&](int reference_rc, int shard_rc) {
-    ECSplitOpProbe split_op(op, *objecter, cct, k + m);
-    split_op.init_reference_sub_read();
-    split_op.sub_reads.emplace(split_op.reference_sub_read, 2);
-    split_op.sub_reads.emplace(0, 2);
-    split_op.sub_reads.at(split_op.reference_sub_read).rc = reference_rc;
-    split_op.sub_reads.at(0).rc = shard_rc;
-    int rc = split_op.assemble_rc();
-    split_op.abort = true;
-    return rc;
-  };
-
-  EXPECT_EQ(-EAGAIN, rc_for(0, -EIO));
-  EXPECT_EQ(-EAGAIN, rc_for(0, -ENOENT));
-  EXPECT_EQ(-EAGAIN, rc_for(0, -ENODATA));
-  EXPECT_EQ(-EAGAIN, rc_for(-EIO, 0));
-  EXPECT_EQ(-EAGAIN, rc_for(0, -EAGAIN));
-  EXPECT_EQ(-ENOENT, rc_for(-ENOENT, -ENOENT));
-  EXPECT_EQ(-ECANCELED, rc_for(-ECANCELED, 0));
-  EXPECT_EQ(-EINVAL, rc_for(0, -EINVAL));
-  EXPECT_EQ(-ETIMEDOUT, rc_for(0, -ETIMEDOUT));
-  EXPECT_EQ(-ETIMEDOUT, rc_for(-ETIMEDOUT, 0));
-  EXPECT_EQ(-ECANCELED, rc_for(-EAGAIN, -ECANCELED));
-  EXPECT_EQ(-ETIMEDOUT, rc_for(-ETIMEDOUT, -EAGAIN));
-  EXPECT_EQ(-ECANCELED, rc_for(-ECANCELED, -EAGAIN));
-  op->put();
+// Sub-reads that succeed go to the primary when the version that the version
+// reference returned for a shard is not the one that the shard returned, or
+// either is missing.
+TEST_F(TestAssembleRc, TornReadsGoToThePrimary)
+{
+  const Counts none;
+  const Counts version = {{"split_op_fallback_version", 1}};
+  for (Strategy strategy : {Strategy::FromPrimaryShard,
+                            Strategy::FromParticipatingShards}) {
+    SCOPED_TRACE(strategy == Strategy::FromPrimaryShard ?
+                 "FromPrimaryShard" : "FromParticipatingShards");
+    // What shard 0 returns once its last write is v. Only with
+    // FromParticipatingShards does a shard other than the primary return
+    // the versions of every shard.
+    auto shard_0_at = [&](const eversion_t &v) {
+      return strategy == Strategy::FromPrimaryShard ?
+        Versions{{s0, v}} : Versions{{s0, v}, {parity, v}};
+    };
+    auto rc_for_versions = [&](const Versions &reference,
+                               const Versions &shard) {
+      return rc_for(0, 0, strategy, reference, shard);
+    };
+    // The last write did not change shard 0.
+    EXPECT_EQ(std::pair(0, none),
+              rc_for_versions({{s0, v7}, {parity, v8}}, shard_0_at(v7)));
+    // Shard 0 has not applied the last write.
+    EXPECT_EQ(std::pair(-EAGAIN, version),
+              rc_for_versions({{s0, v8}, {parity, v8}}, shard_0_at(v7)));
+    // Shard 0 has applied a write that the reference has not.
+    EXPECT_EQ(std::pair(-EAGAIN, version),
+              rc_for_versions({{s0, v7}, {parity, v7}}, shard_0_at(v8)));
+    EXPECT_EQ(std::pair(-EAGAIN, version),
+              rc_for_versions({{s0, v7}, {parity, v8}}, {}));
+    EXPECT_EQ(std::pair(-EAGAIN, version),
+              rc_for_versions({{parity, v8}}, shard_0_at(v7)));
+  }
 }
 
 // ===========================================================================
@@ -1403,21 +1502,7 @@ protected:
   }
 
   uint64_t no_decode_count() {
-    JSONFormatter f;
-    f.open_object_section("perf");
-    objecter->get_logger()->dump_formatted(&f, false,
-                                           select_labeled_t::unlabeled,
-                                           "ec_split_op_no_decode");
-    f.close_section();
-    std::stringstream ss;
-    f.flush(ss);
-    JSONParser parser;
-    EXPECT_TRUE(parser.parse(ss.str().c_str(), ss.str().length()));
-    JSONObj *objecter_section = parser.find_obj("objecter");
-    JSONObj *counter = objecter_section ?
-      objecter_section->find_obj("ec_split_op_no_decode") : nullptr;
-    EXPECT_TRUE(counter) << ss.str();
-    return counter ? std::stoull(counter->get_data()) : 0;
+    return split_op_counters(cct).at("ec_split_op_no_decode");
   }
 };
 
