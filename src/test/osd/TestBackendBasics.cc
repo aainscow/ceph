@@ -494,17 +494,28 @@ TEST_P(TestBackendBasics, DirectReadRefusedForOtherShardsData) {
   }
 }
 
+namespace {
+
+std::vector<OSDOp> shard_extent_read(uint64_t off, uint64_t len) {
+  std::vector<OSDOp> ops(1);
+  ops[0].op.op = CEPH_OSD_OP_READ;
+  ops[0].op.flags = CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT;
+  ops[0].op.extent.offset = off;
+  ops[0].op.extent.length = len;
+  return ops;
+}
+
+}  // namespace
+
 /**
  * ShardExtentReadChecks - a shard extent read is a READ of a non-zero length,
- * which any shard serves, coding shards included.
+ * which any shard of an optimized EC pool serves, coding shards included.
+ * Replicated and non-optimized EC pools refuse every shard extent read.
  */
 TEST_P(TestBackendBasics, ShardExtentReadChecks) {
   const auto& backend_config = GetParam().backend;
-
-  if (backend_config.pool_type != EC ||
-      !(backend_config.pool_flags & pg_pool_t::FLAG_EC_OPTIMIZATIONS)) {
-    GTEST_SKIP() << "Direct reads need optimized EC";
-  }
+  const bool serves_shard_extents = backend_config.pool_type == EC &&
+    (backend_config.pool_flags & pg_pool_t::FLAG_EC_OPTIMIZATIONS);
 
   for (auto& [shard_id, osd_fixture] : osd_fixtures) {
     for (auto& [spgid, test_pg] : osd_fixture->pgs) {
@@ -512,12 +523,10 @@ TEST_P(TestBackendBasics, ShardExtentReadChecks) {
         continue;
       }
       PGBackend* backend = test_pg->backend.get();
-      std::vector<OSDOp> ops(1);
-      ops[0].op.op = CEPH_OSD_OP_READ;
-      ops[0].op.flags = CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT;
-      ops[0].op.extent.offset = stripe_unit;
-      ops[0].op.extent.length = stripe_unit;
-      EXPECT_EQ(0, backend->check_direct_read(ops)) << "shard " << shard_id;
+      std::vector<OSDOp> ops = shard_extent_read(stripe_unit, stripe_unit);
+      EXPECT_EQ(serves_shard_extents ? 0 : -EINVAL,
+                backend->check_direct_read(ops))
+        << "shard " << shard_id;
 
       ops[0].op.extent.length = 0;
       EXPECT_EQ(-EINVAL, backend->check_direct_read(ops))
@@ -556,12 +565,8 @@ TEST_P(TestBackendBasics, ShardExtentReadWrapping) {
       }
       PGBackend* backend = test_pg->backend.get();
       for (auto [off, len] : wrapping) {
-        std::vector<OSDOp> ops(1);
-        ops[0].op.op = CEPH_OSD_OP_READ;
-        ops[0].op.flags = CEPH_OSD_OP_FLAG_EC_SHARD_EXTENT;
-        ops[0].op.extent.offset = off;
-        ops[0].op.extent.length = len;
-        EXPECT_EQ(-EINVAL, backend->check_direct_read(ops))
+        EXPECT_EQ(-EINVAL,
+                  backend->check_direct_read(shard_extent_read(off, len)))
           << "shard " << shard_id << " " << off << "~" << len;
       }
     }
@@ -1480,3 +1485,41 @@ INSTANTIATE_TEST_SUITE_P(
     return info.param.label;
   }
 );
+
+// ---------------------------------------------------------------------------
+// TestNoDirectReadPlugin fixture and tests
+// ---------------------------------------------------------------------------
+
+/**
+ * TestNoDirectReadPlugin - an optimized EC pool whose plugin, MockErasureCode,
+ * does not support direct reads.
+ */
+class TestNoDirectReadPlugin : public PGBackendTestFixture {
+public:
+  TestNoDirectReadPlugin() : PGBackendTestFixture(PGBackendTestFixture::EC) {
+    ec_plugin = "mock";
+  }
+};
+
+/**
+ * ShardExtentReadRefused - no shard serves a shard extent read when the
+ * plugin does not support direct reads.
+ */
+TEST_F(TestNoDirectReadPlugin, ShardExtentReadRefused) {
+  int checked = 0;
+  for (auto& [shard_id, osd_fixture] : osd_fixtures) {
+    for (auto& [spgid, test_pg] : osd_fixture->pgs) {
+      if (!test_pg || !test_pg->has_backend()) {
+        continue;
+      }
+      ECSwitch* ec_switch = dynamic_cast<ECSwitch*>(test_pg->backend.get());
+      ASSERT_NE(nullptr, ec_switch);
+      ASSERT_TRUE(ec_switch->is_optimized());
+      EXPECT_EQ(-EINVAL,
+                ec_switch->check_direct_read(shard_extent_read(0, stripe_unit)))
+        << "shard " << shard_id;
+      checked++;
+    }
+  }
+  EXPECT_EQ(k + m, checked);
+}
