@@ -9284,8 +9284,9 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       ss << r.error().message;
       return r.error().error;
     }
-    maybe_enable_pool_split_ops(p, osdmap.require_osd_release);
     if (!was_enabled && p.allows_ecoptimizations()) {
+      maybe_enable_pool_split_ops(p, osdmap.require_osd_release);
+
       // Pools with allow_ec_optimizations set store pg_temp in a different
       // order to change the primary selection algorithm without breaking
       // old clients. Modify any existing pg_temp for the pool now.
