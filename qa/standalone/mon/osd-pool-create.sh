@@ -226,6 +226,18 @@ function TEST_split_reads_after_umbrella_upgrade() {
     ceph osd pool ls detail | grep "'ec'.*split_reads" || return 1
 }
 
+function TEST_allow_ec_optimizations_rerun_keeps_split_reads_clear() {
+    local dir=$1
+    run_mon $dir a || return 1
+    ceph osd pool create ec 1 1 erasure || return 1
+    ceph osd pool set ec allow_ec_optimizations true || return 1
+    ceph osd pool ls detail | grep "'ec'.*split_reads" || return 1
+    ceph osd pool set ec unset_pool_flags $((1 << 20)) --yes-i-really-mean-it || return 1
+    ! ceph osd pool ls detail | grep "'ec'.*split_reads" || return 1
+    ceph osd pool set ec allow_ec_optimizations true || return 1
+    ! ceph osd pool ls detail | grep "'ec'.*split_reads" || return 1
+}
+
 function check_pool_priority() {
     local dir=$1
     shift
