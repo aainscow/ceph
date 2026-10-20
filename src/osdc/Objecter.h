@@ -3064,7 +3064,7 @@ public:
     decode,            ///< EC split op rebuilt missing shards in the client
     no_decode,         ///< EC split op needed a decode it could not do
     decode_error,
-    fallback_eagain,   ///< a sub-read returned -EAGAIN
+    fallback_eagain,   ///< a sub-read or a single direct read got -EAGAIN
     fallback_interval, ///< the PG changed, or the pool was deleted
     fallback_version,  ///< sub-reads returned different object versions
     fallback_shard_error,

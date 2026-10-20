@@ -535,10 +535,10 @@ void Objecter::init()
                         "Balanced reads not split: unsupported op or zero-length read");
     pcb.add_u64_counter(l_osdc_split_op_fallback_eagain,
                         "split_op_fallback_eagain",
-                        "Split ops resent to the primary after -EAGAIN");
+                        "Direct reads resent to the primary after -EAGAIN");
     pcb.add_u64_counter(l_osdc_split_op_fallback_interval,
                         "split_op_fallback_interval",
-                        "Split ops resent to the primary after their PG changed");
+                        "Direct reads resent to the primary after their PG changed");
     pcb.add_u64_counter(l_osdc_split_op_fallback_version,
                         "split_op_fallback_version",
                         "Split ops resent to the primary after a version mismatch");
@@ -3558,6 +3558,7 @@ int Objecter::_calc_target(op_target_t *t, bool any_change)
         // Clear all direct read flags (EC_DIRECT_READ, BALANCE_READS, LOCALIZE_READS)
         t->flags &= ~CEPH_OSD_FLAGS_DIRECT_READ;
         t->flags &= ~CEPH_OSD_FLAG_FORCE_OSD;
+        count_split_op_event(SplitOpEvent::fallback_interval);
       }
     }
     if (pi->is_erasure()) {
@@ -4209,6 +4210,9 @@ void Objecter::handle_osd_op_reply(cref_t<MOSDOpReply> m)
 
   if (rc == -EAGAIN && (op->target.flags & CEPH_OSD_FLAG_FAIL_ON_EAGAIN) == 0) {
     ldout(cct, 7) << " got -EAGAIN, resubmitting" << dendl;
+    if (is_single_direct_read(op->target)) {
+      count_split_op_event(SplitOpEvent::fallback_eagain);
+    }
     if (op->has_completion())
       num_in_flight--;
     _session_op_remove(s, op);
