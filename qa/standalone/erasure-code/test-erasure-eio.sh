@@ -374,6 +374,44 @@ function TEST_rados_get_with_subreadall_eio_shard_1() {
     delete_erasure_coded_pool $poolname
 }
 
+# A pool whose balanced reads go straight to the OSDs holding the chunks.
+# Overwrites stop rados from rounding its reads up to a full stripe.
+function create_direct_read_pool() {
+    local poolname=$1
+
+    create_erasure_coded_pool $poolname 2 1 || return 1
+    ceph osd pool set $poolname allow_ec_overwrites true || return 1
+    ceph osd pool set $poolname allow_ec_optimizations true || return 1
+    wait_for_clean || return 1
+}
+
+# The chunk size of a pool made by create_direct_read_pool.
+function get_chunk_size() {
+    local poolname=$1
+
+    local stripe_width=$(ceph osd pool ls detail --format=json | \
+        jq ".[] | select(.pool_name == \"$poolname\") | .stripe_width")
+    expr $stripe_width / 2
+}
+
+# Write an object of 4 chunk-sized blocks and read one block back with a
+# balanced read. ceph_test_rados_io_sequence checks the data it reads and does
+# not ask for the object version, so the read of block N is a single op sent
+# straight to the OSD holding the block (shard N mod k).
+function io_sequence_read() {
+    local poolname=$1
+    shift
+    local objname=$1
+    shift
+    local chunk_size=$1
+    shift
+    local block=$1
+
+    printf "create 4\nread $block 1 balanced\ndone\n" | \
+        (ulimit -c 0 ; ceph_test_rados_io_sequence --pool $poolname \
+            --object $objname --blocksize $chunk_size --interactive)
+}
+
 function TEST_ec_direct_read_eio() {
     local dir=$1
     setup_osds 3 || return 1
@@ -401,6 +439,207 @@ function TEST_ec_direct_read_eio() {
         $dir/osd.${osds[1]}.log || return 1
 
     rm -f $dir/ORIGINAL $dir/COPY
+    delete_erasure_coded_pool $poolname
+}
+
+# Set FLAG_EC_CLIENT_DECODE. "ec_client_decode true" needs a release after
+# umbrella.
+function enable_ec_client_decode() {
+    local poolname=$1
+
+    ceph osd pool set $poolname set_pool_flags $((1 << 23)) \
+        --yes-i-really-mean-it || return 1
+}
+
+# Write count random chunks to $dir/ORIGINAL and to objname.
+function put_chunks() {
+    local dir=$1
+    local poolname=$2
+    local objname=$3
+    local chunk_size=$4
+    local count=$5
+
+    dd if=/dev/urandom of=$dir/ORIGINAL bs=$chunk_size count=$count \
+        2> /dev/null || return 1
+    rados --pool $poolname put $objname $dir/ORIGINAL || return 1
+}
+
+# Read objname with balanced reads, logging the Objecter to log, and compare
+# it with $dir/ORIGINAL. The op timeout fails a read that never completes.
+function rados_direct_get() {
+    local dir=$1
+    local poolname=$2
+    local objname=$3
+    local log=$4
+    shift 4
+
+    rados --pool $poolname --rados-replica-read-policy=balance \
+        --rados-osd-op-timeout=60 --debug-objecter=20 --log-file=$log "$@" \
+        get $objname $dir/COPY || return 1
+    diff $dir/ORIGINAL $dir/COPY || return 1
+    rm $dir/COPY
+}
+
+# The client split one read of objname, the split read failed, and the client
+# sent the read once to the primary.
+function expect_one_resend_to_primary() {
+    local log=$1
+    local objname=$2
+    local primary=$3
+
+    local tid=$(sed -n -e \
+        "s/.*::create object_id=$objname assigned parent tid=\([0-9]*\)$/\1/p" \
+        $log)
+    test $(echo $tid | wc -w) = 1 || return 1
+    test $(grep -c "complete object_id=$objname retry " $log) = 1 || return 1
+    test $(grep -c "_op_submit oid $objname .* tid $tid osd\.$primary$" \
+        $log) = 1 || return 1
+}
+
+#
+# A read that the client decodes is sent once to the primary when the decode
+# fails.
+#
+function TEST_ec_client_decode_error() {
+    local dir=$1
+    setup_osds 4 || return 1
+
+    local poolname=pool-jerasure
+    local objname=obj-decode
+    create_direct_read_pool $poolname || return 1
+    enable_ec_client_decode $poolname || return 1
+    local chunk_size=$(get_chunk_size $poolname)
+    put_chunks $dir $poolname $objname $chunk_size 4 || return 1
+    local primary=$(get_primary $poolname $objname)
+
+    # The client rebuilds shard 1 from shards 0 and 2.
+    local log=$dir/client-decode.log
+    rados_direct_get $dir $poolname $objname $log \
+        --objecter-debug-ec-direct-read-exclude-shards=1 || return 1
+    grep -q "init_degraded object_id=$objname " $log || return 1
+    ! grep -q "decode failed\|object_id=$objname retry " $log || return 1
+
+    log=$dir/client-decode-error.log
+    rados_direct_get $dir $poolname $objname $log \
+        --objecter-debug-ec-direct-read-exclude-shards=1 \
+        --objecter-debug-ec-inject-decode-error=true || return 1
+    test $(grep -c "decode failed r=-5 " $log) = 1 || return 1
+    expect_one_resend_to_primary $log $objname $primary || return 1
+
+    delete_erasure_coded_pool $poolname
+}
+
+#
+# A client that cannot load the pool's plugin warns once and sends its
+# degraded reads to the primary without splitting them.
+#
+function TEST_ec_client_decode_no_plugin() {
+    local dir=$1
+    setup_osds 4 || return 1
+
+    local poolname=pool-jerasure
+    local objname=obj-no-plugin
+    create_direct_read_pool $poolname || return 1
+    enable_ec_client_decode $poolname || return 1
+    local chunk_size=$(get_chunk_size $poolname)
+    put_chunks $dir $poolname $objname $chunk_size 4 || return 1
+    local primary=$(get_primary $poolname $objname)
+    mkdir $dir/no-ec-plugins || return 1
+
+    # Chunks 1 and 3 are on shard 1, so two of the reads need a decode.
+    local log=$dir/client-no-plugin.log
+    rados_direct_get $dir $poolname $objname $log \
+        --objecter-debug-ec-direct-read-exclude-shards=1 \
+        --erasure-code-dir=$dir/no-ec-plugins \
+        --block-size $chunk_size || return 1
+    test $(grep -c "unable to load erasure code plugin for pool " $log) = 1 \
+        || return 1
+    ! grep -q "sent_op object_id=$objname " $log || return 1
+    for chunk in 1 3 ; do
+        local read="read $(expr $chunk \* $chunk_size)~$chunk_size"
+        test $(grep -c "_op_submit oid $objname .*\[$read\] .* osd\.$primary$" \
+            $log) = 1 || return 1
+    done
+
+    delete_erasure_coded_pool $poolname
+}
+
+#
+# A split read whose sub-read waits on an OSD that is then marked down is sent
+# once to the primary.
+#
+function TEST_ec_direct_read_interval_change() {
+    local dir=$1
+    setup_osds 4 || return 1
+
+    local poolname=pool-jerasure
+    local objname=obj-interval
+    create_direct_read_pool $poolname || return 1
+    local chunk_size=$(get_chunk_size $poolname)
+    put_chunks $dir $poolname $objname $chunk_size 4 || return 1
+    local primary=$(get_primary $poolname $objname)
+    # Shard 1 is never the primary.
+    local -a osds=($(get_osds $poolname $objname))
+    local victim=${osds[1]}
+    local victim_pid=$(cat $dir/osd.$victim.pid)
+
+    # The client fetches the new map only once it finds its sub-read laggy.
+    local log=$dir/client-interval.log
+    kill -STOP $victim_pid || return 1
+    rados_direct_get $dir $poolname $objname $log \
+        --objecter-timeout=1 --objecter-tick-interval=1 &
+    local pid=$!
+    local sent_rc=1
+    local try
+    for try in $(seq 60) ; do
+        if grep -q "sent_op object_id=$objname .* osd=$victim " $log ; then
+            sent_rc=0
+            break
+        fi
+        sleep 1
+    done
+    ceph osd down $victim
+    local down_rc=$?
+    wait $pid
+    local get_rc=$?
+    kill -CONT $victim_pid
+    test $sent_rc = 0 || return 1
+    test $down_rc = 0 || return 1
+    test $get_rc = 0 || return 1
+
+    grep -q "forced osd.$victim pg changed.*FAIL_ON_EAGAIN" $log || return 1
+    expect_one_resend_to_primary $log $objname $primary || return 1
+
+    wait_for_clean || return 1
+    delete_erasure_coded_pool $poolname
+}
+
+#
+# An ordered read is never sent direct, although other balanced reads of the
+# pool are.
+#
+function TEST_ec_ordered_read_not_direct() {
+    local dir=$1
+    setup_osds 4 || return 1
+
+    local poolname=pool-jerasure
+    create_direct_read_pool $poolname || return 1
+    local chunk_size=$(get_chunk_size $poolname)
+
+    put_chunks $dir $poolname obj-control $chunk_size 4 || return 1
+    rados_direct_get $dir $poolname obj-control $dir/client-control.log \
+        --debug-ms=1 || return 1
+    grep -q "osd_op(.*ec_direct_read" $dir/client-control.log || return 1
+
+    # Each write is followed by a read ordered after it.
+    local log=$dir/client-ordered.log
+    CEPH_ARGS="$CEPH_ARGS --rados-replica-read-policy=balance --debug-ms=1 \
+        --log-file=$log" \
+        ceph_test_rados --pool $poolname --max-ops 4 --objects 2 \
+        --max-in-flight 1 --size 65536 --op write 100 || return 1
+    grep -q "osd_op(.*\[read .*rwordered" $log || return 1
+    ! grep "osd_op(.*rwordered" $log | grep -q ec_direct_read || return 1
+
     delete_erasure_coded_pool $poolname
 }
 
