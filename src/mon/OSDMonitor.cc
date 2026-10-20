@@ -281,9 +281,6 @@ const uint32_t MAX_POOL_APPLICATIONS = 4;
 const uint32_t MAX_POOL_APPLICATION_KEYS = 64;
 const uint32_t MAX_POOL_APPLICATION_LENGTH = 128;
 
-const string CRUSH_ROOT_DEFAULT = "default";
-const string OSD_FAILURE_DOMAIN_DEFAULT = "host";
-
 bool is_osd_writable(const OSDCapGrant& grant, const std::string* pool_name) {
   // Note: this doesn't include support for the application tag match
   if ((grant.spec.allow & OSD_CAP_W) != 0) {
@@ -7843,9 +7840,10 @@ int OSDMonitor::crush_rule_create_replica(const string &name,
     return -EALREADY;
   } else {
     int ruleno;
-    string effective_root = !root.empty() ? root : CRUSH_ROOT_DEFAULT;
-    string effective_zone_failure_domain = !zone_failure_domain.empty() ? zone_failure_domain : g_conf().get_val<string>("osd_pool_default_zone_failure_domain");
-    string effective_osd_failure_domain = !osd_failure_domain.empty() ? osd_failure_domain : OSD_FAILURE_DOMAIN_DEFAULT;
+    const PoolCreateParams d = load_pool_defaults(g_conf());
+    string effective_root = !root.empty() ? root : d.root;
+    string effective_zone_failure_domain = !zone_failure_domain.empty() ? zone_failure_domain : d.zone_failure_domain;
+    string effective_osd_failure_domain = !osd_failure_domain.empty() ? osd_failure_domain : d.osd_failure_domain;
     if (num_zones > 1) {
       // default crush params
       dout(20) << __func__ << " creating simple_stretch_rule " << name
@@ -15292,7 +15290,6 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
         rule_name = crush.get_rule_name(params.default_rule);
       }
     }
-
     err = prepare_new_pool(poolstr,
 			   -1, // default crush rule
 			   rule_name,
