@@ -2640,6 +2640,7 @@ public:
   // Count the op as in-flight: both the Objecter's own counter and the
   // op_active gauge, plus the per-op marker that tells _finish_unsent_op()
   // the slot was taken.  Undone by _finish_op() / _finish_unsent_op().
+  // A resent op keeps the slot it took when it was first sent.
   void _take_inflight_slot(Op *op);
   void _send_op_account(Op *op);
   void _cancel_linger_op(Op *op);

@@ -2686,6 +2686,9 @@ void Objecter::_maybe_arm_op_timeout(Op *op)
 
 void Objecter::_take_inflight_slot(Op *op)
 {
+  if (op->inflight_accounted) {
+    return;
+  }
   inflight_ops++;
   logger->inc(l_osdc_op_active);
   op->inflight_accounted = true;
