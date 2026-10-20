@@ -933,9 +933,10 @@ protected:
 
   // Returns the op after SplitOp::create() chose not to split it.
   Objecter::Op *create(const object_t &oid, ObjectOperation &rd) {
-    Objecter::Op *op = objecter->prepare_read_op(
-      oid, object_locator_t(pool_id), rd, CEPH_NOSNAP, nullptr,
-      CEPH_OSD_FLAG_BALANCE_READS, -1, nullptr);
+    return create(prepare(oid, rd));
+  }
+
+  Objecter::Op *create(Objecter::Op *op) {
     ceph::shared_mutex lock = ceph::make_shared_mutex("TestSingleDirectOpTarget");
     ceph::shunique_lock<ceph::shared_mutex> sul(lock, ceph::acquire_shared);
     EXPECT_FALSE(SplitOp::create(op, *objecter, sul, cct));
@@ -1001,6 +1002,22 @@ TEST_F(TestSingleDirectOpTarget, CallGoesDirectToPrimaryShardZero)
   Objecter::Op *op = create(oid, rd);
   EXPECT_EQ(op->target.acting_primary, op->target.osd);
   EXPECT_TRUE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
+  op->put();
+}
+
+// get_read_flags() strips BALANCE_READS from an ordered read, so no client
+// sends one here.
+TEST_F(TestSingleDirectOpTarget, OrderedReadIsNeverDirect)
+{
+  ObjectOperation rd;
+  bufferlist out;
+  rd.read(0, chunk_size / 2, &out, nullptr, nullptr);
+  Objecter::Op *op = prepare(object_with_primary(k), rd);
+  op->target.flags |= CEPH_OSD_FLAG_RWORDERED;
+  EXPECT_TRUE(op->target.flags & CEPH_OSD_FLAG_BALANCE_READS);
+  create(op);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_FORCE_OSD);
+  EXPECT_FALSE(op->target.flags & CEPH_OSD_FLAG_EC_DIRECT_READ);
   op->put();
 }
 
