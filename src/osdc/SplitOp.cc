@@ -922,11 +922,6 @@ void SplitOp::complete() {
     // so as to reproduce as much as possible of the IO completion.
     std::vector out_ops(orig_op->ops.begin(), orig_op->ops.end());
 
-    std::optional<bufferlist> read_bl;
-    if (orig_op->outbl) {
-      read_bl = bufferlist();
-    }
-
     // Copy is necessary: process_op_reply_handlers() reads out_ops while
     // modifying orig_op state. Overhead is acceptable for typical 1-3 ops.
     for (unsigned ops_index=0; ops_index < out_ops.size(); ++ops_index) {
@@ -936,16 +931,10 @@ void SplitOp::complete() {
           auto [extents, bl] = assemble_buffer_sparse_read(ops_index);
           encode(std::move(extents).detach(), out_osd_op.outdata);
           encode_destructively(bl, out_osd_op.outdata);
-          if (read_bl) {
-            read_bl->append(out_osd_op.outdata);
-          }
           break;
         }
         case CEPH_OSD_OP_READ: {
           assemble_buffer_read(out_osd_op.outdata, ops_index);
-          if (read_bl) {
-            read_bl->append(out_osd_op.outdata);
-          }
           break;
         }
         default: {
@@ -959,16 +948,17 @@ void SplitOp::complete() {
     // Copied from Objecter::handle_osd_op_reply() to match correct API behaviour.
     // This is policed in the librados test harness.
     if (orig_op->outbl) {
-      ceph_assert(read_bl);
+      bufferlist bl;
+      OSDOp::merge_osd_op_vector_out_data(out_ops, bl);
       // Note: Objecter will check for a single buffer here - this will always
       //       be true. Here, there will frequently be multiple buffers due
       //       to the splitting and the original buffer still needs to be
       //       honoured.
-      if (orig_op->outbl->length() == read_bl->length()) {
+      if (orig_op->outbl->length() == bl.length()) {
         // this is here to keep previous users to *relied* on getting data
         // read into existing buffers happy.  Notably,
         // libradosstriper::RadosStriperImpl::aio_read().
-        ldout(cct,10) << __func__ << " copying resulting " << read_bl->length()
+        ldout(cct,10) << __func__ << " copying resulting " << bl.length()
                       << " into existing ceph::buffer of length " << orig_op->outbl->length()
                       << dendl;
         // The following seems a little convoluted, but the assumption is that
@@ -976,16 +966,16 @@ void SplitOp::complete() {
         bufferlist t;
         t = std::move(*orig_op->outbl);
         t.invalidate_crc();  // we're overwriting the raw buffers via c_str()
-        read_bl->begin().copy(read_bl->length(), t.c_str());
-        orig_op->outbl->substr_of(t, 0, read_bl->length());
+        bl.begin().copy(bl.length(), t.c_str());
+        orig_op->outbl->substr_of(t, 0, bl.length());
       } else {
         // librados insists that if it provided a buffer and the client is
         // going to be returning a buffer, that this buffer must be
         // contiguous.
         if (orig_op->outbl->length() != 0) {
-          read_bl->rebuild();
+          bl.rebuild();
         }
-        orig_op->outbl->substr_of(*read_bl, 0, read_bl->length());
+        orig_op->outbl->substr_of(bl, 0, bl.length());
       }
       orig_op->outbl = 0;
     }
