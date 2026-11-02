@@ -91,6 +91,14 @@ class TestStretchCluster(MgrTestCase):
         for pool in self.mgr_cluster.mon_manager.get_osd_dump_json()['pools']:
             self.mgr_cluster.mon_manager.remove_pool(pool['pool_name'])
 
+        # A restarted OSD moves itself to its crush_location, so give each
+        # OSD its place in the test's layout, as qa/tasks/ceph.py does
+        for dc, nodes in self.DC_OSDS.items():
+            for node, osd_id in nodes.items():
+                self.mgr_cluster.mon_manager.raw_cluster_cmd(
+                    'config', 'set', 'osd.{}'.format(osd_id), 'crush_location',
+                    'host={} datacenter={} root=default'.format(node, dc))
+
     def tearDown(self):
         """
         Clean up the cluster after the test.
@@ -108,10 +116,9 @@ class TestStretchCluster(MgrTestCase):
             if osd['weight'] == 0.0:
                 self.mgr_cluster.mon_manager.raw_cluster_cmd(
                     'osd', 'in', str(osd['osd']))
-            # Bring back all the osds and move it back to the host.
+            # Bring back all the osds
             if osd['up'] == 0:
                 self._bring_back_osd(osd['osd'])
-                self._move_osd_back_to_host(osd['osd'])
 
         # Bring back all the MONS
         mons = self._get_all_mons_from_all_dc()
@@ -296,28 +303,6 @@ class TestStretchCluster(MgrTestCase):
             if int(osd_data['osd']) in want_osds
         ]
 
-    def _get_host(self, osd):
-        """
-        Get the host of the osd.
-        """
-        for dc, nodes in self.DC_OSDS.items():
-            for node, osd_id in nodes.items():
-                if osd_id == osd:
-                    return node
-        return None
-
-    def _move_osd_back_to_host(self, osd):
-        """
-        Move the osd back to the host.
-        """
-        host = self._get_host(osd)
-        assert host is not None, "The host of osd {} is not found.".format(osd)
-        log.debug("Moving osd.%d back to %s", osd, host)
-        self.mgr_cluster.mon_manager.raw_cluster_cmd(
-            'osd', 'crush', 'move', 'osd.{}'.format(str(osd)),
-            'host={}'.format(host)
-        )
-
     def _bring_back_one_osds_from_dc(self, dc, osd_id=None):
         """
         Bring back osd_id, or one random failed OSD, from the specified
@@ -341,7 +326,6 @@ class TestStretchCluster(MgrTestCase):
             lambda: int(self._get_osds_data([osd_id])[0]['up']) == 1,
             timeout=self.RECOVERY_PERIOD
         )
-        self._move_osd_back_to_host(osd_id)
 
     def _bring_back_osd(self, osd):
         """
@@ -365,19 +349,16 @@ class TestStretchCluster(MgrTestCase):
         log.debug("Bringing back %s", dc)
         osds_data = self._get_osds_data(self._get_osds_by_dc(dc))
         osds = [int(osd['osd']) for osd in osds_data if int(osd['up']) == 0]
-        # Bring back all the osds in the DC and move it back to the host.
+        # Bring back all the osds in the DC
         for osd_id in osds:
             # Bring back the osd
             self._bring_back_osd(osd_id)
-            # Wait until the osd is up since we need it to be up before we can
-            # move it back to the host
+            # Wait until the osd is up
             self.wait_until_true(
                 lambda: all([int(osd['up']) == 1
                             for osd in self._get_osds_data([osd_id])]),
                 timeout=self.RECOVERY_PERIOD
             )
-            # Move the osd back to the host
-            self._move_osd_back_to_host(osd_id)
 
     def _fail_over_all_osds_in_dc(self, dc):
         """
