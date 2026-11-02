@@ -28,12 +28,14 @@ class TestStretchCluster(MgrTestCase):
     # Must be long enough for I/O to be in flight when DC1 is killed.
     PARALLEL_BENCH_DURATION = 30
     # Hard OS-level timeout applied to each bench process in the parallel
-    # workload (PARALLEL_BENCH_DURATION + WRITE_PERIOD seconds of slack).
+    # workload: the bench, plus RECOVERY_PERIOD for its I/O to wait out the
+    # site failure (the PGs re-peer on DC2 and the cluster enters degraded
+    # stretch mode, which can take more than a minute).
     # rados bench does not exit on its own when the cluster is unreachable --
     # it stalls in-flight ops until osd_op_timeout fires, causing an indefinite
     # remote.run(wait=True) hang.  The 'timeout' wrapper kills the process at
     # the OS level so teardown can never hang regardless of cluster state.
-    BENCH_HARD_TIMEOUT = PARALLEL_BENCH_DURATION + WRITE_PERIOD
+    BENCH_HARD_TIMEOUT = PARALLEL_BENCH_DURATION + RECOVERY_PERIOD
     # This dictionary maps the datacenter to the osd ids and hosts
     DC_OSDS = {
         'dc1': {
