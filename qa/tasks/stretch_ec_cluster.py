@@ -394,6 +394,9 @@ class TestStretchCluster(MgrTestCase):
         # fail over all the OSDs in the DC
         for osd_id in osds:
             self._kill_osd(osd_id)
+        # With the other site down no OSD is left to report the last one
+        self.mgr_cluster.mon_manager.raw_cluster_cmd(
+            'osd', 'down', *[str(osd_id) for osd_id in osds])
         # wait until all the osds are down
         self.wait_until_true(
             lambda: all([int(osd['up']) == 0
