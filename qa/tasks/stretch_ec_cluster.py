@@ -782,11 +782,12 @@ class TestStretchCluster(MgrTestCase):
                                       timeout=self.RECOVERY_PERIOD,
                                       success_hold_time=self.SUCCESS_HOLD_TIME)
 
-        # Bring back osds in DC1 expects PGs to be 100% active
+        # Bring back osds in DC1 expects PGs to be 100% inactive: DC2 was
+        # active without DC1, so the PGs wait for DC2
         self._bring_back_all_mons_in_dc('dc1')
         self._bring_back_all_osds_in_dc('dc1')
         self.wait_until_true_and_hold(
-            lambda: self._pg_all_active(),
+            lambda: self._pg_all_unavailable(),
             timeout=self.RECOVERY_PERIOD,
             success_hold_time=self.SUCCESS_HOLD_TIME)
 
