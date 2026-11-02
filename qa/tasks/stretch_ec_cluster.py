@@ -269,13 +269,6 @@ class TestStretchCluster(MgrTestCase):
         pgs = self._get_pg_stats()
         return self._get_active_pg(pgs) == 0
 
-    def _pg_partial_active(self):
-        """
-        Check if some pgs are active.
-        """
-        pgs = self._get_pg_stats()
-        return 0 < self._get_active_pg(pgs) <= len(pgs)
-
     def _kill_osd(self, osd):
         """
         Kill the osd.
