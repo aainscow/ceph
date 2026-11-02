@@ -339,6 +339,7 @@ class TestStretchCluster(MgrTestCase):
             lambda: int(self._get_osds_data([osd_id])[0]['up']) == 1,
             timeout=self.RECOVERY_PERIOD
         )
+        self._move_osd_back_to_host(osd_id)
 
     def _bring_back_osd(self, osd):
         """
