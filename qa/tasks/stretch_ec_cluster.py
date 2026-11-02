@@ -361,7 +361,8 @@ class TestStretchCluster(MgrTestCase):
             raise ValueError("dc must be one of the following: %s" %
                              self.DC_OSDS.keys())
         log.debug("Bringing back %s", dc)
-        osds = self._get_osds_by_dc(dc)
+        osds_data = self._get_osds_data(self._get_osds_by_dc(dc))
+        osds = [int(osd['osd']) for osd in osds_data if int(osd['up']) == 0]
         # Bring back all the osds in the DC and move it back to the host.
         for osd_id in osds:
             # Bring back the osd
