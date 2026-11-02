@@ -318,9 +318,10 @@ class TestStretchCluster(MgrTestCase):
             'host={}'.format(host)
         )
 
-    def _bring_back_one_osds_from_dc(self, dc):
+    def _bring_back_one_osds_from_dc(self, dc, osd_id=None):
         """
-        Bring back one random OSD from the specified <datacenter>
+        Bring back osd_id, or one random failed OSD, from the specified
+        <datacenter>
         """
         if not isinstance(dc, str):
             raise ValueError("dc must be a string")
@@ -332,7 +333,8 @@ class TestStretchCluster(MgrTestCase):
         osds_data = self._get_osds_data(self._get_osds_by_dc(dc))
         osds = [int(osd['osd']) for osd in osds_data if int(osd['up']) == 0]
         # fail over one random OSD in the DC
-        osd_id = random.choice(osds)
+        if osd_id is None:
+            osd_id = random.choice(osds)
         self._bring_back_osd(osd_id)
         # wait until the osd is down
         self.wait_until_true(
@@ -420,6 +422,7 @@ class TestStretchCluster(MgrTestCase):
             lambda: int(self._get_osds_data([osd_id])[0]['up']) == 0,
             timeout=self.RECOVERY_PERIOD
         )
+        return osd_id
 
     def _fail_over_all_mons_in_dc(self, dc):
         """
@@ -842,7 +845,7 @@ class TestStretchCluster(MgrTestCase):
         # Fail over one OSD in DC2. Should all be partially inactive since below min size
         # There is a case where one OSD holds multiple shards, so some PGs still have acting
         # above min size
-        self._fail_over_one_osd_from_dc(dc='dc2')
+        last_failed = self._fail_over_one_osd_from_dc(dc='dc2')
         self.wait_until_true_and_hold(lambda: not self._pg_all_active(),
                                       timeout=self.RECOVERY_PERIOD,
                                       success_hold_time=self.SUCCESS_HOLD_TIME)
@@ -855,7 +858,9 @@ class TestStretchCluster(MgrTestCase):
             timeout=self.RECOVERY_PERIOD,
             success_hold_time=self.SUCCESS_HOLD_TIME)
 
-        self._bring_back_one_osds_from_dc('dc2')
+        # Only the OSD that failed last was in the last interval that could
+        # take writes; with the other one the PGs stay down
+        self._bring_back_one_osds_from_dc('dc2', last_failed)
         # Bring back one osd in DC2 and expect PGs to be 100% active since above min size
         self.wait_until_true_and_hold(
             lambda: self._pg_all_active(),
