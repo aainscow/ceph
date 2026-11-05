@@ -594,7 +594,7 @@ function TEST_osd_pool_create_migrate_from() {
   ceph osd erasure-code-profile set ec-prof plugin=isa k=2 m=1 crush-failure-domain=osd
 
   #create an erasure coded pool
-  ceph osd pool create $SRC_POOL_NAME erasure ec-prof || return 1
+  ceph osd pool create $SRC_POOL_NAME 4 4 erasure ec-prof || return 1
   ceph osd pool set $SRC_POOL_NAME allow_ec_overwrites true || return 1
   #rbd pool init $SRC_POOL_NAME || return 1
   ceph osd pool application enable $SRC_POOL_NAME rbd || return 1
