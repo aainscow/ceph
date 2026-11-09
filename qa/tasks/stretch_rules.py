@@ -1,13 +1,16 @@
 """
 Put the pool of a zone thrash job on a hand-written CRUSH rule over the zones
 of crush_map_config, as an operator's existing rule would be, and check at the
-end that the pool kept its rule and that no rule went.
+end that the pool kept its rule and that no rule went. With the num_zones
+flip thrasher, the pool may instead end on a rule generated with the same
+placement, and the rule written here may go.
 """
 import contextlib
 import json
 import logging
 
 from teuthology import misc as teuthology
+from tasks.stretch_num_zones_flip import NumZonesFlipper
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +39,19 @@ def _rule_text(name, kind, ec, zones, zone_type, osd_type, per_zone,
                   f'        step {leaf} {mode} {per_zone} type {osd_type}',
                   '        step emit']
     return '\n'.join(lines + ['}', ''])
+
+
+def _check_placement(manager, rule, root, zones, zone_type, osd_type):
+    dump = json.loads(manager.raw_cluster_cmd(
+        'osd', 'crush', 'rule', 'dump', rule, '--format=json'))
+    steps = dump['steps']
+    log.info('pool rule %s: %s', rule, steps)
+    takes = [s['item_name'] for s in steps if s['op'] == 'take']
+    chooses = [(s['num'], s['type']) for s in steps
+               if s['op'].startswith('choose')]
+    assert takes == [root], (rule, steps)
+    assert chooses[0] == (len(zones), zone_type), (rule, steps)
+    assert chooses[-1][1] == osd_type, (rule, steps)
 
 
 @contextlib.contextmanager
@@ -130,6 +146,15 @@ def task(ctx, config):
                                           'ls').split())
         rule = json.loads(manager.raw_cluster_cmd(
             'osd', 'pool', 'get', POOL, 'crush_rule', '--format=json'))
-        assert rule['crush_rule'] == name, rule
-        assert rules <= now, f'rules removed: {sorted(rules - now)}'
+        gone = rules - now
+        if rule['crush_rule'] != name:
+            # a num_zones change gives the pool a rule of the same placement
+            # and removes the one it replaces, even if written by hand
+            assert any(isinstance(t, NumZonesFlipper)
+                       for t in ctx.ceph['ceph'].thrashers), rule
+            root = f'default~{device_class}' if kind == 'class' else 'default'
+            _check_placement(manager, rule['crush_rule'], root, zones,
+                             zone_type, osd_type)
+            gone -= {name}
+        assert not gone, f'rules removed: {sorted(gone)}'
         log.info('rules added during the job: %s', sorted(now - rules))
