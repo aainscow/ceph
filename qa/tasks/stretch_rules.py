@@ -71,8 +71,9 @@ def task(ctx, config):
     name = f'{kind}_rule'
 
     if ec:
-        profile = dict(pool_config['erasure_code_profile'])
-        profile_name = profile.pop('name')
+        # the profile as the rados task sets it again, name included
+        profile = pool_config['erasure_code_profile']
+        profile_name = profile.get('name', 'teuthologyprofile')
         manager.create_erasure_code_profile(profile_name, profile)
         per_zone = int(profile['k']) + int(profile['m'])
     elif config.get('enable_stretch_mode', False):
