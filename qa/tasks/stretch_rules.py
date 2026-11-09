@@ -104,16 +104,15 @@ def task(ctx, config):
         manager.raw_cluster_cmd('mon', 'enable_stretch_mode', *rule_arg,
                                 '--dividing_bucket', zone_type)
     if ec:
-        # a profile takes no CRUSH option: the zone type is the rule's
         manager.raw_cluster_cmd('osd', 'pool', 'create', POOL, '16', '16',
                                 'erasure', profile_name, name,
                                 '--num_zones', str(len(zones)))
     else:
+        # a named rule takes no CRUSH option: the zone type is the rule's
         manager.raw_cluster_cmd('osd', 'pool', 'create', POOL, '16', '16',
                                 'replicated', name,
                                 '--num_zones', str(len(zones)),
-                                '--replica', str(per_zone),
-                                '--zone_failure_domain', zone_type)
+                                '--replica', str(per_zone))
     if 'min_size' in pool_config:
         manager.raw_cluster_cmd('osd', 'pool', 'set', POOL, 'min_size',
                                 str(pool_config['min_size']))
