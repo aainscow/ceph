@@ -239,7 +239,16 @@ function TEST_repeer_twice_on_ec_pool() {
   (unset CEPH_CLI_TEST_DUP_COMMAND ; ceph pg repeer $pgid) || return 1
   ceph tell mon.a config set paxos_propose_interval 1 || return 1
   ceph tell mon.a config set mon_tick_interval 5 || return 1
-  wait_for_clean || return 1
+  # DNM debug: show what the second repeer left, then fail to keep the logs
+  for i in 1 2 3 4 5 6 ; do
+    date
+    ceph osd dump -f json | jq -c '[.epoch, .pg_temp]'
+    ceph pg $pgid query | jq -c '[.epoch, .state, .up, .acting]'
+    sleep 10
+  done
+  wait_for_clean
+  echo "DNM debug: wait_for_clean returned $?"
+  return 1
 }
 
 main repeer-on-acting-back "$@"
