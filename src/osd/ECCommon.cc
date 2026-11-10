@@ -25,6 +25,7 @@
 #include "ECInject.h"
 #include "messages/MOSDECSubOpWrite.h"
 #include "messages/MOSDECSubOpRead.h"
+#include "messages/MOSDECZoneReplicate.h"
 #include "common/debug.h"
 #include "crush/CrushWrapper.h"
 #include "ECMsgTypes.h"
@@ -155,6 +156,12 @@ ECCommon::ReadPipeline::get_readable_writable_shard_id_sets() {
 
   for (auto shard: get_parent()->get_acting_recovery_backfill_shard_id_set()) {
     writable.insert(sinfo.get_rel_shard(shard));
+  }
+  // acting_recovery_backfill_shard_id_set is only populated by choose_acting()
+  // which runs on the cluster primary.  Zone primaries never run choose_acting() 
+  // so their set is empty. For stretch EC, fall back to actingset, reduced to relative shards
+  if (writable.empty() && sinfo.get_num_zones() > 1) {
+    writable = sinfo.zones_or(readable);
   }
   return std::make_pair(std::move(readable), std::move(writable));
 }
@@ -1011,6 +1018,17 @@ bool ECCommon::read_request_t::operator==(const read_request_t &other) const {
          omap_max_bytes == other.omap_max_bytes;
 }
 
+std::set<pg_shard_t> ECCommon::RMWPipeline::get_local_zone_shards() const {
+  std::set<pg_shard_t> result;
+  const int my_zone = sinfo.get_shard_zone(get_parent()->whoami_shard().shard);
+  for (auto &pg_shard : get_parent()->get_acting_shards()) {
+      if (sinfo.get_shard_zone(pg_shard.shard) == my_zone) {
+          result.insert(pg_shard);
+      }
+  }
+  return result;
+}
+
 void ECCommon::RMWPipeline::start_rmw(OpRef op) {
   dout(20) << __func__ << " op=" << *op << dendl;
 
@@ -1036,14 +1054,68 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op) {
   extent_cache.execute(op->cache_ops);
 }
 
+// For each remote zone, send one MOSDECZoneReplicate to the Zone Primary.
+// Use shared_ptr so the same PGTransaction can be shared across all remote
+// zone messages without being moved-from on the first iteration.
+// pg_txn may be nullptr for ECDummyOp (roll-forward)
+void ECCommon::RMWPipeline::build_zone_replicate_msgs(Op &op, 
+                                                      const std::map<int, pg_shard_t> &zone_primaries,
+                                                      const shard_id_set &remote_zone_shards,
+                                                      std::vector<std::pair<int, Message*>> &messages) {
+  if (!remote_zone_shards.empty()) {
+    const pg_shard_t whoami = get_parent()->whoami_shard();
+    const int my_zone = sinfo.get_shard_zone(whoami.shard);
+    std::shared_ptr<PGTransaction> pg_txn = op.move_pg_transaction();
+    for (auto &[crush_zone, zone_primary] : zone_primaries) {
+      // Skip the local zone
+      if (sinfo.get_shard_zone(zone_primary.shard) == my_zone) {
+        continue;
+      }
+
+      op.pending_commits++;
+
+      ECZoneReplicateOp zop(
+        whoami,
+        op.tid,
+        op.reqid,
+        op.hoid,
+        get_info().stats,
+        pg_txn,
+        op.version,
+        op.trim_to,
+        op.pg_committed_to,
+        op.log_entries,
+        op.updated_hit_set_history,
+        op.temp_added,
+        op.temp_cleared
+      );
+
+      auto *r = new MOSDECZoneReplicate();
+      r->pgid      = spg_t(get_parent()->primary_spg_t().pgid, zone_primary.shard);
+      r->map_epoch = get_osdmap_epoch();
+      r->min_epoch = get_parent()->get_interval_start_epoch();
+      r->op        = std::move(zop);
+      messages.push_back(std::make_pair(zone_primary.osd, r));
+    }
+  }
+}
+
 void ECCommon::RMWPipeline::cache_ready(Op &op) {
   get_parent()->apply_stats(
     op.hoid,
     op.delta_stats);
 
   shard_id_map<ObjectStore::Transaction> trans(sinfo.get_k_plus_m());
-  for (auto &&shard : sinfo.zones_or(get_parent()->
-           get_acting_recovery_backfill_shard_id_set())) {
+  shard_id_set acting_shards =
+  get_parent()->get_acting_recovery_backfill_shard_id_set();
+  // Zone primaries never run choose_acting() so acting_recovery_backfill
+  // is empty.  Fall back to actingset for stretch EC
+  if (acting_shards.empty() && sinfo.get_num_zones() > 1) {
+    for (auto &&pg_shard : get_parent()->get_acting_shards()) {
+      acting_shards.insert(pg_shard.shard);
+    }
+  }
+  for (auto &&shard : sinfo.zones_or(acting_shards)) {
     trans[shard];
   }
 
@@ -1070,10 +1142,58 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   messages.reserve(get_parent()->get_acting_recovery_backfill_shards().size());
   set<pg_shard_t> backfill_shards = get_parent()->get_backfill_shards();
 
-  for (auto &&pg_shard: get_parent()->get_acting_recovery_backfill_shards()) {
+  // For multi-zone EC stretch pools, collect the set of shards that belong to
+  // remote zones so we can suppress per-shard MOSDECSubOpWrite for them and
+  // instead send one MOSDECZoneReplicate per remote zone. This does not skip over any zones
+  // since all active zones must have a primary capable shard.
+  const auto &zone_primaries = get_parent()->get_zone_primaries();
+  shard_id_set remote_zone_shards;
+
+  if (get_parent()->get_pool().supports_zone_replicate() &&
+      !op.is_zone_replicate() &&
+      sinfo.get_num_zones() > 1 &&
+      !zone_primaries.empty()) {
+    const pg_shard_t whoami = get_parent()->whoami_shard();
+    const int my_zone = sinfo.get_shard_zone(whoami.shard);
+    for (auto &pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
+      if (sinfo.get_shard_zone(pg_shard.shard) != my_zone) {
+        remote_zone_shards.insert(pg_shard.shard);
+      }
+    }
+  }
+
+  if (op.version.version != 0) {
+    if (oid_to_version.contains(op.hoid)) {
+      ceph_assert(oid_to_version.at(op.hoid) <= op.version);
+    }
+    oid_to_version[op.hoid] = op.version;
+  }
+
+  const int local_zone = sinfo.get_shard_zone(get_parent()->whoami_shard().shard);
+  const auto &shards_to_write = op.is_zone_replicate()
+    ? get_local_zone_shards()
+    : get_parent()->get_acting_recovery_backfill_shards();
+
+  for (auto &&pg_shard : shards_to_write) {
+    // Skip EC Subwrites to remote shards if a zone primary exists for that zone
+    if (remote_zone_shards.contains(pg_shard.shard)) {
+      continue;
+    }
+    // Zone Primary path: skip shards that don't belong to our zone
+    if (op.is_zone_replicate() &&
+        sinfo.get_shard_zone(pg_shard.shard) != local_zone) {
+      continue;
+    }
     // Use shard % (k+m) to get the relative shard for zone duplication
     shard_id_t abs_shard = pg_shard.shard;
     shard_id_t rel_shard = sinfo.get_rel_shard(abs_shard);
+
+    // Skip if relative shard transaction doesn't exist (relative shard not in acting set)
+    if (!trans.contains(rel_shard)) {
+      dout(20) << __func__ << " Skipping shard " << abs_shard
+               << " - relative shard " << rel_shard << " not in acting set" << dendl;
+      continue;
+    }
 
     // ECSubWrite's constructor always copies its Transaction argument (once),
     // deep-copying the transaction's std::map index structures -- that one
@@ -1107,7 +1227,9 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
       delete f;
       *_dout << dendl;
     }
-    bool should_send = get_parent()->should_send_op(pg_shard, op.hoid);
+    bool should_send = op.is_zone_replicate()
+      ? true
+      : get_parent()->should_send_op(pg_shard, op.hoid);
     /* should_send being false indicates that a recovery is going on to this
      * object this makes it critical that the log on the non-primary shards is
      * complete:- We may need to update "missing" with the latest version.
@@ -1192,7 +1314,10 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
       messages.push_back(std::make_pair(pg_shard.osd, r));
     }
   }
-
+  if (get_parent()->get_pool().supports_zone_replicate() && op.needs_zone_replicate()) {
+    build_zone_replicate_msgs(op, zone_primaries, remote_zone_shards, messages);
+  }
+  
   next_write_all_shards = false;
 
   if (!messages.empty()) {

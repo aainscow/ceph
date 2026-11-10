@@ -93,6 +93,11 @@ public:
     return pg_shard_t();
   }
 
+  const std::map<int, pg_shard_t> &get_zone_primaries() const override {
+    static const std::map<int, pg_shard_t> empty;
+    return empty;
+  }
+
   bool pgb_is_primary() const override {
     return false;
   }
