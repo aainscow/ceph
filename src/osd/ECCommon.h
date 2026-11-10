@@ -135,6 +135,7 @@ struct ECCommon {
     std::string omap_read_from;
     uint64_t omap_max_bytes = 0;
     uint64_t object_size;
+    std::optional<std::set<pg_shard_t>> zone_read_sources;
 
     read_request_t(
         const std::list<ec_align_t> &to_read,
@@ -486,7 +487,8 @@ struct ECCommon {
         bool for_recovery,
         int local_zone,
         bool allow_remote_zone,
-        const std::optional<std::set<pg_shard_t>> &error_shards = std::nullopt);
+        const std::optional<std::set<pg_shard_t>> &error_shards = std::nullopt,
+        const std::set<pg_shard_t> *zone_read_sources = nullptr);
 
     std::pair<const shard_id_set, const shard_id_set> get_readable_writable_shard_id_sets();
 
@@ -510,7 +512,8 @@ struct ECCommon {
         const shard_id_set &want,
         bool for_recovery,
         bool allow_remote_zone,
-        const std::optional<std::set<pg_shard_t>> &error_shards);
+        const std::optional<std::set<pg_shard_t>> &error_shards,
+        const std::set<pg_shard_t> *zone_read_sources = nullptr);
 
     /// Returns to_read replicas sufficient to reconstruct want
     int get_min_avail_to_read_shards(
@@ -592,6 +595,10 @@ struct ECCommon {
 
       /// In progress write state.
       int pending_commits = 0;
+      bool dispatched = false;
+      bool delegate_write = false;
+      bool fence_zone_reads = false;
+      std::map<hobject_t, std::set<pg_shard_t>> zone_read_sources;
 
       // Dispatch time per cross-zone shard sub-write, recorded at send for latency tracking
       std::map<pg_shard_t, utime_t> cross_zone_write_dispatch_time;
@@ -637,13 +644,30 @@ struct ECCommon {
 
       virtual std::optional<hobject_t> consider_updating_migration_watermark(ECListener *parent) = 0;
 
+      /// Moves the raw PGTransaction out so cache_ready() can forward it to a
+      /// remote Zone Primary via MOSDECZoneReplicate.  Returns nullptr for op
+      /// types that carry no PGTransaction.
+      virtual PGTransactionUPtr move_pg_transaction() { return nullptr; }
+
+      /// Returns true when this op arrived via MOSDECZoneReplicate (i.e. this
+      /// OSD is acting as a Zone Primary, not the cluster Primary).
+      /// cache_ready() uses this to restrict fan-out to local-zone shards only.
+      virtual bool is_zone_replicate() const { return false; }
+
+      /// Returns false for roll-forward dummy ops that carry no transaction
+      /// and must not trigger MOSDECZoneReplicate fan-out.
+      virtual bool needs_zone_replicate() const { return false; }
+
+      virtual bool can_zone_replicate_without_reads(
+          const ECUtil::stripe_info_t &) const { return false; }
+
       void cache_ready(const hobject_t &oid, const ECUtil::shard_extent_map_t &result) {
         if (!result.empty()) {
           remote_shard_extent_map.insert(std::pair(oid, result));
         }
 
         if (!--pending_cache_ops) {
-          pipeline->cache_ready(*this);
+          pipeline->dispatch_ready(*this);
         }
       }
 
@@ -669,18 +693,33 @@ struct ECCommon {
     void backend_read(hobject_t oid, ECUtil::shard_extent_set_t const &request,
                       uint64_t object_size) override {
       std::map<hobject_t, read_request_t> to_read;
-      to_read.emplace(
+      auto [it, inserted] = to_read.emplace(
         oid,
         read_request_t(
           request, WantAttrs::No, WantOmapHeader::No, WantOmapKeys::No,
           "", 0, object_size
         )
       );
+      if (!get_parent()->pgb_is_primary()) {
+        auto &sources = it->second.zone_read_sources.emplace();
+        for (const auto &op : waiting_commit) {
+          if (auto approved = op->zone_read_sources.find(oid);
+              approved != op->zone_read_sources.end()) {
+            sources = approved->second;
+            break;
+          }
+        }
+      }
 
       objects_read_async_no_cache(
         std::move(to_read),
         [this](ec_extents_t &&results) {
           for (auto &&[oid, result]: results) {
+            if (result.err < 0 && !get_parent()->pgb_is_primary()) {
+              // No fan-out or successful reply for a failed delegated read.
+              // Peering discards the blocked operation on interval change.
+              continue;
+            }
             extent_cache.read_done(oid, std::move(result.shard_extent_map));
           }
         });
@@ -689,11 +728,22 @@ struct ECCommon {
     using OpRef = std::shared_ptr<Op>;
 
     std::map<ceph_tid_t, OpRef> tid_to_op_map; /// Owns Op structure
+    std::map<hobject_t, eversion_t> oid_to_version;
 
     std::list<OpRef> waiting_commit;
+    bool dispatching_ready = false;
+    std::set<int> direct_write_zones;
     eversion_t completed_to;
     eversion_t committed_to;
+    std::set<pg_shard_t> get_local_zone_shards() const;
     void start_rmw(OpRef op);
+    void dispatch_ready(Op &op);
+    void dispatch_ordered();
+    void build_zone_replicate_msgs(Op &op, 
+                                   const std::map<int, pg_shard_t> &zone_primaries,
+                                   const shard_id_set &remote_zone_shards,
+                                   const std::map<int, std::map<hobject_t, std::set<pg_shard_t>>> &read_sources,
+                                   std::vector<std::pair<int, Message*>> &messages);
     void cache_ready(Op &op);
     void try_finish_rmw();
     void finish_rmw(OpRef const &op);
@@ -950,7 +1000,8 @@ struct ECCommon {
     PGTransaction &t,
     ECCommon::ReadPipeline &read_pipeline,
     ECCommon::RMWPipeline &rmw_pipeline,
-    DoutPrefixProvider *dpp);
+    DoutPrefixProvider *dpp,
+    bool zone_replicate = false);
 };
 
 struct RecoveryMessages {

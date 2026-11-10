@@ -2301,11 +2301,31 @@ of a stretch cluster.
   Primary.
 - **Role of the Zone Primary**: the Zone Primary processes the transaction through its own
   ECTransaction pipeline, largely unmodified code, to generate the coded shards for its zone.
-  For a write smaller than a full stripe this includes reading its zone-local shards to
-  calculate the parity update. It then fans the shard writes out to the OSDs of its zone. Parity
-  is never sent over the inter-zone link; each zone computes its own.
+  It then fans the shard writes out to the OSDs of its zone, so delegated writes do not
+  send parity over the inter-zone link. For transactions that may read old data,
+  the PG primary drains earlier writes and supplies the Zone Primary with eligible
+  local shard copies for each object. The Zone Primary selects and reconstructs
+  from those sources. For a truncate, the Zone Primary plans the size change
+  using the old object metadata and the transaction's object-info update.
+  Until recovery state is shared with the Zone Primary, the PG primary
+  uses direct per-shard writes in a remote zone once it detects a missing
+  object or cannot verify that zone's recovery state. It drains in-flight
+  writes before switching, and keeps that zone on direct writes until the
+  next peering interval. Healthy remote zones can still use delegation.
+  The Zone Primary does not retain idle extent-cache
+  lines, since per-shard writes and recovery can update the data without
+  going through its write pipeline.
+  For snapshot creation and rollback, the Zone Primary also loads the clone
+  source's object context, even when the source is not a write target.
 - **Completion**: the Zone Primary replies with the existing sub-write reply once all its
   zone-local shard writes are durable.
+- **Recovery fallback**: the Primary sends direct per-shard sub-writes to recovery and
+  backfill targets that the Zone Primary does not cover. This includes targets outside
+  the acting set even when their zone has a Zone Primary, and targets in zones with no
+  eligible Zone Primary. These sub-writes contain coded data where safe, or log-only
+  updates when an object still needs recovery. The Primary waits for their durable
+  replies. Recovery alone does not block client I/O when the stretch pool's availability
+  requirements are satisfied.
 - **Crash handling**: if the Zone Primary crashes during the fan-out, the partial writes on
   remote-zone shards are rolled back by the existing peering process. No new crash recovery
   mechanism is needed.

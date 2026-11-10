@@ -164,6 +164,8 @@ struct ECSubReadReply {
 };
 WRITE_CLASS_ENCODER(ECSubReadReply)
 
+using ec_zone_read_sources_t = std::map<hobject_t, std::set<pg_shard_t>>;
+
 struct ECZoneReplicateOp {
   pg_shard_t from;
   ceph_tid_t tid;
@@ -171,6 +173,7 @@ struct ECZoneReplicateOp {
   hobject_t soid;
   pg_stat_t stats;
   std::shared_ptr<PGTransaction> t;
+  ec_zone_read_sources_t read_sources;
   eversion_t at_version;
   eversion_t trim_to;
   eversion_t pg_committed_to;
@@ -203,7 +206,7 @@ struct ECZoneReplicateOp {
     temp_removed(temp_removed),
     updated_hit_set_history(updated_hit_set_history)
   {}
-
+  
   ECZoneReplicateOp(const ECZoneReplicateOp &) = delete;
   ECZoneReplicateOp &operator=(const ECZoneReplicateOp &) = delete;
   ECZoneReplicateOp(ECZoneReplicateOp &&) = default;
