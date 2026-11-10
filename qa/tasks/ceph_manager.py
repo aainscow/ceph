@@ -692,6 +692,45 @@ class OSDThrasher(Thrasher):
         self.log('Setting full ratio back to .95')
         self.ceph_manager.raw_cluster_cmd('osd', 'set-full-ratio', '.95')
 
+    def _zones_of_blocks(self, pool, up):
+        """
+        For a pool over zones, the OSDs of each zone the PG uses, each
+        holding size / num_zones of its OSDs. For an erasure coded pool
+        they are in block order: the monitors cancel an upmap that puts a
+        zone block in more than one zone, or two blocks in one zone. They
+        keep an upmap that leaves a replicated PG in fewer zones, and the
+        PG then cannot peer. None when up does not show every zone: a
+        zone is that of any of its OSDs in up.
+        """
+        out = self.ceph_manager.raw_cluster_cmd('osd', 'tree', '-f', 'json')
+        nodes = {n['id']: n for n in json.loads(out)['nodes']}
+        osd_zone = {}
+        zone_osds = {}
+        for zone in nodes.values():
+            if zone['id'] >= 0 or \
+               zone['type_id'] != pool['peering_crush_bucket_barrier']:
+                continue
+            todo = [zone['id']]
+            while todo:
+                node = nodes[todo.pop()]
+                if node['id'] >= 0:
+                    osd_zone[node['id']] = zone['id']
+                    zone_osds.setdefault(zone['id'], []).append(node['id'])
+                todo += node.get('children', [])
+        block = pool['size'] // pool['num_zones']
+        if pool['type'] == 3:
+            zones = []
+            for i in range(0, len(up), block):
+                found = {osd_zone[o] for o in up[i:i + block] if o in osd_zone}
+                zones.append(found.pop() if len(found) == 1 else None)
+        else:
+            zones = list(dict.fromkeys(osd_zone[o] for o in up if o in osd_zone))
+        if len(zones) != pool['num_zones'] or None in zones or \
+           len(set(zones)) != len(zones) or \
+           any(len(zone_osds[z]) < block for z in zones):
+            return None
+        return [zone_osds[z] for z in zones]
+
     def thrash_pg_upmap(self):
         """
         Install or remove random pg_upmap entries in OSDMap
@@ -715,9 +754,21 @@ class OSDThrasher(Thrasher):
                     self.log('No pools; doing nothing')
                     return
                 n = sizes[0]
-                osds = self.in_osds + self.out_osds
-                shuffle(osds)
-                osds = osds[0:n]
+                pool = [x for x in j['pools'] if x['pool'] == poolid][0]
+                if pool.get('num_zones', 1) > 1:
+                    zones = self._zones_of_blocks(pool, pg['up'])
+                    if zones is None:
+                        self.log('No zones for %s; doing nothing' % pgid)
+                        return
+                    # the same share of OSDs in each zone, perhaps swapping zones
+                    shuffle(zones)
+                    osds = []
+                    for zone in zones:
+                        osds += random.sample(zone, n // len(zones))
+                else:
+                    osds = self.in_osds + self.out_osds
+                    shuffle(osds)
+                    osds = osds[0:n]
                 self.log('Setting %s to %s' % (pgid, osds))
                 cmd = ['osd', 'pg-upmap', pgid] + [str(x) for x in osds]
                 self.log('cmd %s' % cmd)
@@ -760,9 +811,27 @@ class OSDThrasher(Thrasher):
                     self.log('No pools; doing nothing')
                     return
                 n = sizes[0]
-                osds = self.in_osds + self.out_osds
-                shuffle(osds)
-                osds = osds[0:n*2]
+                pool = [x for x in j['pools'] if x['pool'] == poolid][0]
+                if pool.get('num_zones', 1) > 1:
+                    zones = self._zones_of_blocks(pool, pg['up'])
+                    if zones is None:
+                        self.log('No zones for %s; doing nothing' % pgid)
+                        return
+                    # each moved OSD stays in its zone
+                    osds = []
+                    for src in pg['up']:
+                        zone = next((z for z in zones if src in z), [])
+                        dsts = [o for o in zone
+                                if o not in pg['up'] and o not in osds]
+                        if dsts and random.random() < .5:
+                            osds += [src, random.choice(dsts)]
+                    if not osds:
+                        self.log('No OSD to move %s to; doing nothing' % pgid)
+                        return
+                else:
+                    osds = self.in_osds + self.out_osds
+                    shuffle(osds)
+                    osds = osds[0:n*2]
                 self.log('Setting %s to %s' % (pgid, osds))
                 cmd = ['osd', 'pg-upmap-items', pgid] + [str(x) for x in osds]
                 self.log('cmd %s' % cmd)
