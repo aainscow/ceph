@@ -42,6 +42,7 @@ struct ECListener {
 
   // XXX
   virtual pg_shard_t primary_shard() const = 0;
+  virtual const std::map<int, pg_shard_t> &get_zone_primaries() const = 0;
   virtual bool pgb_is_primary() const = 0;
 
   /**

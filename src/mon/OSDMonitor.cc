@@ -2042,6 +2042,19 @@ void OSDMonitor::encode_pending(MonitorDBStore::TransactionRef t)
                    << " has OMAP support auto-enabled" << dendl;
         }
       }
+
+      // Auto-enable zone-primary replication for multi-zone pools
+      for (auto& [pool_id, pool] : tmp.get_pools()) {
+        if (!pool.has_flag(pg_pool_t::FLAG_ZONE_REPLICATE) &&
+            pool.get_num_zones() > 1) {
+          if (pending_inc.new_pools.count(pool_id) == 0) {
+            pending_inc.new_pools[pool_id] = pool;
+          }
+          pending_inc.new_pools[pool_id].flags |= pg_pool_t::FLAG_ZONE_REPLICATE;
+          dout(10) << __func__ << " multi-zone pool " << pool_id
+                   << " has zone_replicate auto-enabled" << dendl;
+        }
+      }
     }
 
     // after the blocks above, which may replace pending pools
@@ -9112,6 +9125,12 @@ int OSDMonitor::prepare_new_pool(string& name,
     dout(20) << __func__ << " enabled stretch mode for pool " << name
              << " across " << num_zones << " " << zone_failure_domain
              << " zones" << dendl;
+  }
+
+  // Auto-enable zone-primary replication for multi-zone pools
+  if (osdmap.require_osd_release >= ceph_release_t::umbrella &&
+      num_zones > 1) {
+    pi->set_flag(pg_pool_t::FLAG_ZONE_REPLICATE);
   }
 
   pending_inc.new_pool_names[pool] = name;

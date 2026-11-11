@@ -18,6 +18,7 @@
 #include "crush/CrushWrapper.h"
 #include "messages/MOSDECSubOpWrite.h"
 #include "messages/MOSDECSubOpWriteReply.h"
+#include "messages/MOSDECZoneReplicate.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "messages/MOSDECSubOpReadReply.h"
 #include "messages/MOSDRepOp.h"
@@ -201,6 +202,7 @@ void PGBackendTestFixture::setup_ec_pool()
   // Register typed handlers for all EC message types
   register_backend_handler<MOSDECSubOpWrite>(MSG_OSD_EC_WRITE);
   register_backend_handler<MOSDECSubOpWriteReply>(MSG_OSD_EC_WRITE_REPLY);
+  register_backend_handler<MOSDECZoneReplicate>(MSG_OSD_EC_ZONE_REPLICATE);
   register_backend_handler<MOSDECSubOpRead>(MSG_OSD_EC_READ);
   register_backend_handler<MOSDECSubOpReadReply>(MSG_OSD_EC_READ_REPLY);
   register_backend_handler<MOSDPGPush>(MSG_OSD_PG_PUSH);
@@ -408,6 +410,10 @@ void PGBackendTestFixture::do_transaction(
 
   PGBackend* primary_backend = get_primary_backend();
   ceph_assert(primary_backend != nullptr);
+  auto* primary_pg = get_primary_test_pg();
+  if (primary_pg->has_peering_state()) {
+    primary_pg->get_peering_state()->pre_submit_op(hoid, log_entries, at_version);
+  }
   primary_backend->submit_transaction(
     hoid,
     delta_stats,
@@ -521,11 +527,14 @@ void PGBackendTestFixture::do_create_and_write_impl(
 {
 
   hobject_t hoid = make_test_object(obj_name);
-  PGTransactionUPtr pg_t = std::make_unique<PGTransaction>();
-  pg_t->create(hoid);
 
   // Use persistent OBC so attr_cache is maintained across operations
   ObjectContextRef obc = get_object_context(hoid, true);
+
+  PGTransactionUPtr pg_t = std::make_unique<PGTransaction>();
+  if (!obc->obs.exists) {
+    pg_t->create(hoid);
+  }
   pg_t->obc_map[hoid] = obc;
 
   // Note: We do NOT pre-seed attr_cache here. For a new object, attr_cache
@@ -569,6 +578,7 @@ void PGBackendTestFixture::do_create_and_write_impl(
     pg_t->setattr(hoid, SS_ATTR, bss);
   }
 
+  const bool is_new_obj = !obc->obs.exists;
   // Update OBC obs to new state BEFORE submitting the transaction.
   // This matches PrimaryLogPG::finish_ctx() line 9187: ctx->obc->obs = ctx->new_obs
   // At this point: obc->obs.oi has NEW state, obc->attr_cache[OI_ATTR] has OLD state.
@@ -577,11 +587,14 @@ void PGBackendTestFixture::do_create_and_write_impl(
 
   std::vector<pg_log_entry_t> log_entries;
   pg_log_entry_t entry;
-  entry.mark_unrollbackable();
+  if (is_new_obj) {
+    // A brand-new object has no previous data to roll back.
+    entry.mark_unrollbackable();
+  }
   entry.op = pg_log_entry_t::MODIFY;
   entry.soid = hoid;
   entry.version = at_version;
-  entry.prior_version = eversion_t(0, 0);
+  entry.prior_version = is_new_obj ? eversion_t() : obc->obs.oi.version;
   log_entries.push_back(entry);
 
   // Capture TestPG pointer before creating lambda
