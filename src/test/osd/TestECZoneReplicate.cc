@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <tuple>
 #include "test/osd/ECPeeringTestFixture.h"
 #include "test/osd/OSDMapTestHelpers.h"
 #include "test/osd/TestCommon.h"
@@ -145,6 +146,90 @@ protected:
       }
     }
     return result;
+  }
+
+  void clear_primary_messages() {
+    get_primary_listener()->sent_messages_with_dest.clear();
+  }
+
+  void restore_remote_zone() {
+    for (int osd = SHARDS_PER_ZONE; osd < 2 * SHARDS_PER_ZONE; ++osd) {
+      mark_osd_up(osd);
+    }
+    enter_recovery_stretch_mode();
+  }
+
+  void expect_matching_versions(const string& obj_name) {
+    for (int shard = SHARDS_PER_ZONE;
+         shard < num_zones * SHARDS_PER_ZONE; ++shard) {
+      SCOPED_TRACE(shard);
+      const int relative = shard % SHARDS_PER_ZONE;
+      auto* source = find_test_pg_for_shard(relative);
+      ASSERT_NE(source, nullptr);
+      ceph::buffer::ptr expected_value;
+      const int expected_result =
+        get_osd_fixture(source->pg_whoami.osd)->store->getattr(
+          source->ch,
+          ghobject_t(make_test_object(obj_name), ghobject_t::NO_GEN,
+                     shard_id_t(relative)),
+          OI_ATTR, expected_value);
+      ASSERT_TRUE(expected_result >= 0 || expected_result == -ENOENT);
+      auto* pg = find_test_pg_for_shard(shard);
+      ASSERT_NE(pg, nullptr);
+      ceph::buffer::ptr value;
+      const int result = get_osd_fixture(pg->pg_whoami.osd)->store->getattr(
+        pg->ch,
+        ghobject_t(make_test_object(obj_name), ghobject_t::NO_GEN,
+                   shard_id_t(shard)),
+        OI_ATTR, value);
+      ASSERT_EQ(result, expected_result);
+      if (result == -ENOENT) {
+        continue;
+      }
+      bufferlist expected_bl;
+      expected_bl.append(expected_value);
+      auto expected_p = expected_bl.cbegin();
+      object_info_t expected;
+      expected.decode(expected_p);
+      bufferlist bl;
+      bl.append(value);
+      auto p = bl.cbegin();
+      object_info_t oi;
+      oi.decode(p);
+      EXPECT_EQ(oi.version, expected.version);
+      EXPECT_EQ(oi.size, expected.size);
+    }
+  }
+};
+
+class TestECZoneReplicateThreeZones : public TestECZoneReplicate {
+public:
+  TestECZoneReplicateThreeZones() {
+    num_zones = 3;
+  }
+
+protected:
+  void pre_peering_hook() override {
+    TestECZoneReplicate::pre_peering_hook();
+    auto pool = *osdmap->get_pg_pool(pool_id);
+    // Keep two required zones while testing a third zone's recovery.
+    pool.peering_crush_bucket_count = 2;
+    OSDMap::Incremental inc(osdmap->get_epoch() + 1);
+    inc.fsid = osdmap->get_fsid();
+    inc.new_pools[pool_id] = pool;
+    osdmap->apply_incremental(inc);
+  }
+};
+
+class TestECZoneReplicateRecovery
+  : public TestECZoneReplicate,
+    public testing::WithParamInterface<tuple<bool, bool>> {
+public:
+  void SetUp() override {
+    if (!get<0>(GetParam())) {
+      pool_flags &= ~pg_pool_t::FLAG_ZONE_REPLICATE;
+    }
+    TestECZoneReplicate::SetUp();
   }
 };
 
@@ -661,6 +746,9 @@ TEST_F(TestECZoneReplicate, LocalStoreStatEIOAbortsZoneReplicate) {
   // and returns early without fanning out SubOpWrite to zone-1 peers.
   unsuspend_osd(zone1_zp_osd);
   event_loop->run_until_idle();
+  EXPECT_TRUE(osdmap->is_up(zone1_zp_osd));
+  EXPECT_EQ(get_primary_test_pg()->outstanding_writes[
+              make_test_object(obj_name)], 1);
 
   // With the fix: the ZP must have sent zero SubOpWrite to zone-1 peers.
   // (OSDs 4 and 5 are the non-primary zone-1 shards.)
@@ -726,6 +814,9 @@ TEST_F(TestECZoneReplicate, LocalStoreGetAttrsEIOAbortsZoneReplicate) {
   // aborts before any SubOpWrite is sent to zone-1 peers.
   unsuspend_osd(zone1_zp_osd);
   event_loop->run_until_idle();
+  EXPECT_TRUE(osdmap->is_up(zone1_zp_osd));
+  EXPECT_EQ(get_primary_test_pg()->outstanding_writes[
+              make_test_object(obj_name)], 1);
 
   // With the fix: zero SubOpWrite to zone-1 peers (OSDs 4, 5).
   int subop_to_zone1_peers = 0;
@@ -749,4 +840,304 @@ TEST_F(TestECZoneReplicate, LocalStoreGetAttrsEIOAbortsZoneReplicate) {
     << "PG must re-activate on surviving shards after Zone Primary marked down";
 
   verify_object(obj_name);
+}
+
+TEST_P(TestECZoneReplicateRecovery, MissingRemoteShardReceivesLatestVersion) {
+  ScopedConfig cfg_async_recovery("osd_async_recovery_min_cost", "0");
+  const string obj = "partial_zone_recovery";
+  const string initial(stripe_unit * k, 'A');
+  const string degraded(stripe_unit * k, 'B');
+  create_and_write_verify(obj, initial);
+  set_pool_min_size(k);
+  mark_osd_down(4);
+  ASSERT_EQ(write(obj, 0, degraded, degraded.size()), 0);
+  mark_osd_up(4);
+
+  auto* ps = get_primary_test_pg()->get_peering_state();
+  ASSERT_TRUE(ps->is_active());
+  ASSERT_EQ(ps->get_zone_primaries().size(), 2u);
+  ASSERT_TRUE(ps->get_async_recovery_targets().contains(
+    pg_shard_t(4, shard_id_t(4))));
+  ASSERT_TRUE(get_peering_state(4)->get_pg_log().get_missing().is_missing(
+    make_test_object(obj)));
+
+  string expected = degraded;
+  const size_t offset = get<1>(GetParam()) ? 17 : 0;
+  const string update(get<1>(GetParam()) ? 113 : initial.size(), 'C');
+  expected.replace(offset, update.size(), update);
+  clear_primary_messages();
+  ASSERT_EQ(write(obj, offset, update, expected.size()), 0);
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count,
+            get<0>(GetParam()) ? 1 : 0);
+  pg_missing_item missing;
+  ASSERT_TRUE(get_peering_state(4)->get_pg_log().get_missing().is_missing(
+    make_test_object(obj), &missing));
+  ASSERT_EQ(missing.need, ps->get_info().last_update);
+
+  set_config("osd_async_recovery_min_cost", "100");
+  run_recovery(obj, false, expected);
+  new_epoch_loop();
+  ASSERT_TRUE(primary_is_clean());
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+  FullAndUnalignedWrites, TestECZoneReplicateRecovery,
+  testing::Combine(testing::Bool(), testing::Bool()),
+  [](const testing::TestParamInfo<tuple<bool, bool>>& info) {
+    return string(get<0>(info.param) ? "R2" : "Direct") +
+      (get<1>(info.param) ? "Unaligned" : "FullStripe");
+  });
+
+TEST_F(TestECZoneReplicate, FallbackThenZoneReplicationPreservesPartialWrites) {
+  ScopedConfig cfg_async_recovery("osd_async_recovery_min_cost", "0");
+  const string obj = "fallback_transition";
+  string expected(stripe_unit * k, 'A');
+  create_and_write_verify(obj, expected);
+  mark_osds_down({3, 4, 5});
+  enter_degraded_stretch_mode(0);
+  ASSERT_EQ(write(obj, 31, string(97, 'B'), expected.size()), 0);
+  expected.replace(31, 97, string(97, 'B'));
+  restore_remote_zone();
+  ASSERT_EQ(get_primary_test_pg()->get_peering_state()->get_zone_primaries().size(),
+            1u);
+
+  clear_primary_messages();
+  ASSERT_EQ(write(obj, stripe_unit - 23, string(71, 'C'), expected.size()), 0);
+  expected.replace(stripe_unit - 23, 71, string(71, 'C'));
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 0);
+  set_config("osd_async_recovery_min_cost", "100");
+  run_recovery(obj, false, expected);
+  new_epoch_loop();
+  ASSERT_TRUE(primary_is_clean());
+  enter_healthy_stretch_mode();
+
+  clear_primary_messages();
+  ASSERT_EQ(write(obj, 7, string(109, 'D'), expected.size()), 0);
+  expected.replace(7, 109, string(109, 'D'));
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 1);
+  verify_object(obj, expected, 0, expected.size());
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+TEST_F(TestECZoneReplicate, ZoneReplyWaitsForEveryLocalShard) {
+  const string obj = "delayed_local_commit";
+  const string data(stripe_unit * k, 'A');
+  event_loop->suspend_from_to_osd(5, 3);
+  ASSERT_EQ(create_and_write(obj, data), -EINPROGRESS);
+  auto* zp = get_first_test_pg_for_osd(3)->get_backend_listener();
+  for (const auto& [dest, msg] : zp->sent_messages_with_dest) {
+    EXPECT_FALSE(dest == 0 && msg->get_type() == MSG_OSD_EC_WRITE_REPLY);
+  }
+  event_loop->unsuspend_from_to_osd(5, 3);
+  event_loop->run_until_idle();
+  int replies = 0;
+  for (const auto& [dest, msg] : zp->sent_messages_with_dest) {
+    replies += dest == 0 && msg->get_type() == MSG_OSD_EC_WRITE_REPLY;
+  }
+  EXPECT_EQ(replies, 1);
+  verify_object(obj);
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+TEST_F(TestECZoneReplicate, ZonePrimaryCrashAfterPartialFanOut) {
+  const string obj = "partial_fanout_crash";
+  const string initial(stripe_unit * k, 'A');
+  const string update(stripe_unit * k, 'B');
+  create_and_write_verify(obj, initial);
+  set_pool_min_size(k);
+  event_loop->suspend_from_to_osd(3, 5);
+  clear_primary_messages();
+  ASSERT_EQ(write(obj, 0, update, initial.size()), -EINPROGRESS);
+  const auto pending_version =
+    get_primary_test_pg()->get_peering_state()->get_info().last_update;
+  EXPECT_EQ(read_shard_object_info(obj, 4).version, pending_version);
+  EXPECT_LT(read_shard_object_info(obj, 5).version, pending_version);
+
+  mark_osd_down(3);
+  event_loop->unsuspend_from_to_osd(3, 5);
+  event_loop->run_until_idle();
+  ASSERT_TRUE(get_primary_test_pg()->get_peering_state()->is_active());
+  verify_object(obj);
+  mark_osd_up(3);
+  ASSERT_TRUE(all_shards_active());
+  verify_object(obj);
+}
+
+TEST_F(TestECZoneReplicate, DurableZoneWriteSurvivesLostReplyAndPrimaryChange) {
+  const string obj = "durable_lost_reply";
+  const string initial(stripe_unit * k, 'A');
+  const string update(stripe_unit * k, 'B');
+  create_and_write_verify(obj, initial);
+  set_pool_min_size(k);
+  event_loop->suspend_from_to_osd(3, 0);
+  ASSERT_EQ(write(obj, 0, update, initial.size()), -EINPROGRESS);
+  expect_matching_versions(obj);
+
+  mark_osd_down(3);
+  ASSERT_TRUE(get_primary_test_pg()->get_peering_state()->is_active());
+  verify_object(obj, update, 0, update.size());
+  const int interrupted_writes =
+    get_primary_test_pg()->outstanding_writes[make_test_object(obj)];
+  clear_primary_messages();
+  event_loop->suspend_from_to_osd(5, 0);
+  const string expected(update.size(), 'C');
+  ASSERT_EQ(write(obj, 0, expected, expected.size()), -EINPROGRESS);
+  auto msgs = capture_primary_messages();
+  ASSERT_EQ(msgs.zone_replicate_dests.size(), 1u);
+  EXPECT_EQ(msgs.zone_replicate_dests.front(), 5);
+  event_loop->unsuspend_from_to_osd(3, 0);
+  event_loop->run_until_idle();
+  EXPECT_EQ(get_primary_test_pg()->outstanding_writes[make_test_object(obj)],
+            interrupted_writes + 1);
+  event_loop->unsuspend_from_to_osd(5, 0);
+  event_loop->run_until_idle();
+  EXPECT_EQ(get_primary_test_pg()->outstanding_writes[make_test_object(obj)],
+            interrupted_writes);
+  verify_object(obj, expected, 0, expected.size());
+}
+
+TEST_F(TestECZoneReplicate, DeleteRecreateRemovesOldData) {
+  const string obj = "delete_recreate";
+  const size_t size = stripe_unit * k;
+  create_and_write_verify(obj, string(2 * size, 'A'));
+  ASSERT_EQ(delete_object(obj), 0);
+  for (int shard = 0; shard < num_zones * SHARDS_PER_ZONE; ++shard) {
+    auto* pg = find_test_pg_for_shard(shard);
+    ASSERT_NE(pg, nullptr);
+    struct stat st;
+    EXPECT_EQ(get_osd_fixture(pg->pg_whoami.osd)->store->stat(
+      pg->ch, ghobject_t(make_test_object(obj), ghobject_t::NO_GEN,
+                        shard_id_t(shard)), &st), -ENOENT);
+  }
+  create_and_write_verify(obj, string(size, 'B'));
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+TEST_F(TestECZoneReplicate, UnalignedOverwriteAfterTruncate) {
+  const string obj = "truncate_and_overwrite";
+  const size_t size = stripe_unit * k;
+  create_and_write_verify(obj, string(size, 'B'));
+  const size_t truncated = stripe_unit / 2;
+  ASSERT_EQ(truncate_and_write(obj, size, truncated,
+                              {{17, string(53, 'C')}}), 0);
+  string expected(truncated, 'B');
+  expected.replace(17, 53, string(53, 'C'));
+  verify_object(obj, expected, 0, expected.size());
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+TEST_F(TestECZoneReplicate, AttributeOverwriteReachesBothZones) {
+  const string obj = "attribute_overwrite";
+  create_and_write_verify(obj, string(stripe_unit * k, 'A'));
+  ASSERT_EQ(write_attribute(obj, "key", "old", false), 0);
+  ASSERT_EQ(write_attribute(obj, "key", "new", false), 0);
+  for (int shard = 0; shard < num_zones * SHARDS_PER_ZONE; ++shard) {
+    if (get_pool().is_nonprimary_shard(shard_id_t(shard))) {
+      continue;
+    }
+    auto* pg = find_test_pg_for_shard(shard);
+    ASSERT_NE(pg, nullptr);
+    ceph::buffer::ptr value;
+    ASSERT_GE(get_osd_fixture(pg->pg_whoami.osd)->store->getattr(
+      pg->ch, ghobject_t(make_test_object(obj), ghobject_t::NO_GEN,
+                        shard_id_t(shard)), "key", value), 0);
+    EXPECT_EQ(string(value.c_str(), value.length()), "new");
+  }
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+TEST_F(TestECZoneReplicate, SnapshotRollbackRestoresBothZones) {
+  const string obj = "snapshot_rollback";
+  const string initial(stripe_unit * k, 'A');
+  create_and_write_verify(obj, initial);
+  {
+    SCOPED_TRACE("create snapshot");
+    ASSERT_EQ(create_snapshot(obj, initial.size()), 0);
+  }
+  ASSERT_EQ(write(obj, 17, string(113, 'B'), initial.size()), 0);
+  {
+    SCOPED_TRACE("rollback to snapshot");
+    ASSERT_EQ(rollback(obj, initial.size()), 0);
+  }
+  verify_object(obj, initial, 0, initial.size());
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+TEST_F(TestECZoneReplicateThreeZones, WaitsForBothRemoteZoneReplies) {
+  const string obj = "three_zone_commit";
+  const string data(stripe_unit * k, 'A');
+  event_loop->suspend_from_to_osd(3, 0);
+  event_loop->suspend_from_to_osd(6, 0);
+  clear_primary_messages();
+  ASSERT_EQ(create_and_write(obj, data), -EINPROGRESS);
+  auto msgs = capture_primary_messages();
+  sort(msgs.zone_replicate_dests.begin(), msgs.zone_replicate_dests.end());
+  EXPECT_EQ(msgs.zone_replicate_dests, (vector<int>{3, 6}));
+  event_loop->unsuspend_from_to_osd(3, 0);
+  event_loop->run_until_idle();
+  EXPECT_GT(get_primary_test_pg()->outstanding_writes[make_test_object(obj)], 0);
+  event_loop->unsuspend_from_to_osd(6, 0);
+  event_loop->run_until_idle();
+  EXPECT_EQ(get_primary_test_pg()->outstanding_writes[make_test_object(obj)], 0);
+  verify_object(obj);
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
+TEST_F(TestECZoneReplicateThreeZones, MixedZoneReplicationAndRecoveryFallback) {
+  ScopedConfig cfg_async_recovery("osd_async_recovery_min_cost", "0");
+  const string obj = "mixed_zone_routing";
+  const string initial(stripe_unit * k, 'A');
+  const string degraded(stripe_unit * k, 'B');
+  const string latest(stripe_unit * k, 'C');
+  create_and_write_verify(obj, initial);
+  mark_osds_down({6, 7, 8});
+  set_pool_min_size(k);
+  ASSERT_TRUE(get_primary_test_pg()->get_peering_state()->is_active());
+  ASSERT_EQ(write(obj, 0, degraded, degraded.size()), 0);
+  for (int osd : {6, 7, 8}) {
+    mark_osd_up(osd);
+  }
+  auto* ps = get_primary_test_pg()->get_peering_state();
+  ASSERT_TRUE(ps->is_active());
+  ASSERT_EQ(ps->get_zone_primaries().size(), 2u);
+  for (int osd : {6, 7, 8}) {
+    ASSERT_TRUE(ps->get_async_recovery_targets().contains(
+      pg_shard_t(osd, shard_id_t(osd))));
+  }
+  clear_primary_messages();
+  ASSERT_EQ(write(obj, 0, latest, latest.size()), 0);
+  const auto msgs = capture_primary_messages();
+  EXPECT_EQ(msgs.zone_replicate_dests, (vector<int>{3}));
+  for (int osd : {6, 7, 8}) {
+    int updates = 0;
+    for (const auto& [dest, msg] :
+         get_primary_listener()->sent_messages_with_dest) {
+      auto subwrite = boost::dynamic_pointer_cast<MOSDECSubOpWrite>(msg);
+      if (dest == osd && subwrite &&
+          subwrite->op.at_version == ps->get_info().last_update &&
+          subwrite->op.soid == make_test_object(obj)) {
+        ++updates;
+        EXPECT_TRUE(subwrite->op.t.empty());
+        EXPECT_FALSE(subwrite->op.log_entries.empty());
+      }
+    }
+    EXPECT_EQ(updates, 1);
+    EXPECT_EQ(get_peering_state(osd)->get_info().last_update,
+              ps->get_info().last_update);
+  }
+  set_config("osd_async_recovery_min_cost", "100");
+  run_recovery(obj, false, latest);
+  new_epoch_loop();
+  ASSERT_TRUE(primary_is_clean());
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
 }
