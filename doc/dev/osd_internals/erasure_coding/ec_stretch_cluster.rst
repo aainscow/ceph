@@ -2306,6 +2306,11 @@ of a stretch cluster.
   is never sent over the inter-zone link; each zone computes its own.
 - **Completion**: the Zone Primary replies with the existing sub-write reply once all its
   zone-local shard writes are durable.
+- **Recovery fallback**: if a remote zone has no eligible Zone Primary in the acting set,
+  the Primary sends direct per-shard sub-writes to its recovery targets instead. These
+  contain coded data where safe, or log-only updates when an object still needs recovery.
+  The Primary waits for their durable replies. Recovery alone does not block client I/O
+  when the stretch pool's availability requirements are satisfied.
 - **Crash handling**: if the Zone Primary crashes during the fan-out, the partial writes on
   remote-zone shards are rolled back by the existing peering process. No new crash recovery
   mechanism is needed.

@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 sts=2 expandtab
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include "test/osd/ECPeeringTestFixture.h"
 #include "test/osd/OSDMapTestHelpers.h"
 #include "test/osd/TestCommon.h"
@@ -375,6 +376,107 @@ TEST_F(TestECZoneReplicate, PendingCommitsCountIsLocalShardsAndRemoteZones) {
 
   // The object must now be readable — the write completed.
   // verify_object(obj_name);
+}
+
+TEST_F(TestECZoneReplicate, RecoveringZoneWithoutPrimaryReceivesDirectUpdates) {
+  ScopedConfig cfg_async_recovery("osd_async_recovery_min_cost", "0");
+  const string obj_name = "test_recovering_zone";
+  const string initial_data(stripe_unit * k, 'A');
+  const string degraded_data(stripe_unit * k, 'B');
+  const string latest_data(stripe_unit * k, 'C');
+  create_and_write_verify(obj_name, initial_data);
+
+  const vector<int> targets = {3, 4, 5};
+  mark_osds_down(targets);
+  enter_degraded_stretch_mode(0);
+  ASSERT_TRUE(get_primary_test_pg()->get_peering_state()->is_active());
+  ASSERT_EQ(write(obj_name, 0, degraded_data, degraded_data.size()), 0);
+  for (int osd : targets) {
+    mark_osd_up(osd);
+  }
+  enter_recovery_stretch_mode();
+
+  auto* primary_ps = get_primary_test_pg()->get_peering_state();
+  ASSERT_TRUE(primary_ps->is_active());
+  ASSERT_EQ(primary_ps->get_zone_primaries().size(), 1u);
+  for (int osd : targets) {
+    const pg_shard_t shard(osd, shard_id_t(osd));
+    ASSERT_TRUE(primary_ps->get_async_recovery_targets().contains(shard));
+    ASSERT_FALSE(primary_ps->is_acting(shard));
+    ASSERT_TRUE(primary_ps->get_peer_missing().at(shard).is_missing(
+      make_test_object(obj_name)));
+    suspend_primary_to_osd(osd);
+  }
+
+  get_primary_listener()->sent_messages_with_dest.clear();
+  ASSERT_EQ(write(obj_name, 0, latest_data, latest_data.size()), -EINPROGRESS);
+  auto msgs = capture_primary_messages();
+  EXPECT_EQ(msgs.zone_replicate_count, 0);
+  for (int osd : targets) {
+    EXPECT_EQ(std::count(msgs.sub_op_write_dests.begin(),
+                         msgs.sub_op_write_dests.end(), osd), 1);
+  }
+  for (auto& [osd, msg] : get_primary_listener()->sent_messages_with_dest) {
+    if (osd < SHARDS_PER_ZONE || msg->get_type() != MSG_OSD_EC_WRITE) {
+      continue;
+    }
+    auto subwrite = boost::dynamic_pointer_cast<MOSDECSubOpWrite>(msg);
+    ASSERT_TRUE(subwrite);
+    EXPECT_TRUE(subwrite->op.t.empty());
+    ASSERT_FALSE(subwrite->op.log_entries.empty());
+    EXPECT_EQ(subwrite->op.at_version, primary_ps->get_info().last_update);
+  }
+
+  for (int osd : targets) {
+    unsuspend_primary_to_osd(osd);
+  }
+  event_loop->run_until_idle();
+  for (int osd : targets) {
+    auto* peer_ps = get_peering_state(osd);
+    EXPECT_EQ(peer_ps->get_info().last_update,
+              primary_ps->get_info().last_update);
+    pg_missing_item missing;
+    ASSERT_TRUE(peer_ps->get_pg_log().get_missing().is_missing(
+      make_test_object(obj_name), &missing));
+    EXPECT_EQ(missing.need, primary_ps->get_info().last_update);
+  }
+
+  const string new_obj = "test_new_object_in_recovering_zone";
+  get_primary_listener()->sent_messages_with_dest.clear();
+  const int primary_osd = get_primary_test_pg()->pg_whoami.osd;
+  event_loop->suspend_from_to_osd(targets.back(), primary_osd);
+  ASSERT_EQ(create_and_write(new_obj, initial_data), -EINPROGRESS);
+  msgs = capture_primary_messages();
+  EXPECT_EQ(msgs.zone_replicate_count, 0);
+  for (int osd : targets) {
+    EXPECT_EQ(std::count(msgs.sub_op_write_dests.begin(),
+                         msgs.sub_op_write_dests.end(), osd), 1);
+  }
+  event_loop->unsuspend_from_to_osd(targets.back(), primary_osd);
+  event_loop->run_until_idle();
+  verify_object(new_obj);
+  for (int osd : targets) {
+    auto* peer_ps = get_peering_state(osd);
+    EXPECT_EQ(peer_ps->get_info().last_update,
+              primary_ps->get_info().last_update);
+    EXPECT_FALSE(peer_ps->get_pg_log().get_missing().is_missing(
+      make_test_object(new_obj)));
+  }
+
+  set_config("osd_async_recovery_min_cost", "100");
+  run_recovery(obj_name, false, latest_data);
+  new_epoch_loop();
+  ASSERT_TRUE(primary_is_clean());
+  enter_healthy_stretch_mode();
+  ASSERT_EQ(get_primary_test_pg()->get_peering_state()->get_zone_primaries().size(),
+            2u);
+  for (const string& obj : {obj_name, new_obj}) {
+    for (int osd : targets) {
+      EXPECT_EQ(read_shard_object_info(obj, 0).version,
+                read_shard_object_info(obj, osd).version);
+    }
+    EXPECT_FALSE(scrub_object(obj));
+  }
 }
 
 // Test: ZonePrimaryCrashMidFanOutRollsBack

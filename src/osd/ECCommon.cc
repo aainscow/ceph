@@ -16,6 +16,7 @@
 #include "ECCommon.h"
 #include "osd_perf_counters.h"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <ranges>
@@ -1144,21 +1145,26 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   std::optional<hobject_t> migration_watermark =
     op.consider_updating_migration_watermark(get_parent());
 
-  // For multi-zone EC stretch pools, collect the set of shards that belong to
-  // remote zones so we can suppress per-shard MOSDECSubOpWrite for them and
-  // instead send one MOSDECZoneReplicate per remote zone. This does not skip over any zones
-  // since all active zones must have a primary capable shard.
+  // Only suppress direct sub-writes where a Zone Primary will replace them.
+  // A zone containing only async recovery targets has no acting Zone Primary,
+  // but its targets still need direct writes or log-only updates.
   const auto &zone_primaries = get_parent()->get_zone_primaries();
   shard_id_set remote_zone_shards;
 
   if (get_parent()->get_pool().supports_zone_replicate() &&
+      op.needs_zone_replicate() &&
       !op.is_zone_replicate() &&
       sinfo.get_num_zones() > 1 &&
       !zone_primaries.empty()) {
     const pg_shard_t whoami = get_parent()->whoami_shard();
     const int my_zone = sinfo.get_shard_zone(whoami.shard);
     for (auto &pg_shard : get_parent()->get_acting_recovery_backfill_shards()) {
-      if (sinfo.get_shard_zone(pg_shard.shard) != my_zone) {
+      const int zone = sinfo.get_shard_zone(pg_shard.shard);
+      if (zone != my_zone &&
+          std::any_of(zone_primaries.begin(), zone_primaries.end(),
+                      [&](const auto& entry) {
+                        return sinfo.get_shard_zone(entry.second.shard) == zone;
+                      })) {
         remote_zone_shards.insert(pg_shard.shard);
       }
     }
