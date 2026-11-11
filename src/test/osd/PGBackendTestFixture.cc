@@ -410,6 +410,10 @@ void PGBackendTestFixture::do_transaction(
 
   PGBackend* primary_backend = get_primary_backend();
   ceph_assert(primary_backend != nullptr);
+  auto* primary_pg = get_primary_test_pg();
+  if (primary_pg->has_peering_state()) {
+    primary_pg->get_peering_state()->pre_submit_op(hoid, log_entries, at_version);
+  }
   primary_backend->submit_transaction(
     hoid,
     delta_stats,
@@ -944,7 +948,12 @@ int PGBackendTestFixture::create_snapshot(
       log_entries.push_back(entry);
 
       TestPG* test_pg = get_test_pg();
-      auto snap_complete = make_write_completion(test_pg, hoid, result, nullptr, nullptr);
+      auto snap_complete = make_write_completion(
+        test_pg, hoid, result, nullptr, [this, obj_name](int) {
+          if (object_tracker) {
+            object_tracker->record_snapshot(obj_name);
+          }
+        });
 
       do_transaction(
         snap_hoid, std::move(pg_t), delta_stats, at_version,
@@ -1008,7 +1017,11 @@ int PGBackendTestFixture::rollback(
           obc->obs.oi.size = snap_size;
           obc->attr_cache.clear();
         },
-        nullptr);
+        [this, obj_name, at_version](int) {
+          if (object_tracker) {
+            object_tracker->record_rollback(obj_name, at_version);
+          }
+        });
 
       do_transaction(
         hoid, std::move(pg_t), delta_stats, at_version,
