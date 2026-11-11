@@ -410,6 +410,10 @@ void PGBackendTestFixture::do_transaction(
 
   PGBackend* primary_backend = get_primary_backend();
   ceph_assert(primary_backend != nullptr);
+  auto* primary_pg = get_primary_test_pg();
+  if (primary_pg->has_peering_state()) {
+    primary_pg->get_peering_state()->pre_submit_op(hoid, log_entries, at_version);
+  }
   primary_backend->submit_transaction(
     hoid,
     delta_stats,
