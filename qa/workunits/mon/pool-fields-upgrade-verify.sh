@@ -38,8 +38,9 @@ check_objects() {
 wait_for_clean() {
     local i
     for i in $(seq 180); do
-        ceph pg stat -f json | jq -e '[.pg_summary.num_pg_by_state[] |
-            select(.name != "active+clean")] | length == 0' > /dev/null && return 0
+        ceph pg stat -f json | jq -e '.pg_summary | .num_pgs > 0 and
+            ([.num_pg_by_state[] | select(.name == "active+clean") | .num] |
+             add) == .num_pgs' > /dev/null && return 0
         sleep 5
     done
     ceph pg stat
