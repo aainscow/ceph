@@ -63,7 +63,11 @@ expect_refusal() {
         echo "not refused: $*"
         exit 1
     fi
-    grep -q -- "$expected" "$tmpdir/err"
+    if ! grep -q -- "$expected" "$tmpdir/err"; then
+        echo "refused without '$expected': $*"
+        cat "$tmpdir/err"
+        exit 1
+    fi
 }
 
 no_rule() {
