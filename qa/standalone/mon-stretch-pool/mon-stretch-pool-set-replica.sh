@@ -207,6 +207,7 @@ function TEST_pool_replica_crush_rule_name() {
     jq -e '[.steps[] | select(.type == "zone")] | length == 0' "$dir/rule.json" || return 1
 
     local ec_poolname=replica_ec_transition_test
+    ceph config set global osd_pool_default_flag_ec_optimizations false || return 1
     ceph osd pool create "$ec_poolname" --pool_type erasure --k 2 --m 1 \
         --pg_num 8 --pgp_num 8 \
         --zone_failure_domain zone --osd_failure_domain host || return 1

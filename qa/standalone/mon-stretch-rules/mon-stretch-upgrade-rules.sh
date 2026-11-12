@@ -78,6 +78,7 @@ function TEST_commit_keeps_rules_of_every_kind() {
     ceph osd crush rule create-erasure osds p22osd || return 1
     ceph osd pool create rcls1 8 8 replicated ssd_hosts || return 1
     ceph osd pool create rcls2 8 8 replicated ssd_hosts || return 1
+    ceph config set global osd_pool_default_flag_ec_optimizations false || return 1
     ceph osd pool create e1 8 8 erasure || return 1
     ceph osd pool create e2 8 8 erasure || return 1
     ceph osd pool set e1 allow_ec_optimizations true || return 1

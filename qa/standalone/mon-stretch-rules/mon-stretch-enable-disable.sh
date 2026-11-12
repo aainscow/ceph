@@ -524,7 +524,7 @@ function TEST_disable_resets_defaults_without_stretch_mode() {
 }
 
 # An erasure coded pool without allow_ec_optimizations, a legacy erasure
-# coded pool as new ones are by default, cannot be over two zones. With
+# coded pool, cannot be over two zones. With
 # oldec such a pool, mon enable_stretch_mode is refused and changes
 # nothing: rep, a replicated pool, stays in one zone, the pool creation
 # defaults stay at one zone and the monmap is not in global stretch mode.
@@ -535,7 +535,7 @@ function TEST_enable_refuses_legacy_ec_pool() {
     setup_zones $dir || return 1
     setup_osds $dir || return 1
     ceph osd pool create rep 8 8 replicated || return 1
-    # new EC pools are legacy EC pools by default
+    ceph config set global osd_pool_default_flag_ec_optimizations false || return 1
     ceph osd erasure-code-profile set ec21 plugin=isa k=2 m=1 \
         crush-failure-domain=osd || return 1
     ceph osd pool create oldec 8 8 erasure ec21 || return 1
