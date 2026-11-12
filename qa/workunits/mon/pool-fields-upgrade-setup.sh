@@ -23,7 +23,7 @@ set -euo pipefail
 scenario=${POOL_FIELD_SCENARIO:?POOL_FIELD_SCENARIO must be set}
 # 2az only: the zones' bucket type, the kind of rule global stretch mode is
 # enabled with (take each zone, choose the zones, or choose them in the class
-# of osd.0), and whether each zone is under a region of its own
+# of the OSDs), and whether each zone is under a region of its own
 zone_type=${POOL_FIELD_ZONE_TYPE:-datacenter}
 rule_kind=${POOL_FIELD_RULE:-take}
 deep=${POOL_FIELD_DEEP:-}
@@ -48,6 +48,15 @@ if [[ "$osd_count" -lt 8 ]]; then
 fi
 
 ceph config set osd osd_crush_update_on_start false
+
+# one device class for every OSD, for the class rules below
+class=$(ceph osd crush get-device-class osd.0)
+for osd in $(ceph osd ls); do
+    if [[ "$(ceph osd crush get-device-class "osd.$osd")" != "$class" ]]; then
+        ceph osd crush rm-device-class "osd.$osd"
+        ceph osd crush set-device-class "$class" "osd.$osd"
+    fi
+done
 
 # only 3az has a dc3 bucket: mon enable_stretch_mode and num_zones 2 need
 # exactly two buckets of the zone type, so the tiebreaker's dc3 is only a
@@ -99,7 +108,7 @@ rule $rule {
 EOF
 elif [[ "$scenario" == 2az ]]; then
     take=default
-    [[ "$rule_kind" == class ]] && take="default class $(ceph osd crush get-device-class osd.0)"
+    [[ "$rule_kind" == class ]] && take="default class $class"
     cat >> "$tmpdir/crushmap_modified.txt" <<EOF
 rule $rule {
         id $rule_id
@@ -198,13 +207,12 @@ elif [[ "$scenario" == 3az ]]; then
     ceph osd pool application enable "$pool" rados
 elif [[ "$scenario" == rules ]]; then
     # pools on rules of every kind: class_hosts (made by create-replicated,
-    # in the class of osd.0; rcls1 and rcls2), erasure-code (the rule that
+    # in the class of the OSDs; rcls1 and rcls2), erasure-code (the rule that
     # erasure coded pools of the default profile share; e1, and e2, a
     # legacy erasure coded pool), osds (made by create-erasure; eosd),
     # rook_stretch (rrook1 and rrook2) and per_zone_one (runread); a compat
     # weight-set and the weight-sets of rcls1 and rrook1
-    ceph osd crush rule create-replicated class_hosts default host \
-        "$(ceph osd crush get-device-class osd.0)"
+    ceph osd crush rule create-replicated class_hosts default host "$class"
     ceph osd erasure-code-profile set fast22osd k=2 m=2 crush-failure-domain=osd
     ceph osd crush rule create-erasure osds fast22osd
     ceph osd pool create rcls1 8 8 replicated class_hosts
