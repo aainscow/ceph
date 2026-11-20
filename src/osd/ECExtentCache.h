@@ -228,6 +228,7 @@ private:
     bool reading = false;
     bool cache_invalidate_expected = false;
     bool invalidate_write_pending = false;
+    const bool retain_idle_lines;
 
     void request(OpRef &op);
     void send_reads();
@@ -239,12 +240,14 @@ private:
    public:
     hobject_t oid;
 
-    Object(ECExtentCache &pg, hobject_t const &oid, uint64_t size) :
+    Object(ECExtentCache &pg, hobject_t const &oid, uint64_t size,
+           bool retain_idle_lines) :
       pg(pg),
       requesting(pg.sinfo.get_k_plus_m()),
       do_not_read(pg.sinfo.get_k_plus_m()),
       current_size(size),
       projected_size(size),
+      retain_idle_lines(retain_idle_lines),
       oid(oid) {
       line_size = std::max<uint64_t>(MIN_LINE_SIZE, pg.sinfo.get_chunk_size());
     }
@@ -271,8 +274,8 @@ private:
          uint64_t offset) :
       offset(offset),
       object(object) {
-      std::shared_ptr<ECUtil::shard_extent_map_t> c = object.pg.lru.find(
-        object.oid, offset);
+      auto c = object.retain_idle_lines
+        ? object.pg.lru.find(object.oid, offset) : nullptr;
 
       if (c == nullptr) {
         cache = std::make_shared<ECUtil::shard_extent_map_t>(&object.pg.sinfo);
@@ -286,7 +289,11 @@ private:
     }
 
     ~Line() {
-      object.pg.lru.add(*this);
+      if (object.retain_idle_lines) {
+        object.pg.lru.add(*this);
+      } else {
+        update_mempool(-1, 0 - size);
+      }
       object.erase_line(offset);
     }
 
@@ -315,7 +322,8 @@ private:
                 ECUtil::shard_extent_set_t const &write,
                 uint64_t orig_size,
                 uint64_t projected_size,
-                bool invalidates_cache);
+                bool invalidates_cache,
+                bool retain_idle_lines);
 
  public:
   ~ECExtentCache() {
@@ -350,13 +358,14 @@ private:
                 uint64_t orig_size,
                 uint64_t projected_size,
                 bool invalidates_cache,
-                CacheReadyCb &&ready_cb) {
+                CacheReadyCb &&ready_cb,
+                bool retain_idle_lines = true) {
     GenContextURef<OpRef&> ctx =
         make_gen_lambda_context<OpRef&, CacheReadyCb>(
           std::forward<CacheReadyCb>(ready_cb));
 
     return prepare(std::move(ctx), oid, to_read, write, orig_size,
-                   projected_size, invalidates_cache);
+                   projected_size, invalidates_cache, retain_idle_lines);
   }
 
   void execute(std::list<OpRef> &op_list);

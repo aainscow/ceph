@@ -220,6 +220,7 @@
 
 #include "messages/MOSDECSubOpWrite.h"
 #include "messages/MOSDECSubOpWriteReply.h"
+#include "messages/MOSDECZoneReplicate.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "messages/MOSDECSubOpReadReply.h"
 
@@ -666,6 +667,9 @@ Message *decode_message(CephContext *cct,
     break;
   case MSG_OSD_EC_WRITE_REPLY:
     m = make_message<MOSDECSubOpWriteReply>();
+    break;
+  case MSG_OSD_EC_ZONE_REPLICATE:
+    m = make_message<MOSDECZoneReplicate>();
     break;
   case MSG_OSD_EC_READ:
     m = make_message<MOSDECSubOpRead>();

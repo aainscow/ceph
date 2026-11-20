@@ -203,6 +203,9 @@ public:
   bool empty() const {
     return m.empty();
   }
+  size_t size() const {
+    return m.size();
+  }
   interval_set<K, C> get_interval_set() const {
     interval_set<K, C> ret;
     for (auto &&i: *this) {
