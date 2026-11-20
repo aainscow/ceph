@@ -346,6 +346,10 @@ private:
   // Insert some data into the cache.
   void read_done(hobject_t const &oid, ECUtil::shard_extent_map_t const &update);
   void write_done(OpRef const &op, ECUtil::shard_extent_map_t const &update);
+  void discard_idle_object(hobject_t const &oid) {
+    ceph_assert(!contains_object(oid));
+    lru.remove_object(oid);
+  }
   void on_change();
   void on_change2() const;
   [[nodiscard]] bool contains_object(hobject_t const &oid) const;
