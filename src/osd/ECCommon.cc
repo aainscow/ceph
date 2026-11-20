@@ -1217,9 +1217,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   shard_id_set remote_zone_shards;
   std::map<int, ec_zone_read_sources_t> read_sources;
 
-  if (op.delegate_write &&
-      (!op.fence_zone_reads || op.can_delegate_zone_rmw()) &&
-      sinfo.get_num_zones() > 1 &&
+  if (op.delegate_write && sinfo.get_num_zones() > 1 &&
       !zone_primaries.empty()) {
     const pg_shard_t whoami = get_parent()->whoami_shard();
     const int my_zone = sinfo.get_shard_zone(whoami.shard);
@@ -2302,7 +2300,8 @@ ECTransaction::WritePlan ECCommon::get_write_plan(
   PGTransaction &t,
   ECCommon::ReadPipeline &read_pipeline,
   ECCommon::RMWPipeline &rmw_pipeline,
-  DoutPrefixProvider *dpp) {
+  DoutPrefixProvider *dpp,
+  bool zone_replicate) {
   ECTransaction::WritePlan plans;
   auto obc_map = t.obc_map;
   t.safe_create_traverse(
@@ -2310,6 +2309,14 @@ ECTransaction::WritePlan ECCommon::get_write_plan(
       const auto &[oid, inner_op] = i;
       auto &obc = obc_map.at(oid);
       object_info_t oi = obc->obs.oi;
+      if (zone_replicate) {
+        // The receiver's OBC describes the old object, not the state
+        // projected by the transaction on the PG primary.
+        auto update = inner_op.attr_updates.find(OI_ATTR);
+        if (update != inner_op.attr_updates.end() && update->second) {
+          oi = object_info_t(*update->second);
+        }
+      }
       std::optional<object_info_t> soi;
 
       hobject_t source;

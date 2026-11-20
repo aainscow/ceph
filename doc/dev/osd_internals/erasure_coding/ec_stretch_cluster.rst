@@ -2305,8 +2305,10 @@ of a stretch cluster.
   send parity over the inter-zone link. For transactions that may read old data,
   the PG primary drains earlier writes and supplies the Zone Primary with eligible
   local shard copies for each object. The Zone Primary selects and reconstructs
-  from those sources. The PG primary uses direct per-shard writes for any zone
-  without enough eligible sources, and for transactions containing truncates.
+  from those sources. For a truncate, the Zone Primary plans the size change
+  using the old object metadata and the transaction's object-info update.
+  The PG primary uses direct per-shard writes for any zone without enough
+  eligible sources.
   For snapshot creation and rollback, the Zone Primary also loads the clone
   source's object context, even when the source is not a write target.
 - **Completion**: the Zone Primary replies with the existing sub-write reply once all its

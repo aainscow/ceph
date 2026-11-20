@@ -1051,7 +1051,7 @@ TEST_F(TestECZoneReplicate, UnalignedOverwriteAfterTruncate) {
   clear_primary_messages();
   ASSERT_EQ(truncate_and_write(obj, size, truncated,
                               {{17, string(53, 'C')}}), 0);
-  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 0);
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 1);
   string expected(truncated, 'B');
   expected.replace(17, 53, string(53, 'C'));
   verify_object(obj, expected, 0, expected.size());

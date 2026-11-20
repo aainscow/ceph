@@ -661,8 +661,6 @@ struct ECCommon {
       virtual bool can_zone_replicate_without_reads(
           const ECUtil::stripe_info_t &) const { return false; }
 
-      virtual bool can_delegate_zone_rmw() const { return false; }
-
       void cache_ready(const hobject_t &oid, const ECUtil::shard_extent_map_t &result) {
         if (!result.empty()) {
           remote_shard_extent_map.insert(std::pair(oid, result));
@@ -1001,7 +999,8 @@ struct ECCommon {
     PGTransaction &t,
     ECCommon::ReadPipeline &read_pipeline,
     ECCommon::RMWPipeline &rmw_pipeline,
-    DoutPrefixProvider *dpp);
+    DoutPrefixProvider *dpp,
+    bool zone_replicate = false);
 };
 
 struct RecoveryMessages {

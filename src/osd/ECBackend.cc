@@ -1185,14 +1185,6 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
   // Zone Primaries via MOSDECZoneReplicate.
   bool needs_zone_replicate() const override { return true; }
 
-  bool can_delegate_zone_rmw() const override {
-    // Truncation can change the parity ranges independently of the write.
-    // Keep that calculation on the PG primary.
-    return std::ranges::none_of(t->op_map, [](const auto &entry) {
-      return entry.second.truncate.has_value();
-    });
-  }
-
   bool can_zone_replicate_without_reads(
       const ECUtil::stripe_info_t &sinfo) const override {
     const auto stripe_width = sinfo.get_stripe_width();
@@ -1412,7 +1404,8 @@ void ECBackend::handle_zone_replicate(
       *op->shared_t,
       read_pipeline,
       rmw_pipeline,
-      get_parent()->get_dpp());
+      get_parent()->get_dpp(),
+      /*zone_replicate=*/true);
   }
 
   if (!get_parent()->pgb_is_primary()) {
