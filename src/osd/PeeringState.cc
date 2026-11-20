@@ -3,6 +3,7 @@
 
 #include "PeeringState.h"
 #include "PGPeeringEvent.h"
+#include "ZonePrimary.h"
 #include "osd_perf_counters.h"
 #include "common/ceph_releases.h"
 #include "common/debug.h"
@@ -970,23 +971,7 @@ std::map<int, pg_shard_t> PeeringState::calc_zone_primaries(
   const pg_pool_t &pool_info,
   const OSDMapRef &osdmap)
 {
-  std::map<int, pg_shard_t> result;
-  for (unsigned i = 0; i < acting.size(); ++i) {
-    if (acting[i] == CRUSH_ITEM_NONE) {
-      continue;
-    }
-    const shard_id_t shard = pool_info.is_erasure()
-      ? shard_id_t(i) : shard_id_t::NO_SHARD;
-    if (pool_info.is_nonprimary_shard(shard)) {
-      continue;
-    }
-    const int zone = osdmap->crush->get_parent_of_type(
-      acting[i],
-      pool_info.peering_crush_bucket_barrier,
-      pool_info.crush_rule);
-    result.try_emplace(zone, pg_shard_t(acting[i], shard));
-  }
-  return result;
+  return ceph::zone_primary::calc_zone_primaries(acting, pool_info, *osdmap);
 }
 
 void PeeringState::init_primary_up_acting(
