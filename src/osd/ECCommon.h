@@ -732,6 +732,7 @@ struct ECCommon {
 
     std::list<OpRef> waiting_commit;
     bool dispatching_ready = false;
+    std::set<int> direct_write_zones;
     eversion_t completed_to;
     eversion_t committed_to;
     std::set<pg_shard_t> get_local_zone_shards() const;

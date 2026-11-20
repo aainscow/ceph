@@ -199,6 +199,29 @@ TEST(ECExtentCache, simple_write)
   }
 }
 
+TEST(ECExtentCache, discard_idle_lines_for_delegated_writes)
+{
+  Client cl(4096, 2, 1, 1024 * 1024);
+  auto extents = iset_from_vector({{{0, 10}}, {{0, 10}}},
+                                  cl.get_stripe_info());
+  auto ready = [&cl](ECExtentCache::OpRef& op) {
+    cl.cache_ready(op->get_hoid(), op->get_result());
+  };
+  auto write = cl.cache.prepare(cl.oid, nullopt, extents, 10, 10, false,
+                                decltype(ready)(ready), /*retain_idle_lines=*/false);
+  cl.cache_execute(write);
+  cl.complete_write(write);
+  write.reset();
+
+  auto rmw = cl.cache.prepare(cl.oid, extents, extents, 10, 10, false,
+                              std::move(ready), /*retain_idle_lines=*/false);
+  cl.cache_execute(rmw);
+  ASSERT_EQ(cl.active_reads, extents);
+  cl.complete_read();
+  ASSERT_EQ(cl.results.size(), 1u);
+  cl.complete_write(rmw);
+}
+
 TEST(ECExtentCache, sequential_appends) {
   Client cl(32, 2, 1, 32);
 

@@ -2307,8 +2307,14 @@ of a stretch cluster.
   local shard copies for each object. The Zone Primary selects and reconstructs
   from those sources. For a truncate, the Zone Primary plans the size change
   using the old object metadata and the transaction's object-info update.
-  The PG primary uses direct per-shard writes for any zone without enough
-  eligible sources.
+  Until recovery state is shared with the Zone Primary, the PG primary
+  uses direct per-shard writes in a remote zone once it detects a missing
+  object or cannot verify that zone's recovery state. It drains in-flight
+  writes before switching, and keeps that zone on direct writes until the
+  next peering interval. Healthy remote zones can still use delegation.
+  The Zone Primary does not retain idle extent-cache
+  lines, since per-shard writes and recovery can update the data without
+  going through its write pipeline.
   For snapshot creation and rollback, the Zone Primary also loads the clone
   source's object context, even when the source is not a write target.
 - **Completion**: the Zone Primary replies with the existing sub-write reply once all its

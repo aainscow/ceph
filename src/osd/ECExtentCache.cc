@@ -263,13 +263,15 @@ ECExtentCache::OpRef ECExtentCache::prepare(GenContextURef<OpRef&> &&ctx,
                                             shard_extent_set_t const &write,
                                             uint64_t orig_size,
                                             uint64_t projected_size,
-                                            bool invalidates_cache) {
+                                            bool invalidates_cache,
+                                            bool retain_idle_lines) {
 
   auto object_iter = objects.find(oid);
   if (object_iter == objects.end()) {
-    auto p = objects.emplace(oid, Object(*this, oid, orig_size));
+    auto p = objects.try_emplace(oid, *this, oid, orig_size, retain_idle_lines);
     object_iter = p.first;
   }
+  ceph_assert(object_iter->second.retain_idle_lines == retain_idle_lines);
   OpRef op = std::make_shared<Op>(
     std::move(ctx), object_iter->second, to_read, write, projected_size,
     invalidates_cache);

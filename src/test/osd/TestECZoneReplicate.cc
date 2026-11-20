@@ -867,15 +867,19 @@ TEST_P(TestECZoneReplicateRecovery, MissingRemoteShardReceivesLatestVersion) {
   expected.replace(offset, update.size(), update);
   clear_primary_messages();
   ASSERT_EQ(write(obj, offset, update, expected.size()), 0);
-  EXPECT_EQ(capture_primary_messages().zone_replicate_count,
-            get<0>(GetParam()) ? 1 : 0);
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 0);
   pg_missing_item missing;
   ASSERT_TRUE(get_peering_state(4)->get_pg_log().get_missing().is_missing(
     make_test_object(obj), &missing));
   ASSERT_EQ(missing.need, ps->get_info().last_update);
 
+  const auto interval = ps->get_info().history.same_interval_since;
   set_config("osd_async_recovery_min_cost", "100");
   run_recovery(obj, false, expected);
+  ASSERT_EQ(ps->get_info().history.same_interval_since, interval);
+  clear_primary_messages();
+  ASSERT_EQ(write(obj, 0, expected, expected.size()), 0);
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 0);
   new_epoch_loop();
   ASSERT_TRUE(primary_is_clean());
   expect_matching_versions(obj);

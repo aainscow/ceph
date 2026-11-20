@@ -1072,7 +1072,9 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op) {
       [op](ECExtentCache::OpRef const &cop)
       {
         op->cache_ready(cop->get_hoid(), cop->get_result());
-      });
+      },
+      // Direct sub-writes and recovery can bypass the Zone Primary.
+      /*retain_idle_lines=*/!op->is_zone_replicate());
     op->cache_ops.emplace_back(std::move(cache_op));
   }
   extent_cache.execute(op->cache_ops);
@@ -1100,6 +1102,40 @@ void ECCommon::RMWPipeline::dispatch_ordered() {
       if (op->pending_cache_ops != 0 ||
           (inflight && op->fence_zone_reads)) {
         break;
+      }
+      if (op->delegate_write) {
+        auto next_direct_zones = direct_write_zones;
+        const int local_zone =
+          sinfo.get_shard_zone(get_parent()->whoami_shard().shard);
+        const auto mark_recovering = [&](const pg_shard_t& peer) {
+          const int zone = sinfo.get_shard_zone(peer.shard);
+          if (zone != local_zone && !next_direct_zones.contains(zone)) {
+            const auto* missing = get_parent()->maybe_get_shard_missing(peer);
+            if (!missing || missing->num_missing() ||
+                !get_osdmap()->is_up(peer.osd)) {
+              next_direct_zones.insert(zone);
+            }
+          }
+        };
+        std::map<int, unsigned> acting_per_zone;
+        for (const auto& peer : get_parent()->get_acting_shards()) {
+          ++acting_per_zone[sinfo.get_shard_zone(peer.shard)];
+          mark_recovering(peer);
+        }
+        for (const auto& [zone, count] : acting_per_zone) {
+          if (zone != local_zone && count < sinfo.get_k()) {
+            next_direct_zones.insert(zone);
+          }
+        }
+        for (const auto& peer : get_parent()->get_acting_recovery_backfill_shards()) {
+          mark_recovering(peer);
+        }
+        // Recovery can start without re-peering. Drain delegated writes
+        // before switching sources, and don't switch back in this interval.
+        if (inflight && next_direct_zones != direct_write_zones) {
+          break;
+        }
+        direct_write_zones = std::move(next_direct_zones);
       }
       op->dispatched = true;
       cache_ready(*op);
@@ -1224,7 +1260,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
     if (op.fence_zone_reads) {
       for (const auto &[crush_zone, primary] : zone_primaries) {
         const int zone = sinfo.get_shard_zone(primary.shard);
-        if (zone == my_zone) {
+        if (zone == my_zone || direct_write_zones.contains(zone)) {
           continue;
         }
         auto &sources = read_sources[zone];
@@ -1249,7 +1285,7 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
     }
     for (const auto &pg_shard : get_parent()->get_acting_shards()) {
       const int zone = sinfo.get_shard_zone(pg_shard.shard);
-      if (zone != my_zone &&
+      if (zone != my_zone && !direct_write_zones.contains(zone) &&
           (!op.fence_zone_reads || read_sources.contains(zone)) &&
           std::any_of(zone_primaries.begin(), zone_primaries.end(),
                       [&](const auto& entry) {
@@ -1551,6 +1587,7 @@ void ECCommon::RMWPipeline::on_change() {
   extent_cache.on_change();
   tid_to_op_map.clear();
   waiting_commit.clear();
+  direct_write_zones.clear();
   next_write_all_shards = false;
   first_write_in_interval = true;
 }
