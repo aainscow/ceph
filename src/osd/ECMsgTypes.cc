@@ -656,7 +656,7 @@ void ECZoneReplicateOp::encode(ceph::buffer::list &bl) const
   // PGTransaction serialisation delegates to PGTransaction::encode; we
   // encode it into the same bufferlist since ECZoneReplicateOp is used
   // inside MOSDECZoneReplicate which splits payload/data separately.
-  ENCODE_START(1, 1, bl);
+  ENCODE_START(2, 1, bl);
   encode(from, bl);
   encode(tid, bl);
   encode(reqid, bl);
@@ -675,12 +675,13 @@ void ECZoneReplicateOp::encode(ceph::buffer::list &bl) const
   encode(temp_added, bl);
   encode(temp_removed, bl);
   encode(updated_hit_set_history, bl);
+  encode(read_sources, bl);
   ENCODE_FINISH(bl);
 }
 
 void ECZoneReplicateOp::decode(ceph::buffer::list::const_iterator &bl)
 {
-  DECODE_START(1, bl);
+  DECODE_START(2, bl);
   decode(from, bl);
   decode(tid, bl);
   decode(reqid, bl);
@@ -702,6 +703,10 @@ void ECZoneReplicateOp::decode(ceph::buffer::list::const_iterator &bl)
   decode(temp_added, bl);
   decode(temp_removed, bl);
   decode(updated_hit_set_history, bl);
+  read_sources.clear();
+  if (struct_v >= 2) {
+    decode(read_sources, bl);
+  }
   DECODE_FINISH(bl);
 }
 

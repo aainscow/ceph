@@ -922,6 +922,31 @@ TEST_F(TestECZoneReplicate, FallbackThenZoneReplicationPreservesPartialWrites) {
   EXPECT_FALSE(scrub_object(obj));
 }
 
+TEST_F(TestECZoneReplicate, DelegatedRmwWaitsForEarlierZoneReplication) {
+  const string obj = "switch_write_route";
+  const string initial(stripe_unit * k, 'A');
+  create_and_write_verify(obj, initial);
+
+  event_loop->suspend_from_to_osd(3, 0);
+  const string full(initial.size(), 'B');
+  ASSERT_EQ(write(obj, 0, full, full.size()), -EINPROGRESS);
+
+  clear_primary_messages();
+  const string partial(113, 'C');
+  ASSERT_EQ(write(obj, 17, partial, full.size()), -EINPROGRESS);
+  EXPECT_EQ(capture_primary_messages().sub_op_write_count, 0);
+
+  event_loop->unsuspend_from_to_osd(3, 0);
+  event_loop->run_until_idle();
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 1);
+  EXPECT_GT(capture_primary_messages().sub_op_write_count, 0);
+  string expected = full;
+  expected.replace(17, partial.size(), partial);
+  verify_object(obj, expected, 0, expected.size());
+  expect_matching_versions(obj);
+  EXPECT_FALSE(scrub_object(obj));
+}
+
 TEST_F(TestECZoneReplicate, ZoneReplyWaitsForEveryLocalShard) {
   const string obj = "delayed_local_commit";
   const string data(stripe_unit * k, 'A');
@@ -1023,8 +1048,10 @@ TEST_F(TestECZoneReplicate, UnalignedOverwriteAfterTruncate) {
   const size_t size = stripe_unit * k;
   create_and_write_verify(obj, string(size, 'B'));
   const size_t truncated = stripe_unit / 2;
+  clear_primary_messages();
   ASSERT_EQ(truncate_and_write(obj, size, truncated,
                               {{17, string(53, 'C')}}), 0);
+  EXPECT_EQ(capture_primary_messages().zone_replicate_count, 0);
   string expected(truncated, 'B');
   expected.replace(17, 53, string(53, 'C'));
   verify_object(obj, expected, 0, expected.size());

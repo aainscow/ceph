@@ -174,7 +174,8 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
     const bool for_recovery,
     int local_zone,
     bool allow_remote_zone,
-    const std::optional<set<pg_shard_t>> &error_shards) {
+    const std::optional<set<pg_shard_t>> &error_shards,
+    const std::set<pg_shard_t> *zone_read_sources) {
   // get_parent()->get_acting_shards() (and the backfill/missing_loc
   // containers below) are ordered purely by OSD id, with no zone
   // weighting. To make sure a locally-available copy of a relative shard
@@ -196,7 +197,6 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
       }
       dout(10) << __func__ << ": checking acting " << pg_shard
                << " (rel_shard=" << rel_shard << ")" << dendl;
-      const pg_missing_t &missing = get_parent()->get_shard_missing(pg_shard);
       if (error_shards && error_shards->contains(pg_shard)) {
         dout(10) << __func__ << ": skipping acting " << pg_shard
                  << " (rel_shard=" << rel_shard << ") - in error_shards" << dendl;
@@ -209,7 +209,10 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
         continue;
       }
 #endif
-      if (!missing.is_missing(hoid)) {
+      const bool readable = zone_read_sources
+        ? zone_read_sources->contains(pg_shard)
+        : !get_parent()->get_shard_missing(pg_shard).is_missing(hoid);
+      if (readable) {
         if (have.contains(rel_shard)) {
           ceph_assert(allow_remote_zone);
           // With zones, multiple pg_shards can map to the same relative
@@ -307,12 +310,14 @@ ECCommon::ReadPipeline::select_shards_for_read(
     const shard_id_set &want,
     bool for_recovery,
     bool allow_remote_zone,
-    const std::optional<set<pg_shard_t>> &error_shards)
+    const std::optional<set<pg_shard_t>> &error_shards,
+    const std::set<pg_shard_t> *zone_read_sources)
 {
   shard_id_set have;
   shard_id_map<pg_shard_t> shards(sinfo.get_k_plus_m());
   auto zone = sinfo.get_shard_zone(get_parent()->whoami_shard().shard);
-  get_all_avail_shards(hoid, have, shards, for_recovery, zone, allow_remote_zone, error_shards);
+  get_all_avail_shards(hoid, have, shards, for_recovery, zone,
+                       allow_remote_zone, error_shards, zone_read_sources);
 
   shard_id_set need_set;
 
@@ -358,8 +363,11 @@ int ECCommon::ReadPipeline::  get_min_avail_to_read_shards(
 
   // Try to get shards from local zone first, fall back to remote zone if
   // needed: also with one zone, as a pool that had more keeps their strays
-  auto result = select_shards_for_read(hoid, want, for_recovery, false, error_shards);
-  if (!result) {
+  const auto *zone_read_sources = read_request.zone_read_sources
+    ? &*read_request.zone_read_sources : nullptr;
+  auto result = select_shards_for_read(hoid, want, for_recovery, false,
+                                      error_shards, zone_read_sources);
+  if (!result && !zone_read_sources) {
     result = select_shards_for_read(hoid, want, for_recovery, true, error_shards);
   }
   if (!result) {
@@ -939,11 +947,22 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct_for_rmw(
   for (auto &&[hoid, read_request]: to_read) {
     const int r =
         get_min_avail_to_read_shards(hoid, false, false, read_request);
+    if (r < 0 && read_request.zone_read_sources) {
+      dout(0) << __func__ << " no safe local RMW sources for " << hoid
+              << " error=" << r << dendl;
+      in_progress_client_reads.back().complete_object(
+        hoid, r, extent_map(), ECUtil::shard_extent_map_t(&sinfo));
+      continue;
+    }
     ceph_assert(r == 0);
 
     for_read_op.insert(make_pair(hoid, read_request));
   }
 
+  if (for_read_op.empty()) {
+    kick_reads();
+    return;
+  }
   start_read_op(
     CEPH_MSG_PRIO_DEFAULT,
     for_read_op, false, false,
@@ -1037,6 +1056,10 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op) {
   tid_to_op_map[op->tid] = op;
 
   op->pending_cache_ops = op->plan.plans.size();
+  op->delegate_write = get_parent()->get_pool().supports_zone_replicate() &&
+    op->needs_zone_replicate() && !op->is_zone_replicate();
+  op->fence_zone_reads = op->delegate_write &&
+    !op->can_zone_replicate_without_reads(sinfo);
   waiting_commit.push_back(op);
 
   for (auto &plan: op->plan.plans) {
@@ -1055,6 +1078,43 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op) {
   extent_cache.execute(op->cache_ops);
 }
 
+void ECCommon::RMWPipeline::dispatch_ready(Op &op) {
+  if (get_parent()->pgb_is_primary() &&
+      get_parent()->get_pool().supports_zone_replicate()) {
+    dispatch_ordered();
+  } else {
+    op.dispatched = true;
+    cache_ready(op);
+  }
+}
+
+void ECCommon::RMWPipeline::dispatch_ordered() {
+  if (dispatching_ready) {
+    return;
+  }
+  dispatching_ready = true;
+  bool inflight = false;
+  for (const auto &op : waiting_commit) {
+    if (!op->dispatched) {
+      // The receiver's RMW reads must see the preceding committed writes.
+      if (op->pending_cache_ops != 0 ||
+          (inflight && op->fence_zone_reads)) {
+        break;
+      }
+      op->dispatched = true;
+      cache_ready(*op);
+    }
+    if (op->pending_commits != 0) {
+      if (op->fence_zone_reads) {
+        break;
+      }
+      inflight = true;
+    }
+  }
+  dispatching_ready = false;
+  try_finish_rmw();
+}
+
 // For each remote zone, send one MOSDECZoneReplicate to the Zone Primary.
 // Use shared_ptr so the same PGTransaction can be shared across all remote
 // zone messages without being moved-from on the first iteration.
@@ -1062,6 +1122,7 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op) {
 void ECCommon::RMWPipeline::build_zone_replicate_msgs(Op &op, 
                                                       const std::map<int, pg_shard_t> &zone_primaries,
                                                       const shard_id_set &remote_zone_shards,
+                                                      const std::map<int, ec_zone_read_sources_t> &read_sources,
                                                       std::vector<std::pair<int, Message*>> &messages) {
   if (!remote_zone_shards.empty()) {
     const pg_shard_t whoami = get_parent()->whoami_shard();
@@ -1069,7 +1130,8 @@ void ECCommon::RMWPipeline::build_zone_replicate_msgs(Op &op,
     std::shared_ptr<PGTransaction> pg_txn = op.move_pg_transaction();
     for (auto &[crush_zone, zone_primary] : zone_primaries) {
       // Skip the local zone
-      if (sinfo.get_shard_zone(zone_primary.shard) == my_zone) {
+      if (sinfo.get_shard_zone(zone_primary.shard) == my_zone ||
+          !remote_zone_shards.contains(zone_primary.shard)) {
         continue;
       }
 
@@ -1090,6 +1152,10 @@ void ECCommon::RMWPipeline::build_zone_replicate_msgs(Op &op,
         op.temp_added,
         op.temp_cleared
       );
+      if (auto sources = read_sources.find(sinfo.get_shard_zone(zone_primary.shard));
+          sources != read_sources.end()) {
+        zop.read_sources = sources->second;
+      }
 
       auto *r = new MOSDECZoneReplicate();
       r->pgid      = spg_t(get_parent()->primary_spg_t().pgid, zone_primary.shard);
@@ -1149,17 +1215,44 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
   // targets outside the acting set still need direct writes or log-only updates.
   const auto &zone_primaries = get_parent()->get_zone_primaries();
   shard_id_set remote_zone_shards;
+  std::map<int, ec_zone_read_sources_t> read_sources;
 
-  if (get_parent()->get_pool().supports_zone_replicate() &&
-      op.needs_zone_replicate() &&
-      !op.is_zone_replicate() &&
+  if (op.delegate_write &&
+      (!op.fence_zone_reads || op.can_delegate_zone_rmw()) &&
       sinfo.get_num_zones() > 1 &&
       !zone_primaries.empty()) {
     const pg_shard_t whoami = get_parent()->whoami_shard();
     const int my_zone = sinfo.get_shard_zone(whoami.shard);
+    if (op.fence_zone_reads) {
+      for (const auto &[crush_zone, primary] : zone_primaries) {
+        const int zone = sinfo.get_shard_zone(primary.shard);
+        if (zone == my_zone) {
+          continue;
+        }
+        auto &sources = read_sources[zone];
+        for (const auto &cache_op : op.cache_ops) {
+          const auto &oid = cache_op->get_hoid();
+          auto &approved = sources[oid];
+          for (const auto &peer : get_parent()->get_acting_shards()) {
+            if (sinfo.get_shard_zone(peer.shard) == zone) {
+              const auto *missing = get_parent()->maybe_get_shard_missing(peer);
+              if (missing && !missing->is_missing(oid) &&
+                  get_osdmap()->is_up(peer.osd)) {
+                approved.insert(peer);
+              }
+            }
+          }
+          if (approved.size() < sinfo.get_k() || !approved.contains(primary)) {
+            read_sources.erase(zone);
+            break;
+          }
+        }
+      }
+    }
     for (const auto &pg_shard : get_parent()->get_acting_shards()) {
       const int zone = sinfo.get_shard_zone(pg_shard.shard);
       if (zone != my_zone &&
+          (!op.fence_zone_reads || read_sources.contains(zone)) &&
           std::any_of(zone_primaries.begin(), zone_primaries.end(),
                       [&](const auto& entry) {
                         return sinfo.get_shard_zone(entry.second.shard) == zone;
@@ -1322,8 +1415,9 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
       messages.push_back(std::make_pair(pg_shard.osd, r));
     }
   }
-  if (get_parent()->get_pool().supports_zone_replicate() && op.needs_zone_replicate()) {
-    build_zone_replicate_msgs(op, zone_primaries, remote_zone_shards, messages);
+  if (!remote_zone_shards.empty()) {
+    build_zone_replicate_msgs(op, zone_primaries, remote_zone_shards,
+                              read_sources, messages);
   }
   
   next_write_all_shards = false;
@@ -1385,15 +1479,25 @@ struct ECDummyOp final : ECCommon::RMWPipeline::Op {
 };
 
 void ECCommon::RMWPipeline::try_finish_rmw() {
+  if (dispatching_ready) {
+    return;
+  }
+  bool finished = false;
   while (waiting_commit.size() > 0) {
     OpRef op = waiting_commit.front();
 
-    if (op->pending_commits != 0 || op->pending_cache_ops != 0) {
-      return;
+    if (!op->dispatched || op->pending_commits != 0) {
+      break;
     }
 
     waiting_commit.pop_front();
     finish_rmw(op);
+    finished = true;
+  }
+  if (finished && !waiting_commit.empty() &&
+      get_parent()->pgb_is_primary() &&
+      get_parent()->get_pool().supports_zone_replicate()) {
+    dispatch_ordered();
   }
 }
 
@@ -1414,7 +1518,7 @@ void ECCommon::RMWPipeline::finish_rmw(OpRef const &op) {
 
   op->cache_ops.clear();
 
-  if (extent_cache.idle()) {
+  if (extent_cache.idle() && waiting_commit.empty()) {
     if (op->version > get_parent()->get_log().get_can_rollback_to()) {
       dout(20) << __func__ << " cache idle " << op->version << dendl;
       // submit a dummy, transaction-empty op to kick the rollforward

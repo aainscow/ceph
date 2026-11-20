@@ -2301,9 +2301,12 @@ of a stretch cluster.
   Primary.
 - **Role of the Zone Primary**: the Zone Primary processes the transaction through its own
   ECTransaction pipeline, largely unmodified code, to generate the coded shards for its zone.
-  For a write smaller than a full stripe this includes reading its zone-local shards to
-  calculate the parity update. It then fans the shard writes out to the OSDs of its zone. Parity
-  is never sent over the inter-zone link; each zone computes its own.
+  It then fans the shard writes out to the OSDs of its zone, so delegated writes do not
+  send parity over the inter-zone link. For transactions that may read old data,
+  the PG primary drains earlier writes and supplies the Zone Primary with eligible
+  local shard copies for each object. The Zone Primary selects and reconstructs
+  from those sources. The PG primary uses direct per-shard writes for any zone
+  without enough eligible sources, and for transactions containing truncates.
 - **Completion**: the Zone Primary replies with the existing sub-write reply once all its
   zone-local shard writes are durable.
 - **Recovery fallback**: the Primary sends direct per-shard sub-writes to recovery and

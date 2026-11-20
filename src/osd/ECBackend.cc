@@ -1184,6 +1184,32 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
   // This op type carries a PGTransaction that must be forwarded to remote
   // Zone Primaries via MOSDECZoneReplicate.
   bool needs_zone_replicate() const override { return true; }
+
+  bool can_delegate_zone_rmw() const override {
+    // Truncation can change the parity ranges independently of the write.
+    // Keep that calculation on the PG primary.
+    return std::ranges::none_of(t->op_map, [](const auto &entry) {
+      return entry.second.truncate.has_value();
+    });
+  }
+
+  bool can_zone_replicate_without_reads(
+      const ECUtil::stripe_info_t &sinfo) const override {
+    const auto stripe_width = sinfo.get_stripe_width();
+    for (const auto &[oid, op] : t->op_map) {
+      if (op.truncate) {
+        return false;
+      }
+      extent_set updates;
+      op.buffer_updates.to_interval_set(updates);
+      for (const auto &[offset, length] : updates) {
+        if (offset % stripe_width || length % stripe_width) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
 };
 
 // An Op subclass used on the zone primary side.
@@ -1321,6 +1347,7 @@ void ECBackend::handle_zone_replicate(
   op->temp_added   = std::move(wire_op.temp_added);
   op->temp_cleared = std::move(wire_op.temp_removed);
   op->shared_t     = std::move(wire_op.t);
+  op->zone_read_sources = std::move(wire_op.read_sources);
   op->reply_to     = from;
   op->client_op    = msg;
   op->trace        = trace;
@@ -1329,6 +1356,11 @@ void ECBackend::handle_zone_replicate(
   // shared_t is nullptr for a roll-forward op — skip transaction-dependent
   // setup.  generate_transactions() is a NOP in that case.
   if (op->shared_t) {
+    // Direct sub-writes bypass this cache. The sender drains previous writes
+    // before dispatching delegated RMW, so cached extents can be discarded.
+    for (const auto &[oid, sources] : op->zone_read_sources) {
+      rmw_pipeline.extent_cache.discard_idle_object(oid);
+    }
     // Populate obc_map since it isn't passed across zones
     for (auto &[hoid, obj_op] : op->shared_t->op_map) {
       auto [r, attrs, size] = get_attrs_n_size_from_disk(hoid);
