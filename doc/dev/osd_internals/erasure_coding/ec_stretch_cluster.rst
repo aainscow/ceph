@@ -2337,9 +2337,12 @@ of a stretch cluster.
 Client Writes to the Zone Primary — *Later Release*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This needs Replicate Transaction (:ref:`Replicate Transaction (Preferred Path)
-<ecsc-replicate-transaction-preferred-path>`), because the Zone Primary must be able to process
-transactions and fan out shard writes in its zone.
+With :ref:`Replicate Transaction <ecsc-replicate-transaction-preferred-path>`,
+the client still sends its write to the PG primary, which delegates the
+transaction to the Zone Primary. With direct client writes, the client sends
+the write to its local Zone Primary instead. The Zone Primary obtains
+permission from the PG primary before proceeding, then reuses transaction
+replication to process the transaction and fan out shard writes in its zone.
 
 .. mermaid::
 
