@@ -2307,6 +2307,8 @@ of a stretch cluster.
   local shard copies for each object. The Zone Primary selects and reconstructs
   from those sources. The PG primary uses direct per-shard writes for any zone
   without enough eligible sources, and for transactions containing truncates.
+  For snapshot creation and rollback, the Zone Primary also loads the clone
+  source's object context, even when the source is not a write target.
 - **Completion**: the Zone Primary replies with the existing sub-write reply once all its
   zone-local shard writes are durable.
 - **Recovery fallback**: the Primary sends direct per-shard sub-writes to recovery and

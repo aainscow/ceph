@@ -1197,7 +1197,8 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
       const ECUtil::stripe_info_t &sinfo) const override {
     const auto stripe_width = sinfo.get_stripe_width();
     for (const auto &[oid, op] : t->op_map) {
-      if (op.truncate) {
+      // The receiver loads clone source metadata from disk as well.
+      if (op.truncate || (op.has_source() && !op.is_rename())) {
         return false;
       }
       extent_set updates;
@@ -1361,25 +1362,45 @@ void ECBackend::handle_zone_replicate(
     for (const auto &[oid, sources] : op->zone_read_sources) {
       rmw_pipeline.extent_cache.discard_idle_object(oid);
     }
-    // Populate obc_map since it isn't passed across zones
-    for (auto &[hoid, obj_op] : op->shared_t->op_map) {
+    // Clone sources need contexts too, even when they are not write targets.
+    auto load_obc = [&](const hobject_t &hoid, bool must_exist) {
+      if (op->shared_t->obc_map.contains(hoid)) {
+        return true;
+      }
       auto [r, attrs, size] = get_attrs_n_size_from_disk(hoid);
-      if (r == 0) {
+      if (r == 0 && attrs.contains(OI_ATTR)) {
         // Object exists locally — build OBC from disk attrs
-        ObjectContextRef obc = get_parent()->get_obc(hoid, attrs);
-        op->shared_t->obc_map[hoid] = obc;
-      } else if (r == -ENOENT) {
+        auto obc = get_parent()->get_obc(hoid, attrs);
+        if (obc) {
+          op->shared_t->obc_map.emplace(hoid, std::move(obc));
+          return true;
+        }
+      } else if (r == -ENOENT && !must_exist) {
         // Object doesn't exist yet — new write, use an empty OBC
         auto obc = std::make_shared<ObjectContext>();
         obc->obs.oi.soid = hoid;
         obc->obs.exists = false;
-        op->shared_t->obc_map[hoid] = obc;
-      } else {
-        // Stall on pending_commits and eventually re-peer
-        dout(10) << __func__ << " local store error " << r
-                  << " reading attrs/stat for " << hoid
-                  << " tid=" << op->tid
-                  << " — aborting zone-replicate op" << dendl;
+        op->shared_t->obc_map.emplace(hoid, std::move(obc));
+        return true;
+      }
+      if (r == 0) {
+        r = -EIO;
+      }
+      dout(10) << __func__ << " local store error " << r
+               << " loading object context for " << hoid
+               << " tid=" << op->tid
+               << " — aborting zone-replicate op" << dendl;
+      return false;
+    };
+    for (const auto &[hoid, obj_op] : op->shared_t->op_map) {
+      hobject_t source;
+      if (!obj_op.is_rename() && obj_op.has_source(&source) &&
+          !load_obc(source, true)) {
+        return;
+      }
+    }
+    for (const auto &[hoid, obj_op] : op->shared_t->op_map) {
+      if (!load_obc(hoid, false)) {
         return;
       }
     }

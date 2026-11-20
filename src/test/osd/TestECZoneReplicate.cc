@@ -1084,14 +1084,21 @@ TEST_F(TestECZoneReplicate, SnapshotRollbackRestoresBothZones) {
   const string obj = "snapshot_rollback";
   const string initial(stripe_unit * k, 'A');
   create_and_write_verify(obj, initial);
+  clear_primary_messages();
   {
     SCOPED_TRACE("create snapshot");
     ASSERT_EQ(create_snapshot(obj, initial.size()), 0);
+    EXPECT_EQ(capture_primary_messages().zone_replicate_count, 1);
   }
   ASSERT_EQ(write(obj, 17, string(113, 'B'), initial.size()), 0);
+  string overwritten = initial;
+  overwritten.replace(17, 113, 113, 'B');
+  verify_object(obj, overwritten, 0, overwritten.size());
+  clear_primary_messages();
   {
     SCOPED_TRACE("rollback to snapshot");
     ASSERT_EQ(rollback(obj, initial.size()), 0);
+    EXPECT_EQ(capture_primary_messages().zone_replicate_count, 1);
   }
   verify_object(obj, initial, 0, initial.size());
   expect_matching_versions(obj);

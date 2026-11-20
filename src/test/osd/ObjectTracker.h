@@ -106,6 +106,8 @@ public:
 private:
   // Map from object name to its tracked state
   std::map<std::string, ObjectState> objects_;
+  // The backend fixture supports one snapshot (snap=1) per object.
+  std::map<std::string, ObjectState> snapshots_;
 
 public:
   ObjectTracker() = default;
@@ -201,6 +203,9 @@ public:
 private:
   // These methods are called exclusively by PGBackendTestFixture completion
   // callbacks after a transaction commits.  Tests must not supply data directly.
+  void record_snapshot(const std::string& obj_name);
+  void record_rollback(const std::string& obj_name, const eversion_t& version);
+
   void record_data_write(
     const std::string& obj_name,
     uint64_t offset,

@@ -38,6 +38,22 @@ void ObjectTracker::record_data_write(
   obj.data_writes.emplace_back(offset, data, version);
 }
 
+void ObjectTracker::record_snapshot(const std::string& obj_name)
+{
+  if (auto it = objects_.find(obj_name); it != objects_.end() && it->second.exists) {
+    snapshots_.insert_or_assign(obj_name, it->second);
+  }
+}
+
+void ObjectTracker::record_rollback(
+  const std::string& obj_name, const eversion_t& version)
+{
+  if (auto it = snapshots_.find(obj_name); it != snapshots_.end()) {
+    auto& head = objects_.insert_or_assign(obj_name, it->second).first->second;
+    head.version = version;
+  }
+}
+
 void ObjectTracker::record_create(
   const std::string& obj_name,
   const std::string& data,
