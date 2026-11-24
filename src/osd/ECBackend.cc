@@ -1349,6 +1349,12 @@ void ECBackend::handle_zone_replicate(
   // shared_t is nullptr for a roll-forward op — skip transaction-dependent
   // setup.  generate_transactions() is a NOP in that case.
   if (op->shared_t) {
+    // Direct sub-writes bypass this cache. The sender drains previous writes
+    // before dispatching delegated RMW, so cached extents can be discarded.
+    for (const auto &entry : op->zone_read_sources) {
+      rmw_pipeline.extent_cache.discard_idle_object(entry.first);
+    }
+
     // Clone sources need contexts too, even when they are not write targets.
     auto load_obc = [&](const hobject_t &hoid, bool must_exist) {
       if (op->shared_t->obc_map.contains(hoid)) {

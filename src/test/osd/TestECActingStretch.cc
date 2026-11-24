@@ -18,6 +18,7 @@
 #include "test/osd/ECPeeringTestFixture.h"
 #include "test/osd/MockECRecPred.h"
 #include "osd/PeeringState.h"
+#include "osd/ZonePrimary.h"
 #include "common/ceph_context.h"
 #include "crush/CrushWrapper.h"
 #include "crush/crush.h"
@@ -2362,6 +2363,54 @@ TEST_F(TestECActingStretch, ReturningZone_BehindUpShardsKeptAsTargets) {
 }
 
 // calc_zone_primaries Tests
+
+TEST_F(TestECActingStretch, ClientZonePrimaryMatchesPeering)
+{
+  auto pool = *osdmap->get_pg_pool(pool_id);
+  pool.set_flag(pg_pool_t::FLAG_ZONE_REPLICATE);
+  pool.nonprimary_shards.insert(shard_id_t(1));
+  const vector<int> acting = {0, 1, 2, CRUSH_ITEM_NONE, 3, 5};
+  const auto primaries = PeeringState::calc_zone_primaries(acting, pool, osdmap);
+  const auto target = ceph::zone_primary::find_local_target(
+    acting, pool, *osdmap, g_ceph_context, {{"datacenter", "dc1"}});
+  ASSERT_TRUE(target);
+  EXPECT_EQ(*target, primaries.at(dc_of(5)));
+  EXPECT_EQ(*target, pg_shard_t(5, shard_id_t(5)));
+}
+
+TEST_F(TestECActingStretch, ClientZonePrimaryRequiresLocality)
+{
+  auto pool = *osdmap->get_pg_pool(pool_id);
+  pool.set_flag(pg_pool_t::FLAG_ZONE_REPLICATE);
+  const vector<int> acting = {0, 1, 2, 3, 4, 5};
+  auto select = [&](const multimap<string, string>& location) {
+    return ceph::zone_primary::find_local_target(
+      acting, pool, *osdmap, g_ceph_context, location);
+  };
+  EXPECT_FALSE(select({}));
+  EXPECT_FALSE(select({{"root", "default"}}));
+  EXPECT_FALSE(select({{"datacenter", "dc0"}, {"datacenter", "dc1"}}));
+  EXPECT_EQ(select({{"host", "host3"}}), pg_shard_t(3, shard_id_t(3)));
+  pool.unset_flag(pg_pool_t::FLAG_ZONE_REPLICATE);
+  EXPECT_FALSE(select({{"datacenter", "dc1"}}));
+}
+
+TEST_F(TestECActingStretch, ClientZonePrimaryDoesNotReplaceDownPrimary)
+{
+  auto pool = *osdmap->get_pg_pool(pool_id);
+  pool.set_flag(pg_pool_t::FLAG_ZONE_REPLICATE);
+  const vector<int> acting = {0, 1, 2, 3, 4, 5};
+  OSDMap down_map;
+  down_map.deepish_copy_from(*osdmap);
+  OSDMap::Incremental inc(down_map.get_epoch() + 1);
+  inc.fsid = down_map.get_fsid();
+  inc.new_state[3] = CEPH_OSD_UP;
+  ASSERT_EQ(0, down_map.apply_incremental(inc));
+  ASSERT_FALSE(down_map.is_up(3));
+  ASSERT_TRUE(down_map.is_up(4));
+  EXPECT_FALSE(ceph::zone_primary::find_local_target(
+    acting, pool, down_map, g_ceph_context, {{"datacenter", "dc1"}}));
+}
 
 /**
  * Test: Full acting set
